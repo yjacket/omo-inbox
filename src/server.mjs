@@ -47,7 +47,7 @@ const ENDPOINT_LIMIT = 2048;
 const REPLY_BODY_LIMIT = 120;
 const WELCOME = { title: "알림이 켜졌습니다", body: "새 Review와 답이 오면 알려 드립니다", url: "/", tag: "inbox-welcome" };
 const CSP =
-	"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'";
+	"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'self'";
 const PAGE_HEADERS = { "content-security-policy": CSP };
 const ITEM_KINDS = new Set(["question", "permission", "turn", "blocked", "done", "progress", "board", "notice"]);
 const POLICIES = new Set(["needs-you", "progress", "quiet", "fyi"]);

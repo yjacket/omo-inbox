@@ -13,7 +13,7 @@ import { topicFor } from "../src/policy.mjs";
 const START = Date.parse("2026-10-17T00:00:00Z");
 const TAILNET = { "x-forwarded-for": "100.64.0.50", "tailscale-user-login": "owner@example.com" };
 const CSP =
-	"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'";
+	"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'self'";
 
 function fakeTimers() {
 	const timers = new Map();

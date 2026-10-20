@@ -207,6 +207,7 @@
 		.row + .row { border-top: 1px solid var(--line-soft); }
 		.row:hover { background: var(--wash-1); }
 		.row:active { background: var(--wash-2); }
+		.row[aria-current="page"] { background: var(--wash-2); }
 		.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-xs); }
 		.row > * { grid-column: 1; min-width: 0; }
 		.title { font-size: var(--fs-row); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
@@ -285,10 +286,12 @@
 		.sk-bar.w2 { width: 28%; }
 		.sk-bar.w3 { width: 34%; }
 
-		@media (min-width: 768px) {
-			.page { padding: var(--s8) var(--s6) var(--s10); }
+		/* WIDE (split view): the list is a 340px column with its own scroll; the selected thread fills the rest in an iframe */
+		@media (min-width: 720px) {
+			body { display: flex; height: 100dvh; overflow: hidden; }
+			.page { flex: none; width: 340px; height: 100%; margin: 0; padding-top: 0; overflow-y: auto; scrollbar-width: thin; border-right: 1px solid var(--line); }
 			.top { position: sticky; top: 0; z-index: 1; padding: var(--s2) 0; background: var(--bg); }
-			.row { padding: var(--s3) var(--s5); }
+			.thread { flex: 1; min-width: 0; height: 100%; border: 0; }
 		}
 		@media (max-width: 360px) {
 			.ctl { padding: 0 var(--s2); }
@@ -348,6 +351,12 @@
 			let requestSeq = 0;
 			let timer = null;
 			let loaded = false;
+
+			// split view: WIDE is at least 720px; the selected thread is /?s=<sid> in the URL and an iframe on the right
+			const media = window.matchMedia("(min-width: 720px)");
+			let wide = false;
+			let selected = null;
+			let frame = null;
 
 			const bell = document.getElementById("bell");
 			const BELL_LABEL = { off: "알림 받기", on: "알림 켜짐", blocked: "알림 막힘" };
@@ -561,6 +570,7 @@
 						}
 					}
 				}
+				syncSplit();
 			}
 
 			function renderTimes() {
@@ -640,6 +650,84 @@
 				}
 			}
 
+			function sidFromUrl() {
+				return new URLSearchParams(location.search).get("s") || null;
+			}
+
+			function threadUrl(sid, hash) {
+				return "/s/" + encodeURIComponent(sid) + (hash || "");
+			}
+
+			function listUrl(sid) {
+				return "/?s=" + encodeURIComponent(sid);
+			}
+
+			function dropFrame() {
+				if (frame) frame.remove();
+				frame = null;
+			}
+
+			// A fresh iframe per thread: changing src on a live one adds history entries the back button would have to walk.
+			function showFrame(sid, hash) {
+				const src = threadUrl(sid, hash);
+				if (frame && frame.getAttribute("src") === src) return;
+				dropFrame();
+				frame = h("iframe", { class: "thread", title: "대화", src });
+				document.body.append(frame);
+			}
+
+			function markRows() {
+				for (const row of els.list.querySelectorAll(".row[data-session]")) {
+					if (row.getAttribute("data-session") === selected) row.setAttribute("aria-current", "page");
+					else row.removeAttribute("aria-current");
+				}
+			}
+
+			// WIDE: ?s= names the thread (shown even when it is not in the list); without it the first row is selected in
+			// place with replaceState, and an empty list leaves the right pane empty. Runs again after every list render.
+			function syncSplit() {
+				if (!wide) return;
+				let sid = sidFromUrl();
+				let hash = location.hash;
+				if (sid === null) {
+					const first = els.list.querySelector(".row[data-session]");
+					sid = first ? first.getAttribute("data-session") : null;
+					hash = "";
+					if (sid !== null) history.replaceState(null, "", listUrl(sid));
+				}
+				selected = sid;
+				if (sid === null) dropFrame();
+				else showFrame(sid, hash);
+				markRows();
+			}
+
+			// Load, popstate and the media query change all land here. NARROW with ?s= hands over to the thread page itself
+			// (the window shrank, or the page loaded narrow); false says this page is leaving.
+			function applyMode() {
+				wide = media.matches;
+				if (wide) {
+					syncSplit();
+					return true;
+				}
+				dropFrame();
+				const sid = sidFromUrl();
+				if (sid === null) return true;
+				location.replace(threadUrl(sid, location.hash));
+				return false;
+			}
+
+			// WIDE: a plain left click on a row selects it here instead of leaving the page; modifier clicks keep the link.
+			els.list.addEventListener("click", (event) => {
+				if (!wide || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+				const row = event.target.closest(".row[data-session]");
+				if (!row) return;
+				event.preventDefault();
+				const sid = row.getAttribute("data-session");
+				if (sid === selected) return;
+				history.pushState(null, "", listUrl(sid));
+				syncSplit();
+			});
+
 			els.retry.addEventListener("click", () => load());
 			document.addEventListener("visibilitychange", () => {
 				if (document.visibilityState === "visible") {
@@ -650,6 +738,9 @@
 				}
 			});
 
+			media.addEventListener("change", applyMode);
+			window.addEventListener("popstate", applyMode);
+			if (!applyMode()) return;
 			load();
 			initBell();
 			if (document.visibilityState === "visible") startTimer();

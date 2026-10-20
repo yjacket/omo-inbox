@@ -10,6 +10,35 @@
 	<meta name="robots" content="noindex">
 	<link rel="icon" href="data:,">
 	<title>Inbox</title>
+	<script>
+		(function () {
+			var embedded = false;
+			var top = window.top === window.self;
+			if (!top) {
+				try {
+					embedded = window.parent.location.origin === location.origin && window.parent.location.pathname === "/";
+				} catch (error) {
+					embedded = false;
+				}
+			}
+			if (embedded) {
+				document.documentElement.setAttribute("data-embed", "");
+				var base = document.createElement("base");
+				base.target = "_top";
+				document.head.appendChild(base);
+				return;
+			}
+			if (!top) return;
+			var wide = window.matchMedia("(min-width: 720px)");
+			function redirect() {
+				if (!wide.matches) return;
+				var sid = decodeURIComponent(location.pathname.split("/")[2] || "");
+				location.replace("/?s=" + encodeURIComponent(sid) + location.hash);
+			}
+			redirect();
+			wide.addEventListener("change", redirect);
+		})();
+	</script>
 	<style>
 		/*
 		 * Design tokens: the same contract as inbox.html and boards.html (one locked accent,
@@ -117,6 +146,7 @@
 			align-items: center;
 			padding: var(--s2) var(--s3);
 		}
+		[data-embed] a.back { display: none; }
 		.back {
 			display: inline-flex;
 			align-items: center;
