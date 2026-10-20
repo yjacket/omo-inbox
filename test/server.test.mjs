@@ -62,7 +62,7 @@ function reportBoard(home, name = "report") {
 }
 
 async function withServer(t, options = {}) {
-	const tmp = makeTmpHome("desk-srv-");
+	const tmp = makeTmpHome("inbox-srv-");
 	const server = createServer({
 		home: tmp.home,
 		webDir: options.webDir || WEB,
@@ -83,7 +83,7 @@ async function withServer(t, options = {}) {
 function postJson(base, p, body, headers = {}) {
 	return fetch(base + p, {
 		method: "POST",
-		headers: { "content-type": "application/json", "x-desk": "1", ...headers },
+		headers: { "content-type": "application/json", "x-inbox": "1", ...headers },
 		body: JSON.stringify(body),
 	});
 }
@@ -149,7 +149,7 @@ test("health reports the service with no-store", async (t) => {
 	assert.equal(res.headers.get("cache-control"), "no-store");
 	const body = await res.json();
 	assert.equal(body.ok, true);
-	assert.equal(body.name, "omo-desk");
+	assert.equal(body.name, "omo-inbox");
 	assert.equal(body.port, ctx.port);
 	assert.equal(typeof body.version, "string");
 	assert.ok(body.pid > 0);
@@ -189,7 +189,7 @@ test("feedback routes to the owner, writes the inbox, stores client and ua", asy
 		ctx.base,
 		`/api/p/${id}/feedback`,
 		{ rev: 1, verdict: "change", comment: "고쳐 주세요" },
-		{ "user-agent": "desk-test/1.0" },
+		{ "user-agent": "inbox-test/1.0" },
 	);
 	assert.equal(res.status, 200);
 	const fb = await res.json();
@@ -199,17 +199,17 @@ test("feedback routes to the owner, writes the inbox, stores client and ua", asy
 	assert.equal(fb.status, "theirs");
 	assert.equal(typeof fb.seq, "number");
 
-	const inbox = path.join(ctx.home, "inbox", safeSegment("owner-1"), `${id}-${String(fb.seq).padStart(6, "0")}.json`);
+	const inbox = path.join(ctx.home, "mailbox", safeSegment("owner-1"), `${id}-${String(fb.seq).padStart(6, "0")}.json`);
 	assert.ok(fs.existsSync(inbox), "inbox file exists");
 	const payload = JSON.parse(fs.readFileSync(inbox, "utf8"));
 	assert.equal(payload.proposalId, id);
-	assert.match(payload.text, /\[omo-desk\] 의견이 왔습니다/);
-	assert.ok(payload.text.includes(`node "` + toSlash(path.join(ctx.home, "app", "bin", "desk.mjs")) + `" show ${id}`));
+	assert.match(payload.text, /\[omo-inbox\] 의견이 왔습니다/);
+	assert.ok(payload.text.includes(`node "` + toSlash(path.join(ctx.home, "app", "bin", "inbox.mjs")) + `" show ${id}`));
 
 	const detail = await (await fetch(`${ctx.base}/api/p/${id}`)).json();
 	const event = detail.events.find((item) => item.type === "feedback");
 	assert.equal(event.client, "127.0.0.1");
-	assert.equal(event.ua, "desk-test/1.0");
+	assert.equal(event.ua, "inbox-test/1.0");
 	assert.equal(event.delivery, "pending");
 });
 
@@ -313,7 +313,7 @@ test("a report submit keeps its kind and an ack with a comment routes to the own
 	assert.equal(fb.status, "theirs");
 	assert.equal(fb.routed, "owner-report");
 	assert.equal(fb.delivery, "pending");
-	const inbox = path.join(ctx.home, "inbox", safeSegment("owner-report"), `${id}-${String(fb.seq).padStart(6, "0")}.json`);
+	const inbox = path.join(ctx.home, "mailbox", safeSegment("owner-report"), `${id}-${String(fb.seq).padStart(6, "0")}.json`);
 	assert.ok(fs.existsSync(inbox), "inbox file exists");
 
 	const detail = await (await fetch(`${ctx.base}/api/p/${id}`)).json();
@@ -348,7 +348,7 @@ test("a comment-less ack closes by the user with no delivery", async (t) => {
 	assert.equal(detail.summary.status, "closed");
 	assert.equal(detail.summary.outcome, null);
 
-	const inboxDir = path.join(ctx.home, "inbox", safeSegment("owner-ack"));
+	const inboxDir = path.join(ctx.home, "mailbox", safeSegment("owner-ack"));
 	if (fs.existsSync(inboxDir)) assert.deepEqual(fs.readdirSync(inboxDir), []);
 	assert.equal((await (await fetch(`${ctx.base}/api/proposals`)).json()).counts.reports, 0);
 
@@ -414,7 +414,7 @@ test("the tailscale funnel header is rejected everywhere", async (t) => {
 	assert.equal(res.status, 403);
 });
 
-test("POST without the x-desk guard is forbidden", async (t) => {
+test("POST without the x-inbox guard is forbidden", async (t) => {
 	const ctx = await withServer(t);
 	const dir = makeBoard(ctx.home);
 	const res = await fetch(`${ctx.base}/api/proposals`, {
@@ -561,14 +561,14 @@ test("a body over 30 MiB is too long", async (t) => {
 	const big = `"${"x".repeat(30 * 1024 * 1024 + 1)}"`;
 	const res = await fetch(`${ctx.base}/api/proposals`, {
 		method: "POST",
-		headers: { "content-type": "application/json", "x-desk": "1" },
+		headers: { "content-type": "application/json", "x-inbox": "1" },
 		body: big,
 	});
 	assert.equal(res.status, 413);
 });
 
 test("static pages come from webDir", async (t) => {
-	const tmp = makeTmpHome("desk-web-");
+	const tmp = makeTmpHome("inbox-web-");
 	t.after(() => tmp.cleanup());
 	const dir = path.join(tmp.home, "web");
 	fs.mkdirSync(dir, { recursive: true });
@@ -622,7 +622,8 @@ test("here counts only the current worktree, across clones and branches", async 
 	assert.equal(hereA.theirs, 0);
 	assert.deepEqual(hereA.pending, []);
 	assert.equal(hereA.notice, null);
-	assert.equal(hereA.footer, "🙋 1");
+	// Both sessions' boards wait on the user (primary mode), so two threads need him; neither board waits on its session.
+	assert.equal(hereA.footer, "🙋 2");
 
 	const hereB = await (await fetch(`${ctx.base}/api/here?cwd=${encodeURIComponent(dirB)}&session=sB`)).json();
 	assert.equal(hereB.mine, 1);
@@ -644,7 +645,7 @@ test("here notice follows owner liveness, not delivery", async (t) => {
 	const fb = await postJson(ctx.base, `/api/p/${id}/feedback`, { rev: 1, verdict: "change", comment: "봐 주세요" }, { "x-forwarded-for": "100.64.0.9" });
 	const fbBody = await fb.json();
 	assert.equal(fbBody.routed, "owner-live");
-	const inbox = path.join(ctx.home, "inbox", safeSegment("owner-live"), `${id}-${String(fbBody.seq).padStart(6, "0")}.json`);
+	const inbox = path.join(ctx.home, "mailbox", safeSegment("owner-live"), `${id}-${String(fbBody.seq).padStart(6, "0")}.json`);
 	fs.rmSync(inbox);
 
 	const detail = await (await fetch(`${ctx.base}/api/p/${id}`)).json();
@@ -738,7 +739,7 @@ test("a board stays waiting until its feedback is delivered", async (t) => {
 	assert.equal(waiting[0].status, "theirs");
 	assert.equal(waiting[0].seq, fb.seq);
 
-	const inboxDir = path.join(ctx.home, "inbox", safeSegment("sA"));
+	const inboxDir = path.join(ctx.home, "mailbox", safeSegment("sA"));
 	const inbox = path.join(inboxDir, `${sub.summary.id}-${String(fb.seq).padStart(6, "0")}.json`);
 	fs.rmSync(inbox);
 	waiting = (await here()).waiting;
@@ -779,7 +780,7 @@ test("a failed inbox write still answers 200 with delivery none", async (t) => {
 	const dir = makeBoard(ctx.home);
 	const { body: sub } = await submit(ctx, { srcDir: dir, session: "owner-inbox" });
 	const id = sub.summary.id;
-	fs.writeFileSync(path.join(ctx.home, "inbox"), "not a directory");
+	fs.writeFileSync(path.join(ctx.home, "mailbox"), "not a directory");
 
 	const res = await postJson(ctx.base, `/api/p/${id}/feedback`, { rev: 1, verdict: "change", comment: "인박스 실패" });
 	assert.equal(res.status, 200);
@@ -909,9 +910,9 @@ test("subscribe stores the subscription and sends the welcome push to it only", 
 	assert.deepEqual(await res.json(), { ok: true });
 	assert.deepEqual(await welcome, {
 		title: "알림이 켜졌습니다",
-		body: "새 기획안과 답이 오면 알려 드립니다",
+		body: "새 Review와 답이 오면 알려 드립니다",
 		url: "/",
-		tag: "desk-welcome",
+		tag: "inbox-welcome",
 	});
 	assert.equal(pusher.subscribed.length, 1);
 	assert.deepEqual(pusher.subscribed[0].subscription, subscription);
@@ -965,10 +966,10 @@ test("a new proposal notifies once; an identical resubmit does not", async (t) =
 	const { body: sub } = await submit(ctx, { srcDir: dir, title: "로그인 개편" });
 	const message = await next;
 	const id = sub.summary.id;
-	assert.equal(message.title, "새 기획안 · 로그인 개편");
+	assert.equal(message.title, "새 Review · 로그인 개편");
 	assert.equal(message.body, `${sub.summary.product.name || sub.summary.product.key} · ${sub.summary.feature.branch}`);
 	assert.equal(message.url, `/p/${id}`);
-	assert.equal(message.tag, `desk-${id}`);
+	assert.equal(message.tag, `inbox-${id}`);
 	assert.equal(pusher.calls.length, 1);
 
 	const again = await submit(ctx, { srcDir: dir, title: "로그인 개편" });
@@ -994,7 +995,7 @@ test("revise notifies with the note, or product and branch without one", async (
 	assert.equal(noteMessage.title, "수정본 2 · 개편");
 	assert.equal(noteMessage.body, "색을 바꿨습니다");
 	assert.equal(noteMessage.url, `/p/${id}`);
-	assert.equal(noteMessage.tag, `desk-${id}`);
+	assert.equal(noteMessage.tag, `inbox-${id}`);
 
 	const plain = pusher.nextNotify();
 	const parsed = board();
@@ -1019,7 +1020,7 @@ test("a session reply notifies with the text cut to 120 chars", async (t) => {
 	assert.equal(message.title, "답이 왔습니다 · 답장");
 	assert.equal(message.body, "가".repeat(120));
 	assert.equal(message.url, `/p/${id}`);
-	assert.equal(message.tag, `desk-${id}`);
+	assert.equal(message.tag, `inbox-${id}`);
 });
 
 test("owner feedback and closes do not notify", async (t) => {
@@ -1033,13 +1034,13 @@ test("owner feedback and closes do not notify", async (t) => {
 
 	const feedback = await postJson(ctx.base, `/api/p/${id}/feedback`, { rev: 1, verdict: "change", comment: "수정" }, TAILNET);
 	assert.equal(feedback.status, 200);
-	const closed = await postJson(ctx.base, `/api/p/${id}/close`, { summary: "검토함에서 닫음", session: { id: "owner-9" } });
+	const closed = await postJson(ctx.base, `/api/p/${id}/close`, { summary: "받은함에서 닫음", session: { id: "owner-9" } });
 	assert.equal(closed.status, 200);
 	const second = await submit(ctx, { srcDir: makeBoard(ctx.home, "other"), session: "owner-9", title: "닫기" });
 	const closing = await postJson(ctx.base, `/api/p/${second.body.summary.id}/close`, { summary: "끝", session: { id: "owner-9" } });
 	assert.equal(closing.status, 200);
 	// two proposals were created, so exactly the two "new proposal" pushes exist and nothing else
-	assert.deepEqual(pusher.calls.map((message) => message.title), ["새 기획안 · 조용히", "새 기획안 · 닫기"]);
+	assert.deepEqual(pusher.calls.map((message) => message.title), ["새 Review · 조용히", "새 Review · 닫기"]);
 });
 
 test("a failing pusher is logged and never changes the HTTP response", async (t) => {

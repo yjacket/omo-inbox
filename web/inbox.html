@@ -6,16 +6,17 @@
 	<meta name="color-scheme" content="light dark">
 	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f4f6">
 	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111214">
-	<meta name="description" content="세션이 올린 기획안을 검토하는 곳">
+	<meta name="description" content="세션이 기다리는 질문과 보고에 답하는 곳">
 	<meta name="robots" content="noindex">
 	<link rel="icon" href="data:,">
-	<title>검토함</title>
+	<title>Inbox</title>
 	<style>
 		/*
-		 * Design tokens (the DESIGN contract for this page).
-		 * Color: one locked accent (답 필요 chip, focus ring). State is ink at
-		 * alphas (washes), never a coloured border. Depth: borders only.
-		 * Radius: controls 8px, rows 10px, chips pill. Spacing: 4px base.
+		 * Design tokens (the DESIGN contract for this page, shared with boards.html).
+		 * Color: one locked accent (내 차례 chip, unread dot, 🔥 countdown, focus ring).
+		 * State is ink at alphas (washes), never a coloured border; 막힘 alone uses the
+		 * danger wash. Depth: borders only. Radius: controls 8px, rows 10px, chips pill.
+		 * Spacing: 4px base.
 		 */
 		:root {
 			color-scheme: light dark;
@@ -56,6 +57,8 @@
 			--r-pill: 999px;
 			--t-micro: 120ms ease-out;
 			--measure: 920px;
+			--ctl-h: 34px;
+			--dot: 8px;
 		}
 		@media (prefers-color-scheme: dark) {
 			:root {
@@ -83,10 +86,16 @@
 			-webkit-font-smoothing: antialiased;
 		}
 		.page { max-width: var(--measure); margin: 0 auto; padding: var(--s6) var(--s4) var(--s10); }
+
+		/* header: Inbox, 🙋 N, 알림 받기, Review */
 		.top { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s5); }
-		.heads { display: flex; align-items: baseline; gap: var(--s3); min-width: 0; }
-		.top[hidden], .bell[hidden] { display: none; }
-		.bell {
+		.heads { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+		.tools { display: flex; align-items: center; gap: var(--s2); flex: none; }
+		.top[hidden], .ctl[hidden], .count[hidden] { display: none; }
+		h1 { margin: 0; font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+		.ctl {
+			display: inline-flex;
+			align-items: center;
 			flex: none;
 			font: inherit;
 			font-size: var(--fs-cap);
@@ -94,83 +103,36 @@
 			background: var(--surface);
 			border: 1px solid var(--line);
 			border-radius: var(--r-ctl);
-			height: 34px;
+			height: var(--ctl-h);
 			padding: 0 var(--s3);
 			white-space: nowrap;
+			text-decoration: none;
 			cursor: pointer;
 			transition: background-color var(--t-micro);
 		}
-		.bell:hover:not(:disabled) { background-color: var(--wash-1); }
-		.bell:active:not(:disabled) { background-color: var(--wash-2); }
-		.bell:disabled { color: var(--ink-3); background: transparent; cursor: default; }
-		.bell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+		.ctl:hover:not(:disabled) { background-color: var(--wash-1); color: var(--ink); }
+		.ctl:active:not(:disabled) { background-color: var(--wash-2); }
+		.ctl:disabled { color: var(--ink-3); background: transparent; cursor: default; }
+		.ctl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+		.ctl.review { position: relative; }
+		.badge {
+			position: absolute;
+			top: -8px;
+			right: -8px;
+			min-width: 22px;
+			height: 22px;
+			padding: 0 6px;
+			border-radius: 11px;
+			background: var(--accent);
+			color: #fff;
+			font-size: 13px;
+			font-weight: 700;
+			line-height: 22px;
+			text-align: center;
+			box-sizing: border-box;
+		}
+		.badge[hidden] { display: none; }
 		.bell[data-state="on"] { color: var(--ok); }
-		h1 { margin: 0; font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
-
-		/* filters */
-		.filters {
-			display: flex;
-			flex-wrap: wrap;
-			align-items: end;
-			gap: var(--s3) var(--s4);
-			padding-bottom: var(--s4);
-			margin-bottom: var(--s4);
-			border-bottom: 1px solid var(--line);
-		}
-		.field { display: grid; gap: var(--s1); min-width: 0; margin: 0; padding: 0; border: 0; }
-		.field > span, .field > legend {
-			display: block;
-			padding: 0;
-			font-size: var(--fs-micro);
-			font-weight: 500;
-			color: var(--ink-2);
-		}
-		/* a legend is not a grid item, so it misses the .field gap; give it back */
-		.field > legend { margin-bottom: var(--s1); }
-		select {
-			font: inherit;
-			font-size: var(--fs-cap);
-			color: var(--ink);
-			background: var(--surface);
-			border: 1px solid var(--line);
-			border-radius: var(--r-ctl);
-			height: 34px;
-			padding: 0 var(--s2) 0 var(--s3);
-			min-width: 11rem;
-			max-width: 100%;
-			transition: background-color var(--t-micro);
-		}
-		select:hover:not(:disabled) { background-color: var(--wash-1); }
-		select:disabled { color: var(--ink-3); background: transparent; }
-		select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-		.seg {
-			display: inline-flex;
-			max-width: 100%;
-			padding: 2px;
-			gap: 2px;
-			background: var(--surface);
-			border: 1px solid var(--line);
-			border-radius: var(--r-ctl);
-		}
-		.seg label {
-			position: relative;
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			height: 28px;
-			padding: 0 var(--s3);
-			border-radius: 6px;
-			font-size: var(--fs-cap);
-			color: var(--ink-2);
-			white-space: nowrap;
-			cursor: pointer;
-			transition: background-color var(--t-micro), color var(--t-micro);
-		}
-		.seg input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-		.seg label:hover { background: var(--wash-1); color: var(--ink); }
-		.seg label:has(> input:checked) { background: var(--wash-2); color: var(--ink); }
-		.seg label:has(> input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 		/* notice */
 		.notice {
@@ -202,14 +164,41 @@
 		.notice button:active { transform: translateY(1px); }
 		.notice button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-		/* list */
+		/* sections: 내 차례 / 진행 중 / 끝남 */
 		.list { display: grid; gap: var(--s6); }
+		.group-head {
+			display: flex;
+			align-items: baseline;
+			gap: var(--s1) var(--s2);
+			margin: 0 var(--s1) var(--s2);
+			min-width: 0;
+		}
+		.group-head h2 { margin: 0; font-size: var(--fs-body); font-weight: 700; line-height: 1.4; }
+		.sum { font-size: var(--fs-micro); color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+		.group[data-status="ended"] .group-head h2 { color: var(--ink-2); }
+		.group[data-status="hidden"] .rows[hidden] { display: none; }
+		.fold {
+			margin-left: auto;
+			min-height: 32px;
+			padding: 0 var(--s2);
+			border: 0;
+			border-radius: var(--r-ctl);
+			background: transparent;
+			color: var(--ink-2);
+			font: inherit;
+			font-size: var(--fs-micro);
+			cursor: pointer;
+		}
+		.fold:hover { background-color: var(--wash-1); color: var(--ink); }
+		.fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+		/* rows: one session each, a messenger list */
 		.rows { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-row); overflow: hidden; }
 		.row {
 			display: grid;
 			grid-template-columns: minmax(0, 1fr) auto;
 			column-gap: var(--s3);
-			row-gap: 2px;
+			row-gap: var(--s1);
 			padding: var(--s3) var(--s4);
 			color: inherit;
 			text-decoration: none;
@@ -220,21 +209,48 @@
 		.row:active { background: var(--wash-2); }
 		.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-xs); }
 		.row > * { grid-column: 1; min-width: 0; }
-		.row-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
 		.title { font-size: var(--fs-row); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
-		.rev {
+		.row[data-unread] .title { font-weight: 700; }
+		.group[data-status="ended"] .title { font-weight: 500; color: var(--ink-2); }
+		/* right column, row 1: relative time, then the unread dot so every title starts at the same x */
+		.when {
 			grid-column: 2;
 			grid-row: 1;
 			align-self: start;
+			display: flex;
+			align-items: center;
+			gap: var(--s2);
 			padding-top: 2px;
 			font-size: var(--fs-cap);
 			font-variant-numeric: tabular-nums;
 			color: var(--ink-3);
 			white-space: nowrap;
 		}
-		.meta { font-size: var(--fs-cap); color: var(--ink-2); overflow-wrap: anywhere; }
-		.act { font-size: var(--fs-cap); color: var(--ink-3); overflow-wrap: anywhere; }
-		.outcome { margin-top: var(--s1); font-size: var(--fs-cap); color: var(--ink-2); overflow-wrap: anywhere; }
+		.dot { flex: none; width: var(--dot); height: var(--dot); border-radius: 50%; background: var(--accent); }
+		.meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+		.where { font-size: var(--fs-cap); color: var(--ink-2); overflow-wrap: anywhere; }
+		.fire {
+			grid-column: 2;
+			grid-row: 2;
+			justify-self: end;
+			align-self: center;
+			font-size: var(--fs-cap);
+			font-weight: 600;
+			font-variant-numeric: tabular-nums;
+			color: var(--accent);
+			white-space: nowrap;
+		}
+		.fire[hidden] { display: none; }
+		.line {
+			font-size: var(--fs-cap);
+			color: var(--ink-2);
+			overflow-wrap: anywhere;
+			display: -webkit-box;
+			-webkit-box-orient: vertical;
+			-webkit-line-clamp: 2;
+			overflow: hidden;
+		}
+		.group[data-status="ended"] .line { color: var(--ink-3); -webkit-line-clamp: 1; }
 
 		.chip {
 			display: inline-flex;
@@ -247,32 +263,11 @@
 			line-height: 1;
 			white-space: nowrap;
 		}
-		.chip-mine { background: var(--accent); color: var(--accent-ink); }
-		.chip-theirs { background: var(--wash-2); color: var(--ink-2); }
-		.chip-closed { color: var(--ink-3); box-shadow: inset 0 0 0 1px var(--line); }
-		.chip-ok { background: rgb(var(--ok-rgb) / 0.14); color: var(--ok); }
-
-		/* groups */
-		.group-head {
-			display: flex;
-			flex-wrap: wrap;
-			align-items: baseline;
-			gap: var(--s1) var(--s3);
-			margin: 0 var(--s1) var(--s2);
-			min-width: 0;
-		}
-		.group-head h2 { margin: 0; font-size: var(--fs-body); font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
-		.path {
-			flex: 1 1 8rem;
-			min-width: 0;
-			font-family: var(--mono);
-			font-size: var(--fs-micro);
-			color: var(--ink-3);
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-		.sum { font-size: var(--fs-micro); color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+		.chip-needs { background: var(--accent); color: var(--accent-ink); }
+		.chip-blocked { background: rgb(var(--danger-rgb) / 0.14); color: var(--danger); }
+		.chip-working { background: var(--wash-2); color: var(--ink-2); }
+		.chip-ended { color: var(--ink-3); box-shadow: inset 0 0 0 1px var(--line); }
+		.count { height: 24px; font-size: var(--fs-cap); }
 
 		/* empty, loading */
 		.empty {
@@ -292,14 +287,11 @@
 
 		@media (min-width: 768px) {
 			.page { padding: var(--s8) var(--s6) var(--s10); }
-			.filters { position: sticky; top: 0; z-index: 1; padding-top: var(--s2); background: var(--bg); }
-		}
-		@media (max-width: 767px) {
-			.field { flex: 1 1 11rem; }
-			select { width: 100%; }
+			.top { position: sticky; top: 0; z-index: 1; padding: var(--s2) 0; background: var(--bg); }
+			.row { padding: var(--s3) var(--s5); }
 		}
 		@media (max-width: 360px) {
-			.seg label { padding: 0 var(--s2); }
+			.ctl { padding: 0 var(--s2); }
 		}
 		@media (prefers-reduced-motion: reduce) {
 			*, *::before, *::after { transition: none !important; }
@@ -310,32 +302,15 @@
 	<div class="page">
 		<header class="top">
 			<div class="heads">
-				<h1>검토함</h1>
-				<span class="sum" id="reportCount" hidden></span>
+				<h1>Inbox</h1>
+				<span class="chip chip-needs count" id="needsYou" hidden></span>
 			</div>
-			<button type="button" class="bell" id="bell" hidden>알림 받기</button>
+			<nav class="tools" aria-label="도구">
+				<button type="button" class="ctl bell" id="bell" hidden>알림 받기</button>
+				<a class="ctl review" id="reviewLink" href="/boards">Review<span class="badge" id="reviewBadge" hidden></span></a>
+			</nav>
 		</header>
 		<main>
-			<div class="filters">
-				<label class="field">
-					<span>제품</span>
-					<select id="product" name="product"><option value="">전체</option></select>
-				</label>
-				<label class="field">
-					<span>기능</span>
-					<select id="feature" name="feature" disabled><option value="">전체</option></select>
-				</label>
-				<fieldset class="field">
-					<legend>상태</legend>
-					<div class="seg" id="status">
-						<label><input type="radio" name="status" value="open" checked><span>진행 중</span></label>
-						<label><input type="radio" name="status" value="mine"><span>🙋 답 필요</span></label>
-						<label><input type="radio" name="status" value="theirs"><span>🤖 처리 중</span></label>
-						<label><input type="radio" name="status" value="closed"><span>끝남</span></label>
-						<label><input type="radio" name="status" value="all"><span>전체</span></label>
-					</div>
-				</fieldset>
-			</div>
 			<div class="notice" id="notice" role="status" hidden>
 				<span>목록을 불러오지 못했습니다.</span>
 				<button type="button" id="retry">다시 시도</button>
@@ -348,28 +323,27 @@
 		(() => {
 			"use strict";
 
-			const STATUSES = ["open", "mine", "theirs", "closed", "all"];
-			const CHIP = { mine: "🙋 답 필요", theirs: "🤖 처리 중", closed: "끝남" };
-			const TYPE_LABEL = { submitted: "제출", feedback: "내 의견", reply: "세션 답", revised: "고친 안", closed: "끝남" };
-			const REFRESH_MS = 10000;
+			const REFRESH_MS = 5000;
 			const SKELETON_DELAY_MS = 400;
-			const DAY_MS = 86400000;
+			const SECTIONS = [
+				{ status: "needs-you", label: "내 차례" },
+				{ status: "working", label: "진행 중" },
+				{ status: "ended", label: "끝남" },
+			];
+			const KIND_LABEL = { question: "질문", permission: "권한 요청", turn: "보고", blocked: "막힘", done: "끝남", progress: "진행", notice: "알림", board: "Review" };
+			const EMPTY_TEXT = "기다리는 세션이 없습니다";
 
 			const els = {
-				product: document.getElementById("product"),
-				feature: document.getElementById("feature"),
-				status: document.getElementById("status"),
 				notice: document.getElementById("notice"),
 				retry: document.getElementById("retry"),
 				list: document.getElementById("list"),
-				reportCount: document.getElementById("reportCount"),
+				needsYou: document.getElementById("needsYou"),
+				reviewLink: document.getElementById("reviewLink"),
+				reviewBadge: document.getElementById("reviewBadge"),
 			};
 
-			let state = readState();
-			let facets = [];
-			let items = [];
-			let mine = 0;
-			let reports = 0;
+			let rows = [];
+			let needsYou = 0;
 			let lastSig = null;
 			let requestSeq = 0;
 			let timer = null;
@@ -387,7 +361,7 @@
 			function postJson(path, body) {
 				return fetch(path, {
 					method: "POST",
-					headers: { "content-type": "application/json", "x-desk": "1" },
+					headers: { "content-type": "application/json", "x-inbox": "1" },
 					body: JSON.stringify(body),
 				});
 			}
@@ -402,7 +376,7 @@
 					setBell(Notification.permission === "denied" ? "blocked" : "off");
 					return;
 				}
-				const registration = await navigator.serviceWorker.register("/sw.js");
+				const registration = await navigator.serviceWorker.register("/sw.js", { type: "module" });
 				await navigator.serviceWorker.ready;
 				const keyRes = await fetch("/api/push/key", { cache: "no-store" });
 				if (!keyRes.ok) throw new Error(`HTTP ${keyRes.status}`);
@@ -459,6 +433,7 @@
 				bell.disabled = bell.dataset.state === "blocked";
 			});
 
+			// Every piece of session text goes through here as a text node; nothing is parsed as HTML.
 			function h(tag, attrs, ...children) {
 				const el = document.createElement(tag);
 				for (const [key, value] of Object.entries(attrs || {})) {
@@ -472,32 +447,8 @@
 				return el;
 			}
 
-			function readState() {
-				const query = new URLSearchParams(location.search);
-				const status = query.get("status");
-				return {
-					product: query.get("product") || "",
-					feature: query.get("feature") || "",
-					status: STATUSES.includes(status) ? status : "open",
-				};
-			}
-
-			function queryOf(next) {
-				const query = new URLSearchParams();
-				if (next.product) query.set("product", next.product);
-				if (next.feature) query.set("feature", next.feature);
-				if (next.status !== "open") query.set("status", next.status);
-				const text = query.toString();
-				return text ? "?" + text : "";
-			}
-
 			function monthDay(date) {
 				return `${date.getMonth() + 1}월 ${date.getDate()}일`;
-			}
-
-			function fullDate(date) {
-				const year = date.getFullYear();
-				return year === new Date().getFullYear() ? monthDay(date) : `${year}년 ${monthDay(date)}`;
 			}
 
 			function relativeTime(iso) {
@@ -513,141 +464,126 @@
 				return monthDay(new Date(at));
 			}
 
-			function activityText(type, updated) {
-				return `최근: ${TYPE_LABEL[type] || type || "-"} · ${relativeTime(updated)}`;
+			// 🔥 Nm: minutes until the prompt cache goes cold (epoch ms from /cache, or an ISO string); empty once it has.
+			function fireText(until) {
+				const at = typeof until === "number" ? until : /^\d+$/.test(String(until)) ? Number(until) : Date.parse(until);
+				const left = at - Date.now();
+				if (!(left > 0)) return "";
+				return `🔥 ${Math.ceil(left / 60000)}m`;
 			}
 
-			function rowOf(item) {
-				const report = item.kind === "report";
-				const chips = [h("span", { class: "chip chip-" + item.status }, CHIP[item.status] || item.status)];
-				if (report) chips.push(h("span", { class: "chip" }, "보고"));
-				if (item.status === "theirs" && item.approved) chips.push(h("span", { class: "chip chip-ok" }, "승인"));
+			function chipOf(row) {
+				const kind = row.newest ? row.newest.kind : "";
+				let label = row.status === "working" ? "🤖 진행 중" : row.status === "ended" ? "✅ 끝남" : "🙋 내 차례";
+				if (row.status === "needs-you" && kind === "blocked") label = "⛔ 막힘";
+				if (kind === "notice" && row.status !== "working") label = "🔔 알림";
+				const style = row.status === "working" ? "chip-working" : row.status === "ended" ? "chip-ended" : kind === "blocked" ? "chip-blocked" : "chip-needs";
+				return h("span", { class: "chip " + style }, label);
+			}
+
+			function rowOf(row) {
+				const session = String(row.session);
+				const title = row.title || `세션 ${session.slice(0, 8)}`;
+				const where = [row.product, row.branch].filter(Boolean).join(" · ");
+				const newest = row.newest;
+				const at = newest && newest.at ? newest.at : row.waitingSince;
+				const label = newest && newest.kind === "progress" && newest.headline ? null : newest ? KIND_LABEL[newest.kind] || newest.kind : null;
+				const line = newest ? [label, newest.headline].filter(Boolean).join(" · ") : "";
+				const unread = typeof row.unread === "number" && row.unread > 0;
+				const fire = row.status === "needs-you" && row.cacheUntil ? fireText(row.cacheUntil) : "";
 				return h(
 					"a",
-					{ class: "row", href: "/p/" + encodeURIComponent(item.id), "data-id": item.id },
-					h("div", { class: "row-head" }, h("span", { class: "title" }, item.title), ...chips),
-					h("span", { class: "rev" }, report ? `갱신 ${item.rev}` : `${item.rev}안`),
-					h("div", { class: "meta" }, `${item.product.name || item.product.key} · ${item.feature.branch}`),
-					h("div", { class: "act", "data-type": item.lastType || "", "data-updated": item.updated }, activityText(item.lastType, item.updated)),
-					item.status === "closed" && item.outcome ? h("div", { class: "outcome" }, item.outcome) : null,
+					{ class: "row", href: "/s/" + encodeURIComponent(session), "data-session": session, "data-unread": unread || null },
+					h("div", { class: "title" }, title),
+					h(
+						"span",
+						{ class: "when" },
+						at ? h("time", { class: "time", datetime: at, "data-at": at }, relativeTime(at)) : null,
+						unread ? h("span", { class: "dot", role: "img", "aria-label": "안 읽음" }) : null,
+					),
+					h("div", { class: "meta" }, chipOf(row), row.off ? h("span", { class: "chip chip-ended off" }, "세션 꺼짐") : null, where ? h("span", { class: "where" }, where) : null),
+					fire ? h("span", { class: "fire", "data-until": row.cacheUntil }, fire) : null,
+					line ? h("div", { class: "line" }, line) : null,
 				);
 			}
 
-			function rowsOf(list) {
-				return h("div", { class: "rows" }, ...list.map(rowOf));
+			function sectionOf(section, list) {
+				const head = h("div", { class: "group-head" }, h("h2", null, section.label), h("span", { class: "sum" }, String(list.length)));
+				return h("section", { class: "group", "data-status": section.status }, head, h("div", { class: "rows" }, ...list.map(rowOf)));
 			}
 
-			function featureFacet(featureKey) {
-				const product = facets.find((entry) => entry.key === state.product);
-				return product ? product.features.find((entry) => entry.key === featureKey) : undefined;
-			}
+			const HIDDEN_OPEN_KEY = "inbox.hiddenOpen";
 
-			function groupOf(group) {
-				const facet = featureFacet(group.key) || group.items[0].feature;
-				let first = Infinity;
-				let last = -Infinity;
-				for (const item of group.items) {
-					const created = Date.parse(item.created);
-					const updated = Date.parse(item.updated);
-					if (!Number.isNaN(created)) first = Math.min(first, created);
-					if (!Number.isNaN(updated)) last = Math.max(last, updated);
+			function hiddenOpen() {
+				try {
+					return localStorage.getItem(HIDDEN_OPEN_KEY) === "1";
+				} catch {
+					return false;
 				}
-				let range = "";
-				if (first !== Infinity && last !== -Infinity) {
-					const from = fullDate(new Date(first));
-					const to = fullDate(new Date(last));
-					range = from === to ? from : `${from} ~ ${to}`;
-				}
-				const head = h(
-					"div",
-					{ class: "group-head" },
-					h("h2", null, facet.branch),
-					facet.worktree ? h("span", { class: "path", title: facet.worktree }, facet.worktree) : null,
-					h("span", { class: "sum" }, range ? `${group.items.length}건 · ${range}` : `${group.items.length}건`),
-				);
-				return h("section", { class: "group" }, head, rowsOf(group.items));
 			}
 
-			function reportGroupOf(list) {
-				const head = h("div", { class: "group-head" }, h("h2", null, "보고"), h("span", { class: "sum" }, `${list.length}건`));
-				return h("section", { class: "group" }, head, rowsOf(list));
+			function hiddenSection(list) {
+				const open = hiddenOpen();
+				const rowsEl = h("div", { class: "rows" }, ...list.map(rowOf));
+				rowsEl.hidden = !open;
+				const fold = h("button", { type: "button", class: "fold", "aria-expanded": open ? "true" : "false" }, open ? "접기" : "펼치기");
+				fold.addEventListener("click", () => {
+					try {
+						localStorage.setItem(HIDDEN_OPEN_KEY, open ? "0" : "1");
+					} catch (error) {
+						console.error("inbox: hidden setting not saved", error);
+					}
+					renderList();
+				});
+				const head = h("div", { class: "group-head" }, h("h2", null, "숨긴 대화"), h("span", { class: "sum" }, String(list.length)), fold);
+				return h("section", { class: "group", "data-status": "hidden" }, head, rowsEl);
 			}
 
 			function renderList() {
 				const focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".row") : null;
-				const focusedId = focused ? focused.getAttribute("data-id") : null;
+				const focusedId = focused ? focused.getAttribute("data-session") : null;
 				els.list.replaceChildren();
-				const reportItems = items.filter((item) => item.kind === "report" && item.status !== "closed");
-				const boards = items.filter((item) => !reportItems.includes(item));
-				if (items.length === 0) {
-					els.list.append(h("p", { class: "empty" }, "검토할 것이 없습니다."));
+				if (rows.length === 0) {
+					els.list.append(h("p", { class: "empty" }, EMPTY_TEXT));
 				} else {
-					if (boards.length) {
-						if (state.product && (state.status === "closed" || state.status === "all")) {
-							const groups = new Map();
-							for (const item of boards) {
-								const key = item.feature.key;
-								if (!groups.has(key)) groups.set(key, { key, items: [] });
-								groups.get(key).items.push(item);
-							}
-							for (const group of groups.values()) els.list.append(groupOf(group));
-						} else {
-							els.list.append(rowsOf(boards));
-						}
+					for (const section of SECTIONS) {
+						const list = rows.filter((row) => !row.hidden && row.status === section.status);
+						if (list.length) els.list.append(sectionOf(section, list));
 					}
-					if (reportItems.length) els.list.append(reportGroupOf(reportItems));
+					const hidden = rows.filter((row) => row.hidden);
+					if (hidden.length) els.list.append(hiddenSection(hidden));
 				}
 				if (focusedId) {
-					const again = els.list.querySelector(`.row[data-id="${focusedId}"]`);
-					if (again) again.focus({ preventScroll: true });
+					for (const row of els.list.querySelectorAll(".row[data-session]")) {
+						if (row.getAttribute("data-session") === focusedId) {
+							row.focus({ preventScroll: true });
+							break;
+						}
+					}
 				}
 			}
 
 			function renderTimes() {
-				for (const el of els.list.querySelectorAll(".act[data-updated]")) {
-					el.textContent = activityText(el.getAttribute("data-type"), el.getAttribute("data-updated"));
+				for (const el of els.list.querySelectorAll(".time[data-at]")) el.textContent = relativeTime(el.getAttribute("data-at"));
+				for (const el of els.list.querySelectorAll(".fire[data-until]")) {
+					const text = fireText(el.getAttribute("data-until"));
+					el.textContent = text;
+					el.hidden = text === "";
 				}
 			}
 
-			function setOptions(select, options, value) {
-				const signature = options.map((option) => option.value + "\u0000" + option.label).join("\u0001");
-				if (select.dataset.signature !== signature) {
-					select.replaceChildren(...options.map((option) => h("option", { value: option.value }, option.label)));
-					select.dataset.signature = signature;
-				}
-				select.value = value;
+			function renderCount() {
+				els.needsYou.textContent = needsYou > 0 ? `🙋 ${needsYou}` : "";
+				els.needsYou.hidden = needsYou === 0;
+				document.title = needsYou > 0 ? `(${needsYou}) Inbox` : "Inbox";
 			}
 
-			// Only open proposals are counted; a bare name (no "(0)") means everything there is closed.
-			function withOpen(name, open) {
-				return open > 0 ? `${name} (${open})` : name;
-			}
-
-			function renderFilters() {
-				const products = [{ value: "", label: "전체" }];
-				let chosen = null;
-				for (const product of facets) {
-					products.push({ value: product.key, label: withOpen(product.name || product.key, product.open) });
-					if (product.key === state.product) chosen = product;
-				}
-				if (state.product && !chosen) products.push({ value: state.product, label: state.product });
-				setOptions(els.product, products, state.product);
-
-				const features = [{ value: "", label: "전체" }];
-				let known = false;
-				for (const feature of chosen ? chosen.features : []) {
-					features.push({ value: feature.branch, label: withOpen(feature.branch, feature.open) });
-					if (feature.branch === state.feature || feature.key === state.feature) known = true;
-				}
-				if (state.feature && !known) features.push({ value: state.feature, label: state.feature });
-				setOptions(els.feature, features, state.feature);
-				els.feature.disabled = !state.product;
-
-				for (const input of els.status.querySelectorAll("input[name=status]")) input.checked = input.value === state.status;
-			}
-
-			function renderTitle() {
-				document.title = mine > 0 ? `(${mine}) 검토함` : "검토함";
+			function renderReviewBadge(n) {
+				const count = Number(n) || 0;
+				els.reviewBadge.hidden = count === 0;
+				els.reviewBadge.textContent = count > 0 ? String(count) : "";
+				if (count > 0) els.reviewLink.setAttribute("aria-label", `Review, 내 차례 ${count}건`);
+				else els.reviewLink.removeAttribute("aria-label");
 			}
 
 			function renderSkeleton() {
@@ -660,7 +596,7 @@
 				const skeleton = loaded ? null : setTimeout(renderSkeleton, SKELETON_DELAY_MS);
 				let data;
 				try {
-					const res = await fetch("/api/proposals" + queryOf(state), { headers: { accept: "application/json" }, cache: "no-store" });
+					const res = await fetch("/api/threads", { headers: { accept: "application/json" }, cache: "no-store" });
 					if (!res.ok) throw new Error(`HTTP ${res.status}`);
 					data = await res.json();
 				} catch (error) {
@@ -674,34 +610,20 @@
 				}
 				if (skeleton) clearTimeout(skeleton);
 				if (seq !== requestSeq) return;
-				facets = Array.isArray(data.facets) ? data.facets : [];
-				items = Array.isArray(data.items) ? data.items : [];
-				mine = data.counts && typeof data.counts.mine === "number" ? data.counts.mine : 0;
-				reports = data.counts && typeof data.counts.reports === "number" ? data.counts.reports : items.filter((item) => item.kind === "report" && item.status !== "closed").length;
-				els.reportCount.textContent = reports > 0 ? `보고 ${reports}` : "";
-				els.reportCount.hidden = reports === 0;
+				rows = Array.isArray(data.items) ? data.items.filter((row) => row && typeof row === "object" && typeof row.session === "string") : [];
+				needsYou = data.counts && typeof data.counts.needsYou === "number" ? data.counts.needsYou : rows.filter((row) => row.status === "needs-you" && !row.hidden).length;
+				renderReviewBadge(data.reviews?.mine);
 				els.notice.hidden = true;
 				els.list.setAttribute("aria-busy", "false");
-				renderFilters();
-				const signature = JSON.stringify([state, items, facets]);
+				const signature = JSON.stringify(rows);
 				if (!loaded || signature !== lastSig) {
 					lastSig = signature;
 					renderList();
 				} else {
 					renderTimes();
 				}
-				renderTitle();
+				renderCount();
 				loaded = true;
-			}
-
-			function update(patch) {
-				const next = { ...state, ...patch };
-				const query = queryOf(next);
-				if (query === location.search) return;
-				state = next;
-				history.pushState(null, "", location.pathname + query);
-				renderFilters();
-				load();
 			}
 
 			function startTimer() {
@@ -718,17 +640,7 @@
 				}
 			}
 
-			els.product.addEventListener("change", () => update({ product: els.product.value, feature: "" }));
-			els.feature.addEventListener("change", () => update({ feature: els.feature.value }));
-			els.status.addEventListener("change", (event) => {
-				if (event.target.name === "status") update({ status: event.target.value });
-			});
 			els.retry.addEventListener("click", () => load());
-			window.addEventListener("popstate", () => {
-				state = readState();
-				renderFilters();
-				load();
-			});
 			document.addEventListener("visibilitychange", () => {
 				if (document.visibilityState === "visible") {
 					load();
@@ -738,7 +650,6 @@
 				}
 			});
 
-			renderFilters();
 			load();
 			initBell();
 			if (document.visibilityState === "visible") startTimer();

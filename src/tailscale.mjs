@@ -30,12 +30,12 @@ export function status(runner) {
 	};
 }
 
-/** `tailscale serve --bg --https=4378 http://127.0.0.1:4377`. */
+/** `tailscale serve --bg --https=4388 http://127.0.0.1:4387`. */
 export function serveOn(runner) {
-	return runner(["serve", "--bg", `--https=${TAILNET_PORT}`, "http://127.0.0.1:4377"]);
+	return runner(["serve", "--bg", `--https=${TAILNET_PORT}`, "http://127.0.0.1:4387"]);
 }
 
-/** `tailscale serve --https=4378 off`. */
+/** `tailscale serve --https=4388 off`. */
 export function serveOff(runner) {
 	return runner(["serve", `--https=${TAILNET_PORT}`, "off"]);
 }
@@ -50,11 +50,11 @@ export function parseServe(result) {
 	}
 }
 
-export const SERVE_PROXY = "http://127.0.0.1:4377";
+export const SERVE_PROXY = "http://127.0.0.1:4387";
 
 /**
- * The 443 guard: serving 4378 must not disturb the existing 443 entry, the AllowFunnel map, or TCP 443,
- * and (unless `proxy` is null, as in uninstall) the 4378 handler must point at the local server.
+ * The 443 guard: serving 4388 must not disturb the existing 443 entry, the AllowFunnel map, or TCP 443,
+ * and (unless `proxy` is null, as in uninstall) the 4388 handler must point at the local server.
  */
 export function guard(baseline, after, dns, { proxy = SERVE_PROXY } = {}) {
 	const before = baseline ?? {};

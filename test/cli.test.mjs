@@ -8,11 +8,11 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { makeTmpHome } from "./helpers/tmp-home.mjs";
 import { createServer } from "../src/server.mjs";
-import { createDesk } from "../extension/omo-desk.ts";
+import { createInbox } from "../extension/inbox/core.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WEB = path.join(REPO, "web");
-const BIN = path.join(REPO, "bin", "desk.mjs");
+const BIN = path.join(REPO, "bin", "inbox.mjs");
 const toSlash = (value) => value.replace(/\\/g, "/");
 const CLI_HINT = `node "${toSlash(BIN)}"`;
 const REPO_VERSION = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).version;
@@ -49,7 +49,7 @@ function makeGitRepo(home) {
 }
 
 async function setup(t) {
-	const tmp = makeTmpHome("desk-cli-");
+	const tmp = makeTmpHome("inbox-cli-");
 	const server = createServer({
 		home: tmp.home,
 		webDir: WEB,
@@ -68,14 +68,14 @@ async function setup(t) {
 function childEnv(home, base, extra = {}) {
 	const env = {
 		...process.env,
-		DESK_NO_ENSURE: "1",
+		INBOX_NO_ENSURE: "1",
 		PI_SESSION_ID: "test-sess",
-		DESK_WAIT_POLL_MS: "20",
-		DESK_ENSURE_POLL_MS: "20",
-		OMO_DESK_HOME: home,
+		INBOX_WAIT_POLL_MS: "20",
+		INBOX_ENSURE_POLL_MS: "20",
+		OMO_INBOX_HOME: home,
 	};
-	if (base) env.DESK_URL = base;
-	else delete env.DESK_URL;
+	if (base) env.INBOX_URL = base;
+	else delete env.INBOX_URL;
 	Object.assign(env, extra);
 	for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
 	return env;
@@ -105,7 +105,7 @@ async function runCli(ctx, args, options) {
 function postJson(base, route, body) {
 	return fetch(base + route, {
 		method: "POST",
-		headers: { "content-type": "application/json", "x-desk": "1" },
+		headers: { "content-type": "application/json", "x-inbox": "1" },
 		body: JSON.stringify(body),
 	});
 }
@@ -289,7 +289,7 @@ test("wait prints WAITING and then the feedback message", { timeout: 30000 }, as
 	const result = await done;
 	assert.equal(result.code, 0, result.stderr + stdout);
 	assert.ok(stdout.includes(`FEEDBACK ${id} ${seq}`), stdout);
-	assert.ok(stdout.includes("[omo-desk] 의견이 왔습니다"), stdout);
+	assert.ok(stdout.includes("[omo-inbox] 의견이 왔습니다"), stdout);
 	assert.ok(stdout.includes(`${CLI_HINT} show ${id}`), stdout);
 });
 
@@ -303,7 +303,7 @@ test("wait times out on a proposal that stays mine", { timeout: 30000 }, async (
 });
 
 test("ensure against a foreign process on the configured port exits 3", async (t) => {
-	const tmp = makeTmpHome("desk-cli-stub-");
+	const tmp = makeTmpHome("inbox-cli-stub-");
 	const stub = http.createServer((req, res) => {
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ ok: true, name: "other" }));
@@ -323,15 +323,15 @@ test("ensure against a foreign process on the configured port exits 3", async (t
 	assert.equal(result.code, 3, result.stdout + result.stderr);
 });
 
-// A stand-in for <home>/app/src/server.mjs: it reports DESK_FAKE_VERSION, records a
+// A stand-in for <home>/app/src/server.mjs: it reports INBOX_FAKE_VERSION, records a
 // /api/shutdown hit, and marks the first non-health request it serves. While the old
 // server still holds the port it waits for the test's "old-closed" marker, not a timer.
 const FAKE_APP_SOURCE = [
 	'import fs from "node:fs";',
 	'import http from "node:http";',
 	'import path from "node:path";',
-	"const home = process.env.OMO_DESK_HOME;",
-	'const version = process.env.DESK_FAKE_VERSION || "0.0.0";',
+	"const home = process.env.OMO_INBOX_HOME;",
+	'const version = process.env.INBOX_FAKE_VERSION || "0.0.0";',
 	'const countFile = path.join(home, "fake-shutdowns");',
 	'const servedFile = path.join(home, "fake-served");',
 	'const config = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));',
@@ -345,7 +345,7 @@ const FAKE_APP_SOURCE = [
 	"\t\treturn;",
 	"\t}",
 	'\tif (req.url === "/api/health") {',
-	'\t\tres.end(JSON.stringify({ ok: true, name: "omo-desk", version }));',
+	'\t\tres.end(JSON.stringify({ ok: true, name: "omo-inbox", version }));',
 	"\t\treturn;",
 	"\t}",
 	"\tfs.writeFileSync(servedFile, req.url);",
@@ -377,7 +377,7 @@ function waitForExit(pid) {
 }
 
 async function ensureCtx(t, appVersion = null) {
-	const tmp = makeTmpHome("desk-cli-ensure-");
+	const tmp = makeTmpHome("inbox-cli-ensure-");
 	let shuttingDown = false;
 	let oldClosing = false;
 	const old = http.createServer((req, res) => {
@@ -392,7 +392,7 @@ async function ensureCtx(t, appVersion = null) {
 			// A real server keeps answering for a moment after /api/shutdown. Answer one more
 			// health check after it, then close: that is the window ensure must not mistake for success.
 			const closeAfter = shuttingDown;
-			res.end(JSON.stringify({ ok: true, name: "omo-desk", version: "0.0.0-installed" }), () => {
+			res.end(JSON.stringify({ ok: true, name: "omo-inbox", version: "0.0.0-installed" }), () => {
 				if (!closeAfter || oldClosing) return;
 				oldClosing = true;
 				old.close(() => fs.writeFileSync(path.join(tmp.home, "old-closed"), ""));
@@ -415,7 +415,7 @@ async function ensureCtx(t, appVersion = null) {
 	if (appVersion !== null) {
 		fs.writeFileSync(
 			path.join(tmp.home, "app", "package.json"),
-			JSON.stringify({ name: "omo-desk", version: appVersion }),
+			JSON.stringify({ name: "omo-inbox", version: appVersion }),
 		);
 	}
 	const repo = makeGitRepo(tmp.home);
@@ -444,7 +444,7 @@ async function ensureCtx(t, appVersion = null) {
 
 test("ensure shuts down a stale server when the installed app matches the cli", { timeout: 30000 }, async (t) => {
 	const ctx = await ensureCtx(t, REPO_VERSION);
-	const result = await runCli(ctx, ["list"], { env: { DESK_NO_ENSURE: undefined, DESK_FAKE_VERSION: REPO_VERSION } });
+	const result = await runCli(ctx, ["list"], { env: { INBOX_NO_ENSURE: undefined, INBOX_FAKE_VERSION: REPO_VERSION } });
 	assert.equal(result.code, 0, result.stdout + result.stderr);
 	assert.ok(!result.stderr.includes("differs"), result.stderr);
 	assert.ok(
@@ -461,7 +461,7 @@ test("ensure shuts down a stale server when the installed app matches the cli", 
 test("ensure warns once and does not shut down a server whose version still differs", { timeout: 30000 }, async (t) => {
 	const other = "0.0.0-installed";
 	const ctx = await ensureCtx(t, other);
-	const result = await runCli(ctx, ["list"], { env: { DESK_NO_ENSURE: undefined, DESK_FAKE_VERSION: other } });
+	const result = await runCli(ctx, ["list"], { env: { INBOX_NO_ENSURE: undefined, INBOX_FAKE_VERSION: other } });
 	assert.equal(result.code, 0, result.stdout + result.stderr);
 	assert.ok(result.stderr.includes(`server version ${other} differs from cli ${REPO_VERSION}`), result.stderr);
 	assert.equal((result.stderr.match(/differs from cli/g) || []).length, 1, result.stderr);
@@ -485,8 +485,8 @@ test("reply with a dash reads the text from stdin", async (t) => {
 
 // ---- task 3: explicit session options (--session / --session-file) ----------
 
-const STRIP_SESSION = { DESK_SESSION: undefined, PI_SESSION_ID: undefined, PI_SESSION_FILE: undefined };
-const STALE_ENV = { DESK_SESSION: "sess-B", PI_SESSION_ID: "sess-C", PI_SESSION_FILE: "C:/qa/stale-B.jsonl" };
+const STRIP_SESSION = { INBOX_SESSION: undefined, PI_SESSION_ID: undefined, PI_SESSION_FILE: undefined };
+const STALE_ENV = { INBOX_SESSION: "sess-B", PI_SESSION_ID: "sess-C", PI_SESSION_FILE: "C:/qa/stale-B.jsonl" };
 
 function fakePi() {
 	const handlers = new Map();
@@ -510,7 +510,7 @@ function fakePi() {
 
 /** One machine-readable line, aggregated into evidence/task-3-route.json by the task run. */
 function emitRoute(part, data) {
-	process.stdout.write(`DESK_ROUTE_EVIDENCE ${JSON.stringify({ part, ...data })}\n`);
+	process.stdout.write(`INBOX_ROUTE_EVIDENCE ${JSON.stringify({ part, ...data })}\n`);
 }
 
 /** A port that was open and is now closed, so an unexpected ensure would exit 3, not 1. */
@@ -612,13 +612,13 @@ test("an explicit session wins over stale env and the legacy fallbacks stay", as
 	assert.deepEqual(detail.events.find((event) => event.type === "revised").session, { id: "sess-B", file: "C:/qa/stale-B.jsonl" });
 
 	const pDir = makeBoard(path.join(ctx.repo, "pi-fallback"));
-	const p = await runCli(ctx, ["submit", pDir, "--title", "pi"], { env: { DESK_SESSION: undefined, PI_SESSION_ID: "sess-C", PI_SESSION_FILE: "C:/qa/pi.jsonl" } });
+	const p = await runCli(ctx, ["submit", pDir, "--title", "pi"], { env: { INBOX_SESSION: undefined, PI_SESSION_ID: "sess-C", PI_SESSION_FILE: "C:/qa/pi.jsonl" } });
 	assert.equal(p.code, 0, p.stderr);
 	const pId = idOf(p);
 	detail = JSON.parse((await runCli(ctx, ["show", pId, "--json"])).stdout);
 	assert.equal(detail.summary.owner, "sess-C");
 	assert.deepEqual(detail.events.find((event) => event.type === "submitted").session, { id: "sess-C", file: "C:/qa/pi.jsonl" });
-	const pRev = await runCli(ctx, ["revise", pId, pDir], { env: { DESK_SESSION: undefined, PI_SESSION_ID: "sess-C", PI_SESSION_FILE: undefined } });
+	const pRev = await runCli(ctx, ["revise", pId, pDir], { env: { INBOX_SESSION: undefined, PI_SESSION_ID: "sess-C", PI_SESSION_FILE: undefined } });
 	assert.equal(pRev.code, 0, pRev.stderr);
 	detail = JSON.parse((await runCli(ctx, ["show", pId, "--json"])).stdout);
 	assert.deepEqual(detail.events.find((event) => event.type === "revised").session, { id: "sess-C", file: null });
@@ -630,7 +630,7 @@ test("a missing, blank or option-like session value is a usage error before ensu
 	const id = idOf(await runCli(ctx, ["submit", dir, "--title", "사용법"]));
 	const before = JSON.parse((await runCli(ctx, ["show", id, "--json"])).stdout);
 	const port = await closedPort();
-	const closed = { DESK_URL: `http://127.0.0.1:${port}` };
+	const closed = { INBOX_URL: `http://127.0.0.1:${port}` };
 	const bad = [
 		["--session"],
 		["--session", ""],
@@ -673,7 +673,7 @@ test("a stripped environment leaves the board ownerless until an explicit sessio
 	const fbBody = await fb.json();
 	assert.equal(fbBody.routed, null);
 	assert.equal(fbBody.delivery, "none");
-	assert.ok(!fs.existsSync(path.join(ctx.home, "inbox")), "no inbox for an ownerless route");
+	assert.ok(!fs.existsSync(path.join(ctx.home, "mailbox")), "no inbox for an ownerless route");
 
 	const before = JSON.parse((await runCli(ctx, ["show", id, "--json"])).stdout);
 	const again = await runCli(ctx, ["submit", dir, "--title", "주인 없음", "--session", "sess-A"], { env: STRIP_SESSION });
@@ -712,16 +712,16 @@ test("real CLI, real server and real inbox: one followUp, dedupe and the status 
 	assert.equal(fbBody.routed, "sess-A");
 	assert.equal(fbBody.delivery, "pending");
 	const seq = fbBody.seq;
-	const inboxDir = path.join(ctx.home, "inbox", "sess-A");
+	const inboxDir = path.join(ctx.home, "mailbox", "sess-A");
 	const inboxFile = path.join(inboxDir, `${id}-${String(seq).padStart(6, "0")}.json`);
 	assert.ok(fs.existsSync(inboxFile), "the server wrote A's inbox file");
-	assert.deepEqual(fs.readdirSync(path.join(ctx.home, "inbox")), ["sess-A"], "only A's inbox");
+	assert.deepEqual(fs.readdirSync(path.join(ctx.home, "mailbox")), ["sess-A"], "only A's inbox");
 	const payload = fs.readFileSync(inboxFile, "utf8");
 
 	const fp = fakePi();
 	const timers = [];
-	const handle = createDesk(fp.pi, {
-		env: { DESK_URL: ctx.base, OMO_DESK_HOME: ctx.home },
+	const handle = createInbox(fp.pi, {
+		env: { INBOX_URL: ctx.base, OMO_INBOX_HOME: ctx.home },
 		home: ctx.home,
 		timer: {
 			setInterval: (fn, ms) => {
@@ -797,4 +797,264 @@ test("pending --session identifies the caller, so a never-seen session still get
 	const mine = await runCli(ctx, ["pending", "--session", "sess-A", "--json"], { env: STRIP_SESSION });
 	assert.equal(mine.code, 0, mine.stderr);
 	assert.deepEqual(JSON.parse(mine.stdout).noticeKeys, []);
+});
+
+// ---- task 19: notify, threads, mode, takeover and handback --------------------------------------
+
+/**
+ * A stub server for the C12 routes this task's CLI commands call. src/server.mjs is owned by
+ * another task, so these cases never import it.
+ */
+function stubInbox(options = {}) {
+	const calls = [];
+	const server = http.createServer((req, res) => {
+		let body = "";
+		req.on("data", (chunk) => (body += chunk));
+		req.on("end", () => {
+			const entry = { method: req.method, url: req.url, guard: req.headers["x-inbox"] ?? null };
+			if (body) entry.body = JSON.parse(body);
+			calls.push(entry);
+			res.setHeader("content-type", "application/json");
+			if (req.url === "/api/health") {
+				res.end(JSON.stringify({ ok: true, name: "omo-inbox", version: REPO_VERSION }));
+				return;
+			}
+			if (req.url === "/api/notices" && req.method === "POST") {
+				if (options.noticeError) {
+					res.writeHead(400);
+					res.end(JSON.stringify({ error: "invalid_notice", details: options.noticeError }));
+					return;
+				}
+				res.end(JSON.stringify({ ok: true, created: true, item: { itemId: "i-251017-abc123" } }));
+				return;
+			}
+			if (req.method === "GET" && req.url.startsWith("/api/threads")) {
+				res.end(JSON.stringify({
+					items: [
+						{
+							session: "sess-A",
+							title: "로그인 개편",
+							product: "omo-inbox",
+							branch: "feat/login",
+							status: "needs-you",
+							newest: { itemId: "i-1", kind: "question", headline: "A안으로 갈까요?", at: 1 },
+							unread: 2,
+						},
+						{ session: "sess-B", title: "요약 정리", product: null, branch: null, status: "ended", newest: null, unread: 0 },
+					],
+					counts: { needsYou: 1, working: 0, ended: 1 },
+				}));
+				return;
+			}
+			res.writeHead(404);
+			res.end(JSON.stringify({ error: "not_found" }));
+		});
+	});
+	return { server, calls };
+}
+
+async function stubSetup(t, options) {
+	const tmp = makeTmpHome("inbox-cli-task19-");
+	const stub = stubInbox(options);
+	await new Promise((resolve) => stub.server.listen(0, "127.0.0.1", resolve));
+	const { port } = stub.server.address();
+	const repo = makeGitRepo(tmp.home);
+	t.after(async () => {
+		await new Promise((resolve) => stub.server.close(resolve));
+		tmp.cleanup();
+	});
+	return { home: tmp.home, base: `http://127.0.0.1:${port}`, calls: stub.calls, repo, port };
+}
+
+/** stdout lines without the trailing newline, so a final row keeps its empty columns. */
+function rowsOf(text) {
+	return text.replace(/\n$/, "").split("\n");
+}
+
+test("notify posts a C10 notice with the guard header and prints the item id", async (t) => {
+	const ctx = await stubSetup(t);
+	const result = await runCli(ctx, [
+		"notify", "--producer", "keepwarm", "--key", "cache-cooling", "--title", "캐시가 곧 식습니다",
+		"--body", "5분 뒤", "--urgency", "soon", "--session", "sess-A", "--expires", "2026-10-18T00:00:00Z",
+	]);
+	assert.equal(result.code, 0, result.stdout + result.stderr);
+	assert.equal(result.stdout.trim(), "ok i-251017-abc123");
+	const posted = ctx.calls.find((entry) => entry.url === "/api/notices");
+	assert.equal(posted.method, "POST");
+	assert.equal(posted.guard, "1");
+	assert.deepEqual(posted.body, {
+		v: 1,
+		producer: "keepwarm",
+		dedupeKey: "cache-cooling",
+		title: "캐시가 곧 식습니다",
+		urgency: "soon",
+		body: "5분 뒤",
+		session: "sess-A",
+		expiresAt: "2026-10-18T00:00:00Z",
+	});
+
+	// the urgency default is soon, and --json hands back the raw response
+	const json = await runCli(ctx, ["notify", "--producer", "keepwarm", "--key", "k2", "--title", "두 번째", "--json"]);
+	assert.equal(json.code, 0, json.stderr);
+	assert.equal(JSON.parse(json.stdout).item.itemId, "i-251017-abc123");
+	const second = ctx.calls.filter((entry) => entry.url === "/api/notices").at(-1).body;
+	assert.equal(second.urgency, "soon");
+	assert.equal(second.body, "", "an omitted --body is the empty string C10 validates");
+	assert.equal(second.session, undefined, "an omitted --session leaves the notice to the server");
+});
+
+test("notify exits 1 on usage, 2 on an invalid notice and 3 when unreachable", async (t) => {
+	const ctx = await stubSetup(t, { noticeError: ["title: must be at most 80 characters"] });
+	const loud = await runCli(ctx, ["notify", "--producer", "keepwarm", "--key", "k", "--title", "t", "--urgency", "loud"]);
+	assert.equal(loud.code, 1, loud.stdout);
+	assert.ok(loud.stderr.includes("usage: --urgency"), loud.stderr);
+
+	const missing = await runCli(ctx, ["notify", "--key", "k", "--title", "t"]);
+	assert.equal(missing.code, 1, missing.stdout);
+	assert.ok(missing.stderr.includes("usage: --producer"), missing.stderr);
+
+	// C10 validation runs before the server is asked, so a bad producer never reaches it
+	const invalid = await runCli(ctx, ["notify", "--producer", "Keep Warm", "--key", "k", "--title", "t"]);
+	assert.equal(invalid.code, 2, invalid.stdout);
+	assert.ok(invalid.stderr.includes("producer: must match"), invalid.stderr);
+	assert.equal(ctx.calls.some((entry) => entry.url === "/api/notices"), false);
+
+	// a 400 from the server is exit 2 with its details lines
+	const rejected = await runCli(ctx, ["notify", "--producer", "keepwarm", "--key", "k", "--title", "t"]);
+	assert.equal(rejected.code, 2, rejected.stdout);
+	assert.ok(rejected.stderr.includes("title: must be at most 80 characters"), rejected.stderr);
+
+	const dead = await closedPort();
+	const unreachable = await runCli(ctx, ["notify", "--producer", "keepwarm", "--key", "k", "--title", "t"], {
+		env: { INBOX_URL: `http://127.0.0.1:${dead}` },
+	});
+	assert.equal(unreachable.code, 3, unreachable.stdout);
+	assert.ok(unreachable.stderr.includes("server unreachable"), unreachable.stderr);
+});
+
+test("threads prints the C5 columns and forwards the status filter", async (t) => {
+	const ctx = await stubSetup(t);
+	const all = await runCli(ctx, ["threads"]);
+	assert.equal(all.code, 0, all.stderr);
+	assert.deepEqual(rowsOf(all.stdout), [
+		"needs-you\t로그인 개편\tomo-inbox\tfeat/login\tA안으로 갈까요?",
+		"ended\t요약 정리\t\t\t",
+	]);
+
+	const filtered = await runCli(ctx, ["threads", "--status", "needs-you"]);
+	assert.equal(filtered.code, 0, filtered.stderr);
+	assert.equal(ctx.calls.at(-1).url, "/api/threads?status=needs-you");
+
+	const json = JSON.parse((await runCli(ctx, ["threads", "--json"])).stdout);
+	assert.equal(json.counts.needsYou, 1);
+	assert.equal(json.items.length, 2);
+});
+
+test("mode prints trial or primary from config.json", async (t) => {
+	const tmp = makeTmpHome("inbox-cli-mode-");
+	t.after(() => tmp.cleanup());
+	const ctx = { home: tmp.home, base: null, repo: tmp.home };
+	assert.equal((await runCli(ctx, ["mode"])).stdout.trim(), "trial");
+	fs.writeFileSync(path.join(tmp.home, "config.json"), JSON.stringify({ v: 1, mode: "primary" }));
+	assert.equal((await runCli(ctx, ["mode"])).stdout.trim(), "primary");
+	assert.equal(JSON.parse((await runCli(ctx, ["mode", "--json"])).stdout).mode, "primary");
+});
+
+/** A stub desk install: its bin and its recorded source both log their argv and exit 0. */
+function deskFixture(root) {
+	const log = path.join(root, "desk-calls.log");
+	const stub = (name) =>
+		[
+			'import fs from "node:fs";',
+			`fs.appendFileSync(process.env.STUB_LOG, ${JSON.stringify(name)} + " " + process.argv.slice(2).join(" ") + "\\n");`,
+			"process.exit(0);",
+			"",
+		].join("\n");
+	const deskHome = path.join(root, "desk");
+	const source = path.join(root, "desk-source");
+	fs.mkdirSync(path.join(deskHome, "app", "bin"), { recursive: true });
+	fs.writeFileSync(path.join(deskHome, "app", "bin", "desk.mjs"), stub("desk"));
+	fs.writeFileSync(path.join(deskHome, "app", "source.json"), JSON.stringify({ channel: "checkout", source }));
+	fs.mkdirSync(path.join(source, "bin"), { recursive: true });
+	fs.writeFileSync(path.join(source, "bin", "desk.mjs"), stub("desk-source"));
+	fs.mkdirSync(path.join(deskHome, "data", "proposals", "p1"), { recursive: true });
+	fs.writeFileSync(path.join(deskHome, "data", "proposals", "p1", "proposal.json"), "{}\n");
+	fs.mkdirSync(path.join(deskHome, "inbox", "sess-A"), { recursive: true });
+	fs.writeFileSync(path.join(deskHome, "inbox", "sess-A", "p1-000001.json"), "{}\n");
+	return { deskHome, source, log };
+}
+
+function takeoverSetup(t) {
+	const tmp = makeTmpHome("inbox-cli-takeover-");
+	const root = tmp.home;
+	const userHome = path.join(root, "user");
+	const inboxHome = path.join(root, "inbox");
+	const agent = path.join(root, "agent");
+	const desk = deskFixture(root);
+	for (const dir of ["skill", "rules", "src"]) fs.mkdirSync(path.join(inboxHome, "app", dir), { recursive: true });
+	fs.writeFileSync(path.join(inboxHome, "app", "skill", "SKILL.md"), "# visual-board\n");
+	fs.writeFileSync(path.join(inboxHome, "app", "rules", "visual-board.md"), "# rules\n");
+	fs.writeFileSync(path.join(inboxHome, "app", "src", "cli.mjs"), "export async function main() { return 0; }\n");
+	fs.writeFileSync(path.join(inboxHome, "config.json"), JSON.stringify({ v: 1, port: 4387, mode: "trial" }));
+	const repo = makeGitRepo(root);
+	t.after(() => tmp.cleanup());
+	const env = {
+		INBOX_DESK_HOME: desk.deskHome,
+		INBOX_USER_HOME: userHome,
+		INBOX_AGENT_DIR: agent,
+		INBOX_NO_TAILSCALE: "1",
+		STUB_LOG: desk.log,
+	};
+	return { root, userHome, inboxHome, agent, desk, repo, env };
+}
+
+test("takeover then handback run through the CLI against a stub desk", async (t) => {
+	const s = await takeoverSetup(t);
+	const ctx = { home: s.inboxHome, base: null, repo: s.repo };
+	const taken = await runCli(ctx, ["takeover"], { env: s.env });
+	assert.equal(taken.code, 0, taken.stdout + taken.stderr);
+	assert.deepEqual(rowsOf(taken.stdout), [
+		"record: written",
+		"import: 1 proposals, 1 mailbox files",
+		"desk uninstall: ok",
+		"disabled: written",
+		"shim: written",
+		"mode: primary",
+		"skill: written",
+		"rule: written",
+	]);
+	assert.equal(fs.readFileSync(s.desk.log, "utf8"), "desk uninstall\n");
+	assert.ok(fs.existsSync(path.join(s.desk.deskHome, "disabled")));
+	assert.ok(fs.existsSync(path.join(s.inboxHome, "mailbox", "sess-A", "p1-000001.json")));
+	assert.ok(fs.existsSync(path.join(s.inboxHome, "data", "proposals", "p1", "proposal.json")));
+	assert.ok(fs.readFileSync(path.join(s.desk.deskHome, "app", "bin", "desk.mjs"), "utf8").includes("cli.mjs"));
+	assert.equal(JSON.parse(fs.readFileSync(path.join(s.inboxHome, "config.json"), "utf8")).mode, "primary");
+
+	const back = await runCli(ctx, ["handback"], { env: s.env });
+	assert.equal(back.code, 0, back.stdout + back.stderr);
+	assert.deepEqual(rowsOf(back.stdout), [
+		"shim: removed",
+		"skill: removed",
+		"rule: removed",
+		"disabled: removed",
+		"desk: reinstalled",
+		"mode: trial",
+		"record: archived",
+	]);
+	assert.equal(fs.readFileSync(s.desk.log, "utf8"), "desk uninstall\ndesk-source install\n");
+	assert.equal(fs.existsSync(path.join(s.desk.deskHome, "app")), false);
+	assert.equal(fs.existsSync(path.join(s.desk.deskHome, "disabled")), false);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(s.inboxHome, "config.json"), "utf8")).mode, "trial");
+	assert.ok(fs.readdirSync(s.inboxHome).some((name) => name.startsWith("takeover-") && name.endsWith(".json")));
+});
+
+test("takeover outside trial mode exits 1 with the skipped line", async (t) => {
+	const s = await takeoverSetup(t);
+	fs.writeFileSync(path.join(s.inboxHome, "config.json"), JSON.stringify({ v: 1, port: 4387, mode: "primary" }));
+	const ctx = { home: s.inboxHome, base: null, repo: s.repo };
+	const result = await runCli(ctx, ["takeover"], { env: s.env });
+	assert.equal(result.code, 1, result.stdout);
+	assert.equal(result.stdout.trim(), "takeover: skipped (already primary)");
+	assert.equal(fs.existsSync(path.join(s.desk.deskHome, "disabled")), false);
+	assert.equal(fs.existsSync(s.desk.log), false);
 });

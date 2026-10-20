@@ -17,20 +17,21 @@
 	// Longest edge of an encoded crop. A big mark on a full-size screenshot must stay under the server's 5 MiB crop limit.
 	const CROP_MAX_PX = 1600;
 	const MIN_MARK_PX = 8;
-	const DEFAULT_HEADERS = { "content-type": "application/json", "x-desk": "1" };
+	const DEFAULT_HEADERS = { "content-type": "application/json", "x-inbox": "1" };
 	const EVENT_LABELS = { submitted: "제출", feedback: "내 의견", reply: "세션 답", revised: "고친 안", closed: "끝남" };
-	const STATUS_LABELS = { mine: "🙋 답 필요", theirs: "🤖 처리 중", closed: "끝남" };
+	const STATUS_LABELS = { mine: "🙋 내 차례", theirs: "🤖 처리 중", closed: "끝남" };
 	const PROMPT_HEAD = [
-		"나는 개발자다. 코딩 에이전트가 보여 준 검토 보드를 보고 있고, 잘 모르는 부분을 물어보고 결정하려 한다.",
-		"먼저 각 질문의 선택지 차이를 쉽게 설명하고 추천과 이유를 말해 줘. 내가 정하면 보드에 붙일 결론을 3줄 이내로 정리해 줘.",
+		"나는 개발자다. 코딩 에이전트가 보여 준 Review를 보고 있고, 잘 모르는 부분을 물어보고 결정하려 한다.",
+		"먼저 각 질문의 선택지 차이를 쉽게 설명하고 추천과 이유를 말해 줘. 내가 정하면 Review에 붙일 결론을 3줄 이내로 정리해 줘.",
 		"",
 	];
-	const PROMPT_LEAD = "\n\n[도식 원본 - 그림은 보드에 있고 여기는 글로 된 원본]";
+	const PROMPT_LEAD = "\n\n[도식 원본 - 그림은 Review에 있고 여기는 글로 된 원본]";
 
 	const $ = (id) => document.getElementById(id);
 	const el = {
-		chips: $("chips"),
 		title: $("title"),
+		threadLink: $("threadLink"),
+		chips: $("chips"),
 		lead: $("lead"),
 		causeCard: $("causeCard"),
 		cause: $("cause"),
@@ -221,6 +222,12 @@
 		chips.push(`<span class="chip status ${esc(s.status)}">${esc(STATUS_LABELS[s.status] || s.status)}</span>`);
 		if (s.status === "theirs" && s.approved) chips.push('<span class="chip ok">승인</span>');
 		el.chips.innerHTML = chips.join("");
+		// The owning session's thread, when the board is bound to one; an ownerless board has no page to link to.
+		if (el.threadLink) {
+			const owner = s.owner ? String(s.owner) : "";
+			el.threadLink.hidden = !owner;
+			if (owner) el.threadLink.href = `/s/${encodeURIComponent(owner)}`;
+		}
 	}
 
 	function renderTabs() {
@@ -416,7 +423,7 @@
 	async function renderMermaid(source) {
 		const mermaid = await ensureMermaid();
 		mmdCounter += 1;
-		const { svg } = await mermaid.render(`desk-mmd-${mmdCounter}`, source);
+		const { svg } = await mermaid.render(`inbox-mmd-${mmdCounter}`, source);
 		el.stage.innerHTML = svg;
 		const root = el.stage.querySelector("svg");
 		if (!root) throw new Error("mermaid returned no svg");
@@ -1319,7 +1326,7 @@
 	}
 
 	// Both buttons lock before the first await, so a double tap sends once. A sent proposal is the session's from here on:
-	// the page leaves for the inbox, and the session closes the proposal with `desk close` after the work.
+	// the page leaves for the inbox, and the session closes the proposal with `inbox close` after the work.
 	async function send(verdict) {
 		if (!canMark() || el.sendBtn.disabled) return;
 		setBusy(true);
@@ -1348,7 +1355,7 @@
 				location.replace("/");
 				return;
 			}
-			setStatus(res.status === 409 ? "이미 끝난 기획안입니다." : "보내지 못했습니다.");
+			setStatus(res.status === 409 ? "이미 끝난 Review입니다." : "보내지 못했습니다.");
 		} catch (error) {
 			console.error("send", error);
 			setStatus("보내지 못했습니다.");
@@ -1359,7 +1366,7 @@
 	// ---------- AI panel ----------
 
 	function buildPrompt(board, frames, sources) {
-		const head = PROMPT_HEAD.concat([`[보드] ${board.title || (state.summary ? state.summary.title : "")}`, board.lead || "", ""]);
+		const head = PROMPT_HEAD.concat([`[Review] ${board.title || (state.summary ? state.summary.title : "")}`, board.lead || "", ""]);
 		for (const section of board.sections || []) {
 			head.push(`[구획] ${section.title}${section.desc ? ` - ${section.desc}` : ""}`);
 			for (const card of section.cards || []) for (const text of [card.say, card.note]) if (text) head.push(`- ${text}`);
@@ -1527,7 +1534,7 @@
 
 	async function init() {
 		if (!id) {
-			showLoadError("기획안을 찾을 수 없습니다.");
+			showLoadError("Review를 찾을 수 없습니다.");
 			return;
 		}
 		let data;
@@ -1535,7 +1542,7 @@
 			data = await api(`/api/p/${encodeURIComponent(id)}`);
 		} catch (error) {
 			console.error("load", error);
-			showLoadError(error.status === 404 ? "기획안을 찾을 수 없습니다." : "기획안을 불러오지 못했습니다.");
+			showLoadError(error.status === 404 ? "Review를 찾을 수 없습니다." : "Review를 불러오지 못했습니다.");
 			return;
 		}
 		absorb(data);

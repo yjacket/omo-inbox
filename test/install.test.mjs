@@ -7,22 +7,23 @@ import { RUN_KEY, RUN_VALUE, doctor, install, uninstall } from "../src/install.m
 import { guard, serveOff, serveOn, status } from "../src/tailscale.mjs";
 
 const DNS = "host.tailnet.ts.net";
-const PROXY = "http://127.0.0.1:4377";
+const PROXY = "http://127.0.0.1:4387";
 
 /** A fixture repo root with every entry install copies. */
 function makeRepo(root) {
 	const repo = path.join(root, "repo");
-	for (const dir of ["bin", "src", "web", "extension", path.join("skill", "example"), "rules"]) {
+	for (const dir of ["bin", "src", "web", "extension", path.join("extension", "inbox"), path.join("skill", "example"), "rules"]) {
 		fs.mkdirSync(path.join(repo, dir), { recursive: true });
 	}
-	fs.writeFileSync(path.join(repo, "bin", "desk.mjs"), "#!/usr/bin/env node\n");
+	fs.writeFileSync(path.join(repo, "bin", "inbox.mjs"), "#!/usr/bin/env node\n");
 	fs.writeFileSync(path.join(repo, "src", "server.mjs"), "export {};\n");
 	fs.writeFileSync(path.join(repo, "web", "targets.json"), "[]\n");
-	fs.writeFileSync(path.join(repo, "extension", "omo-desk.ts"), "export const x = 1;\n");
+	fs.writeFileSync(path.join(repo, "extension", "omo-inbox.ts"), "export const x = 1;\n");
+	fs.writeFileSync(path.join(repo, "extension", "inbox", "core.ts"), "export const core = 1;\n");
 	fs.writeFileSync(path.join(repo, "skill", "SKILL.md"), "# visual-board\n");
 	fs.writeFileSync(path.join(repo, "skill", "example", "board.json"), "{}\n");
 	fs.writeFileSync(path.join(repo, "rules", "visual-board.md"), "# rules\n");
-	fs.writeFileSync(path.join(repo, "package.json"), JSON.stringify({ name: "omo-desk", version: "0.1.0" }));
+	fs.writeFileSync(path.join(repo, "package.json"), JSON.stringify({ name: "omo-inbox", version: "0.1.0" }));
 	return repo;
 }
 
@@ -76,15 +77,15 @@ function fakeTailscale({ running = true, breakAfter = null } = {}) {
 			return { status: 0, stdout: JSON.stringify({ Web: state.web, AllowFunnel: state.allowFunnel, TCP: state.tcp }), stderr: "" };
 		}
 		if (args[0] === "serve" && args.includes("--bg")) {
-			state.web[`${DNS}:4378`] = { Handlers: { "/": { Proxy: PROXY } } };
+			state.web[`${DNS}:4388`] = { Handlers: { "/": { Proxy: PROXY } } };
 			if (breakAfter === "web443") state.web[`${DNS}:443`] = { Handlers: {} };
-			if (breakAfter === "funnel") state.allowFunnel[`${DNS}:4378`] = true;
-			if (breakAfter === "proxy") state.web[`${DNS}:4378`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:9" } } };
+			if (breakAfter === "funnel") state.allowFunnel[`${DNS}:4388`] = true;
+			if (breakAfter === "proxy") state.web[`${DNS}:4388`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:9" } } };
 			return { status: 0, stdout: "", stderr: "" };
 		}
 		if (args[0] === "serve" && args.includes("off")) {
 			state.off += 1;
-			delete state.web[`${DNS}:4378`];
+			delete state.web[`${DNS}:4388`];
 			return { status: 0, stdout: "", stderr: "" };
 		}
 		return { status: 1, stdout: "", stderr: `unexpected tailscale ${args.join(" ")}` };
@@ -115,7 +116,7 @@ function fakeFetch({ stubborn = false } = {}) {
 		}
 		if (url.endsWith("/api/shutdown")) {
 			const headers = init?.headers ?? {};
-			const guarded = init?.method === "POST" && String(headers["content-type"]).startsWith("application/json") && headers["x-desk"] === "1";
+			const guarded = init?.method === "POST" && String(headers["content-type"]).startsWith("application/json") && headers["x-inbox"] === "1";
 			if (!guarded) return { ok: false, status: 403, json: async () => ({ ok: false }) };
 			if (!stubborn) state.healthy = false;
 			return { ok: true, json: async () => ({ ok: true }) };
@@ -133,7 +134,7 @@ function setup({ stubborn = false } = {}) {
 	fs.mkdirSync(home, { recursive: true });
 	fs.mkdirSync(userHome, { recursive: true });
 	const repo = makeRepo(tmp.home);
-	const env = { OMO_DESK_HOME: home, OMO_CODING_AGENT_DIR: agent };
+	const env = { OMO_INBOX_HOME: home, OMO_CODING_AGENT_DIR: agent };
 	const reg = fakeReg();
 	const ts = fakeTailscale();
 	const fetch = fakeFetch({ stubborn });
@@ -161,6 +162,7 @@ test("fresh install writes every step and copies the app", async () => {
 		assert.equal(ok, true, lines.join("\n"));
 		assert.equal(lineFor(lines, "stop"), "stop: skipped");
 		assert.equal(lineFor(lines, "app"), "app: written");
+		assert.equal(lineFor(lines, "mode"), "mode: primary");
 		assert.equal(lineFor(lines, "launcher"), "launcher: written");
 		assert.equal(lineFor(lines, "autostart"), "autostart: written");
 		assert.equal(lineFor(lines, "extension"), "extension: written");
@@ -173,7 +175,9 @@ test("fresh install writes every step and copies the app", async () => {
 
 		assert.ok(fs.existsSync(path.join(s.home, "app", "src", "server.mjs")));
 		assert.ok(fs.existsSync(path.join(s.home, "app", "package.json")));
-		assert.ok(fs.existsSync(path.join(s.agent, "extensions", "omo-desk.ts")));
+		assert.ok(fs.existsSync(path.join(s.agent, "extensions", "omo-inbox", "index.ts")));
+		assert.ok(fs.existsSync(path.join(s.agent, "extensions", "omo-inbox", "inbox", "core.ts")));
+		assert.equal(fs.existsSync(path.join(s.agent, "extensions", "omo-inbox.ts")), false);
 		assert.ok(fs.existsSync(path.join(s.userHome, ".agents", "skills", "visual-board", "SKILL.md")));
 		assert.ok(fs.existsSync(path.join(s.userHome, ".agents", "skills", "visual-board", "example", "board.json")));
 		assert.ok(fs.existsSync(path.join(s.userHome, ".claude", "skills", "visual-board", "SKILL.md")));
@@ -186,7 +190,7 @@ test("fresh install writes every step and copies the app", async () => {
 		assert.equal(s.reg.values.get(RUN_VALUE), `wscript.exe "${path.join(s.home, "launch-hidden.vbs")}"`);
 
 		const config = JSON.parse(fs.readFileSync(path.join(s.home, "config.json"), "utf8"));
-		assert.equal(config.publicBase, `https://${DNS}:4378`);
+		assert.equal(config.publicBase, `https://${DNS}:4388`);
 		assert.deepEqual(config.pcTailnetIps, ["100.1.2.3", "fd7a::1"]);
 		assert.equal(config.owner, "me@example.com");
 		assert.deepEqual(config.baseline443, {
@@ -221,7 +225,7 @@ test("a second install reports unchanged except app and server", async () => {
 		const shutdown = s.fetch.calls.find((call) => call.url.endsWith("/api/shutdown"));
 		assert.equal(shutdown.init.method, "POST");
 		assert.equal(shutdown.init.headers["content-type"], "application/json");
-		assert.equal(shutdown.init.headers["x-desk"], "1");
+		assert.equal(shutdown.init.headers["x-inbox"], "1");
 		assert.equal(shutdown.init.body, "{}");
 	} finally {
 		s.tmp.cleanup();
@@ -254,7 +258,7 @@ test("--no-autostart and --no-tailscale are reported skipped", async () => {
 		assert.equal(lineFor(lines, "tailscale"), "tailscale: skipped");
 		assert.equal(s.reg.values.size, 0);
 		const config = JSON.parse(fs.readFileSync(path.join(s.home, "config.json"), "utf8"));
-		assert.equal(config.publicBase, `https://${DNS}:4378`);
+		assert.equal(config.publicBase, `https://${DNS}:4388`);
 		assert.equal(config.baseline443, undefined);
 	} finally {
 		s.tmp.cleanup();
@@ -279,8 +283,8 @@ test("a tailscale that is not Running yields null config and skips serve", async
 	}
 });
 
-for (const [name, breakAfter] of [["the 443 Web entry", "web443"], ["an AllowFunnel 4378 key", "funnel"]]) {
-	test(`guarding against a change to ${name} rolls 4378 back and reports failed:443-guard`, async () => {
+for (const [name, breakAfter] of [["the 443 Web entry", "web443"], ["an AllowFunnel 4388 key", "funnel"]]) {
+	test(`guarding against a change to ${name} rolls 4388 back and reports failed:443-guard`, async () => {
 		const s = setup();
 		try {
 			s.ts = fakeTailscale({ breakAfter });
@@ -452,7 +456,8 @@ test("uninstall removes extension, skill, rule and Run value, and keeps data", a
 		assert.ok(lines.some((line) => line === `data kept: ${path.join(s.home, "data")}`));
 
 		assert.equal(s.reg.values.has(RUN_VALUE), false);
-		assert.equal(fs.existsSync(path.join(s.agent, "extensions", "omo-desk.ts")), false);
+		assert.equal(fs.existsSync(path.join(s.agent, "extensions", "omo-inbox")), false);
+		assert.equal(fs.existsSync(path.join(s.agent, "extensions", "omo-inbox.ts")), false);
 		assert.equal(fs.existsSync(path.join(s.userHome, ".agents", "skills", "visual-board")), false);
 		assert.equal(fs.existsSync(path.join(s.userHome, ".claude", "skills", "visual-board")), false);
 		assert.equal(fs.existsSync(path.join(s.userHome, ".claude", "rules", "visual-board.md")), false);
@@ -474,7 +479,7 @@ test("doctor passes after install and fails a missing extension copy", async () 
 		assert.equal(good.ok, true, good.lines.join("\n"));
 		assert.ok(good.lines.every((line) => line.includes(": ok")), good.lines.join("\n"));
 
-		fs.rmSync(path.join(s.agent, "extensions", "omo-desk.ts"));
+		fs.rmSync(path.join(s.agent, "extensions", "omo-inbox"), { recursive: true });
 		const bad = await doctor(s.opts);
 		assert.equal(bad.ok, false);
 		assert.ok(bad.lines.some((line) => line.startsWith("extension: fail")), bad.lines.join("\n"));
@@ -483,10 +488,94 @@ test("doctor passes after install and fails a missing extension copy", async () 
 	}
 });
 
+// ---- task 19: modes (C2), the trial skill/rule skip and the takeover record ----------------------
+
+/** A desk install that install can detect: its bin exists until a test writes `disabled`. */
+function deskSeam(root) {
+	const home = path.join(root, "desk");
+	fs.mkdirSync(path.join(home, "app", "bin"), { recursive: true });
+	fs.writeFileSync(path.join(home, "app", "bin", "desk.mjs"), "export {};\n");
+	return home;
+}
+
+test("an active desk selects trial, which writes no skill or rule", async () => {
+	const s = setup();
+	const deskHome = deskSeam(s.tmp.home);
+	const env = { ...s.env, INBOX_DESK_HOME: deskHome };
+	try {
+		const { ok, lines } = await install({ ...s.opts, env });
+		assert.equal(ok, true, lines.join("\n"));
+		assert.equal(lineFor(lines, "mode"), "mode: trial");
+		assert.equal(lineFor(lines, "skill"), "skill: skipped (trial)");
+		assert.equal(lineFor(lines, "rule"), "rule: skipped (trial)");
+		assert.equal(JSON.parse(fs.readFileSync(path.join(s.home, "config.json"), "utf8")).mode, "trial");
+		assert.equal(fs.existsSync(path.join(s.userHome, ".agents", "skills", "visual-board")), false);
+		assert.equal(fs.existsSync(path.join(s.userHome, ".claude", "rules", "visual-board.md")), false);
+
+		// a disabled desk leaves the field to inbox
+		fs.writeFileSync(path.join(deskHome, "disabled"), "disabled\n");
+		const primary = await install({ ...s.opts, env });
+		assert.equal(primary.ok, true, primary.lines.join("\n"));
+		assert.equal(lineFor(primary.lines, "mode"), "mode: primary");
+		assert.equal(lineFor(primary.lines, "skill"), "skill: written");
+		assert.equal(lineFor(primary.lines, "rule"), "rule: written");
+	} finally {
+		s.tmp.cleanup();
+	}
+});
+
+test("uninstall in trial mode leaves desk's skill and rule alone", async () => {
+	const s = setup();
+	const deskHome = deskSeam(s.tmp.home);
+	const env = { ...s.env, INBOX_DESK_HOME: deskHome };
+	try {
+		await install({ ...s.opts, env });
+		fs.mkdirSync(path.join(s.userHome, ".agents", "skills", "visual-board"), { recursive: true });
+		fs.writeFileSync(path.join(s.userHome, ".agents", "skills", "visual-board", "SKILL.md"), "desk\n");
+		fs.mkdirSync(path.join(s.userHome, ".claude", "rules"), { recursive: true });
+		fs.writeFileSync(path.join(s.userHome, ".claude", "rules", "visual-board.md"), "desk rule\n");
+		const { ok, lines } = await uninstall({ ...s.opts, env });
+		assert.equal(ok, true, lines.join("\n"));
+		assert.equal(lineFor(lines, "skill"), "skill: skipped (trial)");
+		assert.equal(lineFor(lines, "rule"), "rule: skipped (trial)");
+		assert.equal(fs.readFileSync(path.join(s.userHome, ".agents", "skills", "visual-board", "SKILL.md"), "utf8"), "desk\n");
+		assert.equal(fs.readFileSync(path.join(s.userHome, ".claude", "rules", "visual-board.md"), "utf8"), "desk rule\n");
+	} finally {
+		s.tmp.cleanup();
+	}
+});
+
+test("doctor checks skill and rule only in primary mode", async () => {
+	const s = setup();
+	const deskHome = deskSeam(s.tmp.home);
+	const env = { ...s.env, INBOX_DESK_HOME: deskHome };
+	const configFile = path.join(s.home, "config.json");
+	try {
+		await install({ ...s.opts, env });
+		const trial = await doctor({ ...s.opts, env });
+		assert.equal(trial.ok, true, trial.lines.join("\n"));
+		assert.equal(trial.lines.some((line) => line.startsWith("skill:")), false, trial.lines.join("\n"));
+		assert.equal(trial.lines.some((line) => line.startsWith("rule:")), false, trial.lines.join("\n"));
+		assert.equal(trial.lines.some((line) => line.startsWith("takeover:")), false, trial.lines.join("\n"));
+
+		// primary with an active desk and no takeover record is a fail; the record settles it
+		const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+		fs.writeFileSync(configFile, JSON.stringify({ ...config, mode: "primary" }));
+		const bad = await doctor({ ...s.opts, env });
+		assert.equal(bad.ok, false);
+		assert.equal(lineFor(bad.lines, "takeover"), "takeover: fail no takeover record and an active desk");
+		fs.writeFileSync(path.join(s.home, "takeover.json"), "{}\n");
+		const recorded = await doctor({ ...s.opts, env });
+		assert.equal(lineFor(recorded.lines, "takeover"), "takeover: ok");
+	} finally {
+		s.tmp.cleanup();
+	}
+});
+
 test("tailscale.status parses a Running tailnet and nulls a stopped one", () => {
 	const running = fakeTailscale();
 	assert.deepEqual(status(running.runner), {
-		publicBase: `https://${DNS}:4378`,
+		publicBase: `https://${DNS}:4388`,
 		pcTailnetIps: ["100.1.2.3", "fd7a::1"],
 		owner: "me@example.com",
 		dns: DNS,
@@ -500,14 +589,14 @@ test("tailscale.serveOn and serveOff issue the contracted commands", () => {
 	const ts = fakeTailscale();
 	serveOn(ts.runner);
 	serveOff(ts.runner);
-	assert.deepEqual(ts.calls[0], ["serve", "--bg", "--https=4378", PROXY]);
-	assert.deepEqual(ts.calls[1], ["serve", "--https=4378", "off"]);
+	assert.deepEqual(ts.calls[0], ["serve", "--bg", "--https=4388", PROXY]);
+	assert.deepEqual(ts.calls[1], ["serve", "--https=4388", "off"]);
 });
 
 test("tailscale.guard accepts a preserved 443 and rejects drift", () => {
 	const baseline = { Web: { [`${DNS}:443`]: { Handlers: {} } }, AllowFunnel: {}, TCP: { "443": { TCPForward: "x" } } };
 	const after = {
-		Web: { [`${DNS}:443`]: { Handlers: {} }, [`${DNS}:4378`]: { Handlers: { "/": { Proxy: PROXY } } } },
+		Web: { [`${DNS}:443`]: { Handlers: {} }, [`${DNS}:4388`]: { Handlers: { "/": { Proxy: PROXY } } } },
 		AllowFunnel: {},
 		TCP: { "443": { TCPForward: "x" } },
 	};
@@ -515,10 +604,10 @@ test("tailscale.guard accepts a preserved 443 and rejects drift", () => {
 	assert.equal(guard(baseline, after, DNS, { proxy: null }), true);
 	const webDrift = { ...after, Web: { ...after.Web, [`${DNS}:443`]: { Handlers: { "/": { Proxy: "x" } } } } };
 	assert.equal(guard(baseline, webDrift, DNS), false);
-	const funnelDrift = { ...after, AllowFunnel: { [`${DNS}:4378`]: true } };
+	const funnelDrift = { ...after, AllowFunnel: { [`${DNS}:4388`]: true } };
 	assert.equal(guard(baseline, funnelDrift, DNS), false);
 	const tcpDrift = { ...after, TCP: {} };
 	assert.equal(guard(baseline, tcpDrift, DNS), false);
-	const proxyDrift = { ...after, Web: { ...after.Web, [`${DNS}:4378`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:9" } } } } };
+	const proxyDrift = { ...after, Web: { ...after.Web, [`${DNS}:4388`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:9" } } } } };
 	assert.equal(guard(baseline, proxyDrift, DNS), false);
 });

@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="ko">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="color-scheme" content="light dark">
+	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f4f6">
+	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111214">
+	<meta name="description" content="세션이 올린 Review 목록">
+	<meta name="robots" content="noindex">
+	<link rel="icon" href="data:,">
+	<title>Review</title>
+	<style>
+		/*
+		 * Design tokens (the DESIGN contract for this page).
+		 * Color: one locked accent (내 차례 chip, focus ring). State is ink at
+		 * alphas (washes), never a coloured border. Depth: borders only.
+		 * Radius: controls 8px, rows 10px, chips pill. Spacing: 4px base.
+		 */
+		:root {
+			color-scheme: light dark;
+			--bg: #f3f4f6;
+			--surface: #fcfcfd;
+			--ink: #15171b;
+			--ink-2: #5b6069;
+			--ink-3: #6b707b;
+			--ink-rgb: 21 23 27;
+			--accent: #b4530a;
+			--accent-ink: #fff7ee;
+			--ok: #1b6e3f;
+			--ok-rgb: 27 110 63;
+			--danger: #b42318;
+			--danger-rgb: 180 35 24;
+			--line: rgb(var(--ink-rgb) / 0.10);
+			--line-soft: rgb(var(--ink-rgb) / 0.06);
+			--wash-1: rgb(var(--ink-rgb) / 0.04);
+			--wash-2: rgb(var(--ink-rgb) / 0.08);
+			--font: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
+			--mono: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+			--fs-title: 1.375rem;
+			--fs-row: 0.9375rem;
+			--fs-body: 0.875rem;
+			--fs-cap: 0.8125rem;
+			--fs-micro: 0.75rem;
+			--s1: 4px;
+			--s2: 8px;
+			--s3: 12px;
+			--s4: 16px;
+			--s5: 20px;
+			--s6: 24px;
+			--s8: 32px;
+			--s10: 40px;
+			--r-xs: 4px;
+			--r-ctl: 8px;
+			--r-row: 10px;
+			--r-pill: 999px;
+			--t-micro: 120ms ease-out;
+			--measure: 920px;
+		}
+		@media (prefers-color-scheme: dark) {
+			:root {
+				--bg: #111214;
+				--surface: #191b1f;
+				--ink: #ecedef;
+				--ink-2: #a2a7b1;
+				--ink-3: #8a8f99;
+				--ink-rgb: 236 237 239;
+				--accent: #f0a35c;
+				--accent-ink: #1d1206;
+				--ok: #6cc48f;
+				--ok-rgb: 108 196 143;
+				--danger: #f08a80;
+				--danger-rgb: 240 138 128;
+			}
+		}
+
+		*, *::before, *::after { box-sizing: border-box; }
+		html { background: var(--bg); -webkit-text-size-adjust: 100%; }
+		body {
+			margin: 0;
+			font: 400 var(--fs-body) / 1.5 var(--font);
+			color: var(--ink);
+			-webkit-font-smoothing: antialiased;
+		}
+		.page { max-width: var(--measure); margin: 0 auto; padding: var(--s6) var(--s4) var(--s10); }
+		.top { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s5); }
+		.heads { display: flex; align-items: baseline; gap: var(--s3); min-width: 0; }
+		.top[hidden] { display: none; }
+		.back {
+			flex: none;
+			font-size: var(--fs-cap);
+			color: var(--ink-2);
+			text-decoration: none;
+			white-space: nowrap;
+			padding: var(--s1) 0;
+			transition: color var(--t-micro);
+		}
+		.back:hover { color: var(--ink); }
+		.back:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-xs); }
+		h1 { margin: 0; font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+
+		/* filters */
+		.filters {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: end;
+			gap: var(--s3) var(--s4);
+			padding-bottom: var(--s4);
+			margin-bottom: var(--s4);
+			border-bottom: 1px solid var(--line);
+		}
+		.field { display: grid; gap: var(--s1); min-width: 0; margin: 0; padding: 0; border: 0; }
+		.field > span, .field > legend {
+			display: block;
+			padding: 0;
+			font-size: var(--fs-micro);
+			font-weight: 500;
+			color: var(--ink-2);
+		}
+		/* a legend is not a grid item, so it misses the .field gap; give it back */
+		.field > legend { margin-bottom: var(--s1); }
+		select {
+			font: inherit;
+			font-size: var(--fs-cap);
+			color: var(--ink);
+			background: var(--surface);
+			border: 1px solid var(--line);
+			border-radius: var(--r-ctl);
+			height: 34px;
+			padding: 0 var(--s2) 0 var(--s3);
+			min-width: 11rem;
+			max-width: 100%;
+			transition: background-color var(--t-micro);
+		}
+		select:hover:not(:disabled) { background-color: var(--wash-1); }
+		select:disabled { color: var(--ink-3); background: transparent; }
+		select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+		.seg {
+			display: inline-flex;
+			max-width: 100%;
+			padding: 2px;
+			gap: 2px;
+			background: var(--surface);
+			border: 1px solid var(--line);
+			border-radius: var(--r-ctl);
+		}
+		.seg label {
+			position: relative;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			height: 28px;
+			padding: 0 var(--s3);
+			border-radius: 6px;
+			font-size: var(--fs-cap);
+			color: var(--ink-2);
+			white-space: nowrap;
+			cursor: pointer;
+			transition: background-color var(--t-micro), color var(--t-micro);
+		}
+		.seg input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+		.seg label:hover { background: var(--wash-1); color: var(--ink); }
+		.seg label:has(> input:checked) { background: var(--wash-2); color: var(--ink); }
+		.seg label:has(> input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+		/* notice */
+		.notice {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: var(--s2) var(--s3);
+			margin-bottom: var(--s3);
+			padding: var(--s2) var(--s3);
+			border-radius: var(--r-ctl);
+			background: rgb(var(--danger-rgb) / 0.10);
+			color: var(--danger);
+			font-size: var(--fs-cap);
+		}
+		.notice[hidden] { display: none; }
+		.notice button {
+			font: inherit;
+			font-weight: 600;
+			color: var(--danger);
+			background: rgb(var(--danger-rgb) / 0.12);
+			border: 0;
+			border-radius: 6px;
+			height: 28px;
+			padding: 0 var(--s3);
+			cursor: pointer;
+			transition: background-color var(--t-micro);
+		}
+		.notice button:hover { background: rgb(var(--danger-rgb) / 0.18); }
+		.notice button:active { transform: translateY(1px); }
+		.notice button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+		/* list */
+		.list { display: grid; gap: var(--s6); }
+		.rows { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-row); overflow: hidden; }
+		.row {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			column-gap: var(--s3);
+			row-gap: 2px;
+			padding: var(--s3) var(--s4);
+			color: inherit;
+			text-decoration: none;
+			transition: background-color var(--t-micro);
+		}
+		.row + .row { border-top: 1px solid var(--line-soft); }
+		.row:hover { background: var(--wash-1); }
+		.row:active { background: var(--wash-2); }
+		.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-xs); }
+		.row > * { grid-column: 1; min-width: 0; }
+		.row-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+		.title { font-size: var(--fs-row); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+		.rev {
+			grid-column: 2;
+			grid-row: 1;
+			align-self: start;
+			padding-top: 2px;
+			font-size: var(--fs-cap);
+			font-variant-numeric: tabular-nums;
+			color: var(--ink-3);
+			white-space: nowrap;
+		}
+		.meta { font-size: var(--fs-cap); color: var(--ink-2); overflow-wrap: anywhere; }
+		.act { font-size: var(--fs-cap); color: var(--ink-3); overflow-wrap: anywhere; }
+		.outcome { margin-top: var(--s1); font-size: var(--fs-cap); color: var(--ink-2); overflow-wrap: anywhere; }
+
+		.chip {
+			display: inline-flex;
+			align-items: center;
+			height: 20px;
+			padding: 0 var(--s2);
+			border-radius: var(--r-pill);
+			font-size: var(--fs-micro);
+			font-weight: 600;
+			line-height: 1;
+			white-space: nowrap;
+		}
+		.chip-mine { background: var(--accent); color: var(--accent-ink); }
+		.chip-theirs { background: var(--wash-2); color: var(--ink-2); }
+		.chip-closed { color: var(--ink-3); box-shadow: inset 0 0 0 1px var(--line); }
+		.chip-ok { background: rgb(var(--ok-rgb) / 0.14); color: var(--ok); }
+
+		/* groups */
+		.group-head {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: baseline;
+			gap: var(--s1) var(--s3);
+			margin: 0 var(--s1) var(--s2);
+			min-width: 0;
+		}
+		.group-head h2 { margin: 0; font-size: var(--fs-body); font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
+		.path {
+			flex: 1 1 8rem;
+			min-width: 0;
+			font-family: var(--mono);
+			font-size: var(--fs-micro);
+			color: var(--ink-3);
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.sum { font-size: var(--fs-micro); color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+		/* empty, loading */
+		.empty {
+			margin: 0;
+			padding: var(--s10) var(--s4);
+			text-align: center;
+			color: var(--ink-2);
+			background: var(--surface);
+			border: 1px dashed var(--line);
+			border-radius: var(--r-row);
+		}
+		.sk .row { pointer-events: none; row-gap: var(--s2); }
+		.sk-bar { height: 12px; border-radius: var(--r-xs); background: var(--wash-2); }
+		.sk-bar.w1 { width: 46%; height: 14px; }
+		.sk-bar.w2 { width: 28%; }
+		.sk-bar.w3 { width: 34%; }
+
+		@media (min-width: 768px) {
+			.page { padding: var(--s8) var(--s6) var(--s10); }
+			.filters { position: sticky; top: 0; z-index: 1; padding-top: var(--s2); background: var(--bg); }
+		}
+		@media (max-width: 767px) {
+			.field { flex: 1 1 11rem; }
+			select { width: 100%; }
+		}
+		@media (max-width: 360px) {
+			.seg label { padding: 0 var(--s2); }
+		}
+		@media (prefers-reduced-motion: reduce) {
+			*, *::before, *::after { transition: none !important; }
+		}
+	</style>
+</head>
+<body>
+	<div class="page">
+		<header class="top">
+			<div class="heads">
+				<a class="back" href="/">‹ Inbox</a>
+				<h1>Review</h1>
+				<span class="sum" id="reportCount" hidden></span>
+			</div>
+		</header>
+		<main>
+			<div class="filters">
+				<label class="field">
+					<span>제품</span>
+					<select id="product" name="product"><option value="">전체</option></select>
+				</label>
+				<label class="field">
+					<span>기능</span>
+					<select id="feature" name="feature" disabled><option value="">전체</option></select>
+				</label>
+				<fieldset class="field">
+					<legend>상태</legend>
+					<div class="seg" id="status">
+						<label><input type="radio" name="status" value="open" checked><span>진행 중</span></label>
+						<label><input type="radio" name="status" value="mine"><span>🙋 내 차례</span></label>
+						<label><input type="radio" name="status" value="theirs"><span>🤖 처리 중</span></label>
+						<label><input type="radio" name="status" value="closed"><span>끝남</span></label>
+						<label><input type="radio" name="status" value="all"><span>전체</span></label>
+					</div>
+				</fieldset>
+			</div>
+			<div class="notice" id="notice" role="status" hidden>
+				<span>목록을 불러오지 못했습니다.</span>
+				<button type="button" id="retry">다시 시도</button>
+			</div>
+			<div class="list" id="list" aria-busy="true"></div>
+		</main>
+	</div>
+	<noscript><p class="empty">이 페이지는 JavaScript가 필요합니다.</p></noscript>
+	<script>
+		(() => {
+			"use strict";
+
+			const STATUSES = ["open", "mine", "theirs", "closed", "all"];
+			const CHIP = { mine: "🙋 내 차례", theirs: "🤖 처리 중", closed: "끝남" };
+			const TYPE_LABEL = { submitted: "제출", feedback: "내 의견", reply: "세션 답", revised: "고친 안", closed: "끝남" };
+			const REFRESH_MS = 10000;
+			const SKELETON_DELAY_MS = 400;
+			const DAY_MS = 86400000;
+
+			const els = {
+				product: document.getElementById("product"),
+				feature: document.getElementById("feature"),
+				status: document.getElementById("status"),
+				notice: document.getElementById("notice"),
+				retry: document.getElementById("retry"),
+				list: document.getElementById("list"),
+				reportCount: document.getElementById("reportCount"),
+			};
+
+			let state = readState();
+			let facets = [];
+			let items = [];
+			let mine = 0;
+			let reports = 0;
+			let lastSig = null;
+			let requestSeq = 0;
+			let timer = null;
+			let loaded = false;
+
+			function h(tag, attrs, ...children) {
+				const el = document.createElement(tag);
+				for (const [key, value] of Object.entries(attrs || {})) {
+					if (value == null || value === false) continue;
+					el.setAttribute(key, value === true ? "" : value);
+				}
+				for (const child of children.flat()) {
+					if (child == null || child === false) continue;
+					el.append(child instanceof Node ? child : String(child));
+				}
+				return el;
+			}
+
+			function readState() {
+				const query = new URLSearchParams(location.search);
+				const status = query.get("status");
+				return {
+					product: query.get("product") || "",
+					feature: query.get("feature") || "",
+					status: STATUSES.includes(status) ? status : "open",
+				};
+			}
+
+			function queryOf(next) {
+				const query = new URLSearchParams();
+				if (next.product) query.set("product", next.product);
+				if (next.feature) query.set("feature", next.feature);
+				if (next.status !== "open") query.set("status", next.status);
+				const text = query.toString();
+				return text ? "?" + text : "";
+			}
+
+			function monthDay(date) {
+				return `${date.getMonth() + 1}월 ${date.getDate()}일`;
+			}
+
+			function fullDate(date) {
+				const year = date.getFullYear();
+				return year === new Date().getFullYear() ? monthDay(date) : `${year}년 ${monthDay(date)}`;
+			}
+
+			function relativeTime(iso) {
+				const at = Date.parse(iso);
+				if (Number.isNaN(at)) return "";
+				const minutes = Math.floor((Date.now() - at) / 60000);
+				if (minutes < 1) return "방금";
+				if (minutes < 60) return `${minutes}분 전`;
+				const hours = Math.floor(minutes / 60);
+				if (hours < 24) return `${hours}시간 전`;
+				const days = Math.floor(hours / 24);
+				if (days < 7) return `${days}일 전`;
+				return monthDay(new Date(at));
+			}
+
+			function activityText(type, updated) {
+				return `최근: ${TYPE_LABEL[type] || type || "-"} · ${relativeTime(updated)}`;
+			}
+
+			function rowOf(item) {
+				const report = item.kind === "report";
+				const chips = [h("span", { class: "chip chip-" + item.status }, CHIP[item.status] || item.status)];
+				if (report) chips.push(h("span", { class: "chip" }, "보고"));
+				if (item.status === "theirs" && item.approved) chips.push(h("span", { class: "chip chip-ok" }, "승인"));
+				return h(
+					"a",
+					{ class: "row", href: "/p/" + encodeURIComponent(item.id), "data-id": item.id },
+					h("div", { class: "row-head" }, h("span", { class: "title" }, item.title), ...chips),
+					h("span", { class: "rev" }, report ? `갱신 ${item.rev}` : `${item.rev}안`),
+					h("div", { class: "meta" }, `${item.product.name || item.product.key} · ${item.feature.branch}`),
+					h("div", { class: "act", "data-type": item.lastType || "", "data-updated": item.updated }, activityText(item.lastType, item.updated)),
+					item.status === "closed" && item.outcome ? h("div", { class: "outcome" }, item.outcome) : null,
+				);
+			}
+
+			function rowsOf(list) {
+				return h("div", { class: "rows" }, ...list.map(rowOf));
+			}
+
+			function featureFacet(featureKey) {
+				const product = facets.find((entry) => entry.key === state.product);
+				return product ? product.features.find((entry) => entry.key === featureKey) : undefined;
+			}
+
+			function groupOf(group) {
+				const facet = featureFacet(group.key) || group.items[0].feature;
+				let first = Infinity;
+				let last = -Infinity;
+				for (const item of group.items) {
+					const created = Date.parse(item.created);
+					const updated = Date.parse(item.updated);
+					if (!Number.isNaN(created)) first = Math.min(first, created);
+					if (!Number.isNaN(updated)) last = Math.max(last, updated);
+				}
+				let range = "";
+				if (first !== Infinity && last !== -Infinity) {
+					const from = fullDate(new Date(first));
+					const to = fullDate(new Date(last));
+					range = from === to ? from : `${from} ~ ${to}`;
+				}
+				const head = h(
+					"div",
+					{ class: "group-head" },
+					h("h2", null, facet.branch),
+					facet.worktree ? h("span", { class: "path", title: facet.worktree }, facet.worktree) : null,
+					h("span", { class: "sum" }, range ? `${group.items.length}건 · ${range}` : `${group.items.length}건`),
+				);
+				return h("section", { class: "group" }, head, rowsOf(group.items));
+			}
+
+			function reportGroupOf(list) {
+				const head = h("div", { class: "group-head" }, h("h2", null, "보고"), h("span", { class: "sum" }, `${list.length}건`));
+				return h("section", { class: "group" }, head, rowsOf(list));
+			}
+
+			function renderList() {
+				const focused = document.activeElement && document.activeElement.closest ? document.activeElement.closest(".row") : null;
+				const focusedId = focused ? focused.getAttribute("data-id") : null;
+				els.list.replaceChildren();
+				const reportItems = items.filter((item) => item.kind === "report" && item.status !== "closed");
+				const boards = items.filter((item) => !reportItems.includes(item));
+				if (items.length === 0) {
+					els.list.append(h("p", { class: "empty" }, "검토할 것이 없습니다."));
+				} else {
+					if (boards.length) {
+						if (state.product && (state.status === "closed" || state.status === "all")) {
+							const groups = new Map();
+							for (const item of boards) {
+								const key = item.feature.key;
+								if (!groups.has(key)) groups.set(key, { key, items: [] });
+								groups.get(key).items.push(item);
+							}
+							for (const group of groups.values()) els.list.append(groupOf(group));
+						} else {
+							els.list.append(rowsOf(boards));
+						}
+					}
+					if (reportItems.length) els.list.append(reportGroupOf(reportItems));
+				}
+				if (focusedId) {
+					const again = els.list.querySelector(`.row[data-id="${focusedId}"]`);
+					if (again) again.focus({ preventScroll: true });
+				}
+			}
+
+			function renderTimes() {
+				for (const el of els.list.querySelectorAll(".act[data-updated]")) {
+					el.textContent = activityText(el.getAttribute("data-type"), el.getAttribute("data-updated"));
+				}
+			}
+
+			function setOptions(select, options, value) {
+				const signature = options.map((option) => option.value + "\u0000" + option.label).join("\u0001");
+				if (select.dataset.signature !== signature) {
+					select.replaceChildren(...options.map((option) => h("option", { value: option.value }, option.label)));
+					select.dataset.signature = signature;
+				}
+				select.value = value;
+			}
+
+			// Only open proposals are counted; a bare name (no "(0)") means everything there is closed.
+			function withOpen(name, open) {
+				return open > 0 ? `${name} (${open})` : name;
+			}
+
+			function renderFilters() {
+				const products = [{ value: "", label: "전체" }];
+				let chosen = null;
+				for (const product of facets) {
+					products.push({ value: product.key, label: withOpen(product.name || product.key, product.open) });
+					if (product.key === state.product) chosen = product;
+				}
+				if (state.product && !chosen) products.push({ value: state.product, label: state.product });
+				setOptions(els.product, products, state.product);
+
+				const features = [{ value: "", label: "전체" }];
+				let known = false;
+				for (const feature of chosen ? chosen.features : []) {
+					features.push({ value: feature.branch, label: withOpen(feature.branch, feature.open) });
+					if (feature.branch === state.feature || feature.key === state.feature) known = true;
+				}
+				if (state.feature && !known) features.push({ value: state.feature, label: state.feature });
+				setOptions(els.feature, features, state.feature);
+				els.feature.disabled = !state.product;
+
+				for (const input of els.status.querySelectorAll("input[name=status]")) input.checked = input.value === state.status;
+			}
+
+			function renderTitle() {
+				document.title = mine > 0 ? `(${mine}) Review` : "Review";
+			}
+
+			function renderSkeleton() {
+				const bars = () => h("div", { class: "row" }, h("div", { class: "sk-bar w1" }), h("div", { class: "sk-bar w2" }), h("div", { class: "sk-bar w3" }));
+				els.list.replaceChildren(h("div", { class: "rows sk", "aria-hidden": "true" }, bars(), bars(), bars()));
+			}
+
+			async function load() {
+				const seq = ++requestSeq;
+				const skeleton = loaded ? null : setTimeout(renderSkeleton, SKELETON_DELAY_MS);
+				let data;
+				try {
+					const res = await fetch("/api/proposals" + queryOf(state), { headers: { accept: "application/json" }, cache: "no-store" });
+					if (!res.ok) throw new Error(`HTTP ${res.status}`);
+					data = await res.json();
+				} catch (error) {
+					if (skeleton) clearTimeout(skeleton);
+					if (seq !== requestSeq) return;
+					if (!loaded) els.list.replaceChildren();
+					els.list.setAttribute("aria-busy", "false");
+					els.notice.hidden = false;
+					console.error("inbox: load failed", error);
+					return;
+				}
+				if (skeleton) clearTimeout(skeleton);
+				if (seq !== requestSeq) return;
+				facets = Array.isArray(data.facets) ? data.facets : [];
+				items = Array.isArray(data.items) ? data.items : [];
+				mine = data.counts && typeof data.counts.mine === "number" ? data.counts.mine : 0;
+				reports = data.counts && typeof data.counts.reports === "number" ? data.counts.reports : items.filter((item) => item.kind === "report" && item.status !== "closed").length;
+				els.reportCount.textContent = reports > 0 ? `보고 ${reports}` : "";
+				els.reportCount.hidden = reports === 0;
+				els.notice.hidden = true;
+				els.list.setAttribute("aria-busy", "false");
+				renderFilters();
+				const signature = JSON.stringify([state, items, facets]);
+				if (!loaded || signature !== lastSig) {
+					lastSig = signature;
+					renderList();
+				} else {
+					renderTimes();
+				}
+				renderTitle();
+				loaded = true;
+			}
+
+			function update(patch) {
+				const next = { ...state, ...patch };
+				const query = queryOf(next);
+				if (query === location.search) return;
+				state = next;
+				history.pushState(null, "", location.pathname + query);
+				renderFilters();
+				load();
+			}
+
+			function startTimer() {
+				stopTimer();
+				timer = setInterval(() => {
+					if (document.visibilityState === "visible") load();
+				}, REFRESH_MS);
+			}
+
+			function stopTimer() {
+				if (timer !== null) {
+					clearInterval(timer);
+					timer = null;
+				}
+			}
+
+			els.product.addEventListener("change", () => update({ product: els.product.value, feature: "" }));
+			els.feature.addEventListener("change", () => update({ feature: els.feature.value }));
+			els.status.addEventListener("change", (event) => {
+				if (event.target.name === "status") update({ status: event.target.value });
+			});
+			els.retry.addEventListener("click", () => load());
+			window.addEventListener("popstate", () => {
+				state = readState();
+				renderFilters();
+				load();
+			});
+			document.addEventListener("visibilitychange", () => {
+				if (document.visibilityState === "visible") {
+					load();
+					startTimer();
+				} else {
+					stopTimer();
+				}
+			});
+
+			renderFilters();
+			load();
+			if (document.visibilityState === "visible") startTimer();
+		})();
+	</script>
+</body>
+</html>

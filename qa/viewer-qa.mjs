@@ -1,8 +1,8 @@
-/* Real-browser QA for the omo-desk frame viewer (web/board.js + web/proposal.html): 표시하기, the comment sheet, pinch/pan,
+/* Real-browser QA for the omo-inbox frame viewer (web/board.js + web/proposal.html): 표시하기, the comment sheet, pinch/pan,
  * the .mmd frame, and a feedback send (the page leaves for the inbox, so (j) comes back to the proposal).
  *
- * Usage: bun qa/viewer-qa.mjs [--app <repo>, default the repo] [--port 4395] [--save <dir>, default a new temp dir]
- * Starts <app>/src/server.mjs on a temp OMO_DESK_HOME, submits a board (wide PNG frame + wide flowchart LR .mmd frame),
+ * Usage: bun qa/viewer-qa.mjs [--app <repo>, default the repo] [--port 4392] [--save <dir>, default a new temp dir]
+ * Starts <app>/src/server.mjs on a temp OMO_INBOX_HOME, submits a board (wide PNG frame + wide flowchart LR .mmd frame),
  * then drives one Bun.WebView: phone pass (390x844, touch) and desktop pass (1440x900, mouse). Exit 0 only when every check passes.
  * The temp dir is deleted at the end.
  */
@@ -17,9 +17,9 @@ const opt = (flag, fallback) => {
 	return i === -1 ? fallback : args[i + 1];
 };
 const APP = path.resolve(opt("--app", path.join(path.dirname(fileURLToPath(import.meta.url)), "..")));
-const PORT = Number(opt("--port", "4395"));
-const SAVE = opt("--save", null) ?? fs.mkdtempSync(path.join(os.tmpdir(), "desk-qa-viewer-"));
-const POST_HEADERS = { "content-type": "application/json", "x-desk": "1" };
+const PORT = Number(opt("--port", "4392"));
+const SAVE = opt("--save", null) ?? fs.mkdtempSync(path.join(os.tmpdir(), "inbox-qa-viewer-"));
+const POST_HEADERS = { "content-type": "application/json", "x-inbox": "1" };
 const PNG_LABEL = "화면 스크린샷";
 const MMD_LABEL = "흐름 도식";
 const TOL = 0.02;
@@ -62,7 +62,7 @@ function drawFrame(w, h) {
 }
 
 async function main() {
-	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desk-qa-viewer-"));
+	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inbox-qa-viewer-"));
 	const home = path.join(tmp, "home");
 	const srcDir = path.join(tmp, "board");
 	fs.mkdirSync(home, { recursive: true });
@@ -195,7 +195,7 @@ async function main() {
 		});
 		server = Bun.spawn(["node", path.join(APP, "src", "server.mjs")], {
 			cwd: APP,
-			env: { ...process.env, OMO_DESK_HOME: home },
+			env: { ...process.env, OMO_INBOX_HOME: home },
 			stdout: "pipe",
 			stderr: "pipe",
 		});

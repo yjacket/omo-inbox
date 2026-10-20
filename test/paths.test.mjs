@@ -8,25 +8,25 @@ import { makeTmpHome } from "./helpers/tmp-home.mjs";
 import { DEFAULT_PORT, TAILNET_PORT, agentDir, homeDir, layout, readConfig, safeSegment } from "../src/paths.mjs";
 
 test("ports are the documented defaults", () => {
-	assert.equal(DEFAULT_PORT, 4377);
-	assert.equal(TAILNET_PORT, 4378);
+	assert.equal(DEFAULT_PORT, 4387);
+	assert.equal(TAILNET_PORT, 4388);
 });
 
-test("homeDir prefers OMO_DESK_HOME and otherwise uses ~/.omo-desk", () => {
-	assert.equal(homeDir({ OMO_DESK_HOME: "C:/x" }), "C:/x");
-	assert.equal(homeDir({}), path.join(os.homedir(), ".omo-desk"));
+test("homeDir prefers OMO_INBOX_HOME and otherwise uses ~/.omo-inbox", () => {
+	assert.equal(homeDir({ OMO_INBOX_HOME: "C:/x" }), "C:/x");
+	assert.equal(homeDir({}), path.join(os.homedir(), ".omo-inbox"));
 });
 
 test("layout puts every path under the resolved home", () => {
 	const tmp = makeTmpHome();
 	try {
-		const l = layout({ OMO_DESK_HOME: tmp.home });
-		assert.deepEqual(Object.keys(l).sort(), ["app", "config", "data", "home", "inbox", "launcher", "logs", "proposals", "push", "serverJson"].sort());
+		const l = layout({ OMO_INBOX_HOME: tmp.home });
+		assert.deepEqual(Object.keys(l).sort(), ["app", "config", "data", "home", "launcher", "logs", "mailbox", "proposals", "push", "serverJson"].sort());
 		assert.equal(l.home, tmp.home);
 		assert.equal(l.app, path.join(tmp.home, "app"));
 		assert.equal(l.data, path.join(tmp.home, "data"));
 		assert.equal(l.proposals, path.join(tmp.home, "data", "proposals"));
-		assert.equal(l.inbox, path.join(tmp.home, "inbox"));
+		assert.equal(l.mailbox, path.join(tmp.home, "mailbox"));
 		assert.equal(l.logs, path.join(tmp.home, "logs"));
 		assert.equal(l.push, path.join(tmp.home, "push"));
 		assert.equal(l.config, path.join(tmp.home, "config.json"));
@@ -40,7 +40,7 @@ test("layout puts every path under the resolved home", () => {
 test("readConfig returns the default when config.json is missing", () => {
 	const tmp = makeTmpHome();
 	try {
-		assert.deepEqual(readConfig({ OMO_DESK_HOME: tmp.home }), { v: 1, port: 4377, publicBase: null, pcTailnetIps: [], owner: null });
+		assert.deepEqual(readConfig({ OMO_INBOX_HOME: tmp.home }), { v: 1, port: 4387, publicBase: null, pcTailnetIps: [], owner: null });
 	} finally {
 		tmp.cleanup();
 	}
@@ -50,7 +50,7 @@ test("readConfig strips a BOM and parses the file", () => {
 	const tmp = makeTmpHome();
 	try {
 		fs.writeFileSync(path.join(tmp.home, "config.json"), "\uFEFF" + JSON.stringify({ v: 1, port: 5000, publicBase: null, pcTailnetIps: [], owner: null }));
-		assert.equal(readConfig({ OMO_DESK_HOME: tmp.home }).port, 5000);
+		assert.equal(readConfig({ OMO_INBOX_HOME: tmp.home }).port, 5000);
 	} finally {
 		tmp.cleanup();
 	}
@@ -60,7 +60,7 @@ test("readConfig falls back to the default on broken JSON", () => {
 	const tmp = makeTmpHome();
 	try {
 		fs.writeFileSync(path.join(tmp.home, "config.json"), "{broken");
-		assert.deepEqual(readConfig({ OMO_DESK_HOME: tmp.home }), { v: 1, port: 4377, publicBase: null, pcTailnetIps: [], owner: null });
+		assert.deepEqual(readConfig({ OMO_INBOX_HOME: tmp.home }), { v: 1, port: 4387, publicBase: null, pcTailnetIps: [], owner: null });
 	} finally {
 		tmp.cleanup();
 	}

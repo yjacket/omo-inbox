@@ -17,7 +17,7 @@ const verdictLabel = (verdict) => (verdict === "approve" ? "승인" : verdict ==
 
 export function feedbackMessage({ summary, board, event, url, cropDir, cli }) {
 	const lines = [
-		`[omo-desk] 의견이 왔습니다: ${summary.title} (${summary.id}, ${revLabel(summary, event.rev)}, #${event.seq})`,
+		`[omo-inbox] 의견이 왔습니다: ${summary.title} (${summary.id}, ${revLabel(summary, event.rev)}, #${event.seq})`,
 		`판단: ${verdictLabel(event.verdict)}`,
 	];
 	const answers = answerLine(board, event.answers);
@@ -43,13 +43,15 @@ export function feedbackMessage({ summary, board, event, url, cropDir, cli }) {
 
 export function pendingNotice(items, cli) {
 	if (!items || items.length === 0) return null;
-	const lines = [`[omo-desk] 이 워크트리에 답을 기다리는 기획안이 ${items.length}건 있습니다.`];
+	const lines = [`[omo-inbox] 이 워크트리에 답을 기다리는 Review가 ${items.length}건 있습니다.`];
 	for (const item of items) {
 		lines.push(`- ${item.title} (${item.id}) ${item.url} -> ${cli} show ${item.id}`);
 	}
 	return lines.join("\n");
 }
 
-export function footerText({ mine, theirs }) {
-	return [mine ? `🙋 ${mine}` : "", theirs ? `🤖 ${theirs}` : ""].filter(Boolean).join(" ");
+// IS-16: `🙋 N` counts sessions waiting on the user, `🤖 M` counts this session's boards waiting on the session.
+// A zero side is left out; the extension shows `Inbox 서버 꺼짐` itself when the server is down.
+export function footerText({ waiting, boards }) {
+	return [waiting ? `🙋 ${waiting}` : "", boards ? `🤖 ${boards}` : ""].filter(Boolean).join(" ");
 }

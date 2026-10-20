@@ -1,7 +1,7 @@
-/* Real-browser QA for 듣기 (read aloud) on the omo-desk proposal page.
+/* Real-browser QA for 듣기 (read aloud) on the omo-inbox proposal page.
  *
  * Usage: bun qa/read-aloud-qa.mjs [app dir, default the repo] [screenshot dir, default a new temp dir]
- * Starts <app>/src/server.mjs on a temp home (port 4398), submits a board, drives one Bun.WebView.
+ * Starts <app>/src/server.mjs on a temp home (port 4393), submits a board, drives one Bun.WebView.
  * Headless Chrome cannot be heard, so most checks swap window.speechSynthesis for a recorder and fire the
  * utterance events by hand; one desktop check clicks 듣기 with the real engine and only requires no page error.
  * Exit 0 only when every check passes. The temp home is deleted at the end.
@@ -13,10 +13,10 @@ import { fileURLToPath } from "node:url";
 import { framePng } from "./frame.mjs";
 
 const APP = path.resolve(process.argv[2] || path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
-const OUT = process.argv[3] ? path.resolve(process.argv[3]) : fs.mkdtempSync(path.join(os.tmpdir(), "desk-qa-read-"));
-const PORT = 4398;
+const OUT = process.argv[3] ? path.resolve(process.argv[3]) : fs.mkdtempSync(path.join(os.tmpdir(), "inbox-qa-read-"));
+const PORT = 4393;
 const base = `http://127.0.0.1:${PORT}`;
-const POST = { "content-type": "application/json", "x-desk": "1" };
+const POST = { "content-type": "application/json", "x-inbox": "1" };
 const TITLE = "읽어주기 QA";
 const LONG = `첫 문장은 화면이 어떻게 나뉘는지 설명합니다 ${"가나다라마바사 ".repeat(30)}끝.`;
 
@@ -35,7 +35,7 @@ const STUB = `(() => {
 	return window.speechSynthesis === fake;
 })()`;
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desk-qa-read-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inbox-qa-read-"));
 const home = path.join(tmp, "home");
 const src = path.join(tmp, "board");
 fs.mkdirSync(home, { recursive: true });
@@ -83,7 +83,7 @@ const listening = new Promise((resolve, reject) => {
 		}
 	});
 });
-const server = Bun.spawn(["node", path.join(APP, "src", "server.mjs")], { cwd: APP, env: { ...process.env, OMO_DESK_HOME: home }, stdout: "ignore", stderr: "ignore" });
+const server = Bun.spawn(["node", path.join(APP, "src", "server.mjs")], { cwd: APP, env: { ...process.env, OMO_INBOX_HOME: home }, stdout: "ignore", stderr: "ignore" });
 const view = new Bun.WebView({ width: 1440, height: 900 });
 const ev = (expr) => view.evaluate(expr);
 const cdp = (m, p) => view.cdp(m, p || {});

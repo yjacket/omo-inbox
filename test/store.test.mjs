@@ -42,7 +42,7 @@ function filesFor(frames = ["f1"]) {
 function setup(options = {}) {
 	const { home, cleanup } = makeTmpHome();
 	const dataDir = path.join(home, "data");
-	const inboxDir = path.join(home, "inbox");
+	const inboxDir = path.join(home, "mailbox");
 	const store = createStore({ dataDir, inboxDir, now: clock(), ...options });
 	return { home, cleanup, dataDir, inboxDir, store };
 }
@@ -663,7 +663,7 @@ test("waitingFor returns owned decisions with pending feedback and event timesta
 		assert.deepEqual(store.waitingFor(""), []);
 		assert.deepEqual(store.waitingFor("sB"), []);
 
-		fs.rmSync(path.join(home, "inbox", safeSegment("sA"), `${theirs.id}-000002.json`));
+		fs.rmSync(path.join(home, "mailbox", safeSegment("sA"), `${theirs.id}-000002.json`));
 		assert.deepEqual(store.waitingFor("sA").map((item) => item.id), [mine.id]);
 		store.close(report.id, { summary: "done" });
 	} finally {

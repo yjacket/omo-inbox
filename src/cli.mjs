@@ -1,15 +1,18 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { identityFor } from "./identity.mjs";
-import { layout } from "./paths.mjs";
+import { agentDir, layout, readConfig } from "./paths.mjs";
 import { feedbackMessage } from "./message.mjs";
+import { URGENCIES, validateNotice } from "./notices.mjs";
 import * as client from "./client.mjs";
 
-const NAME = "omo-desk";
+const NAME = "omo-inbox";
 const DEFAULT_WAIT_SEC = 600;
 const HEALTH_TIMEOUT_MS = 1500;
 
-const CLI = `node "${String(process.argv[1] ?? "desk.mjs").replace(/\\/g, "/")}"`;
+const CLI = `node "${String(process.argv[1] ?? "inbox.mjs").replace(/\\/g, "/")}"`;
 
 const USAGE = [
 	`usage: ${CLI} <command> [--json]`,
@@ -22,10 +25,28 @@ const USAGE = [
 	"  pending [--session id] [--session-file path]",
 	"  wait <id> [--timeout sec]",
 	"  server status|start|stop|restart",
+	"  notify --producer p --key k --title t [--body b] [--urgency now|soon|fyi] [--session id] [--expires iso]",
+	"  threads [--status s]",
+	"  mode",
+	"  takeover",
+	"  handback",
 	"  install [--from-package] [--no-tailscale] [--no-autostart] | uninstall | doctor",
 ].join("\n");
 
-const VALUE_FLAGS = new Set(["title", "note", "file", "timeout", "product", "feature", "status", "session", "session-file"]);
+const VALUE_FLAGS = new Set([
+	"title", "note", "file", "timeout", "product", "feature", "status", "session", "session-file",
+	"producer", "key", "body", "urgency", "expires",
+]);
+
+/** Reports a missing value the same way sessionOf does: a usage line, never a placeholder. */
+function needed(flags, name) {
+	if (!flags.has(name)) throw new Error(`usage: --${name} is required`);
+	const value = flags.get(name);
+	if (typeof value !== "string" || value.trim() === "" || value.startsWith("--")) {
+		throw new Error(`usage: --${name} needs a value`);
+	}
+	return value;
+}
 
 function out(line) {
 	process.stdout.write(line + "\n");
@@ -66,7 +87,7 @@ function sessionOf(env, flags = new Map()) {
 	};
 	const idFlag = option("session");
 	const fileFlag = option("session-file");
-	const id = idFlag !== undefined ? idFlag : env.DESK_SESSION || env.PI_SESSION_ID || null;
+	const id = idFlag !== undefined ? idFlag : env.INBOX_SESSION || env.PI_SESSION_ID || null;
 	const file = fileFlag !== undefined ? fileFlag : idFlag !== undefined ? null : env.PI_SESSION_FILE || null;
 	return { id: id || null, file: file || null };
 }
@@ -364,7 +385,7 @@ async function cmdWait(rest, json) {
 	}
 	const env = process.env;
 	const timeoutMs = Math.max(0, Number(flags.get("timeout") ?? DEFAULT_WAIT_SEC)) * 1000 || DEFAULT_WAIT_SEC * 1000;
-	const pollMs = Number(env.DESK_WAIT_POLL_MS) || 2000;
+	const pollMs = Number(env.INBOX_WAIT_POLL_MS) || 2000;
 	const started = Date.now();
 	out(`WAITING ${id}`);
 	for (;;) {
@@ -398,6 +419,136 @@ async function cmdWait(rest, json) {
 		if (Date.now() - started >= timeoutMs) return 6;
 		await new Promise((resolve) => setTimeout(resolve, pollMs));
 	}
+}
+
+// ---- task 19: notify, threads, mode, takeover and handback --------------------------------------
+
+async function cmdNotify(rest, json) {
+	const { flags } = parse(rest);
+	const env = process.env;
+	let body;
+	try {
+		const urgency = flags.has("urgency") ? needed(flags, "urgency") : "soon";
+		if (!URGENCIES.includes(urgency)) {
+			err(`usage: --urgency must be one of ${URGENCIES.join(", ")}`);
+			return 1;
+		}
+		body = { v: 1, producer: needed(flags, "producer"), dedupeKey: needed(flags, "key"), title: needed(flags, "title"), body: "", urgency };
+	} catch (error) {
+		err(error.message);
+		return 1;
+	}
+	for (const [flag, key] of [["body", "body"], ["session", "session"], ["expires", "expiresAt"]]) {
+		const value = flags.get(flag);
+		if (typeof value === "string") body[key] = value;
+	}
+	const checked = validateNotice(body);
+	if (!checked.ok) {
+		for (const detail of checked.errors) err(detail);
+		return 2;
+	}
+	const ensured = await ensureOk(env);
+	if (ensured) return ensured;
+	const res = await call("POST", "/api/notices", checked.notice, env);
+	if (res.status === 200 || res.status === 201) {
+		if (json) {
+			out(JSON.stringify(res.json));
+			return 0;
+		}
+		const itemId = res.json && res.json.item ? res.json.item.itemId : null;
+		out(itemId ? `ok ${itemId}` : "ok");
+		return 0;
+	}
+	if (res.status === 400 && res.json && Array.isArray(res.json.details)) {
+		for (const detail of res.json.details) err(detail);
+		return 2;
+	}
+	return mapError(res);
+}
+
+async function cmdThreads(rest, json) {
+	const { flags } = parse(rest);
+	const env = process.env;
+	const ensured = await ensureOk(env);
+	if (ensured) return ensured;
+	const query = new URLSearchParams();
+	const status = flags.get("status");
+	if (typeof status === "string") query.set("status", status);
+	const res = await call("GET", `/api/threads${query.toString() ? `?${query}` : ""}`, null, env);
+	if (res.status !== 200) return mapError(res);
+	if (json) {
+		out(JSON.stringify(res.json));
+		return 0;
+	}
+	for (const row of (res.json && res.json.items) || []) {
+		const newest = row.newest ?? {};
+		out([row.status ?? "", row.title ?? "", row.product ?? "", row.branch ?? "", newest.headline ?? ""].join("\t"));
+	}
+	return 0;
+}
+
+function cmdMode(rest, json) {
+	const mode = readConfig(process.env).mode === "primary" ? "primary" : "trial";
+	if (json) {
+		out(JSON.stringify({ mode }));
+		return 0;
+	}
+	out(mode);
+	return 0;
+}
+
+/** Runs one child to completion; takeover/handback own no other process seam. */
+function runProcess(cmd, args) {
+	return new Promise((resolve) => {
+		let stdout = "";
+		let stderr = "";
+		let child;
+		try {
+			child = spawn(cmd, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+		} catch (error) {
+			resolve({ code: 1, stdout, stderr: String((error && error.message) || error) });
+			return;
+		}
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => (stdout += chunk));
+		child.stderr.on("data", (chunk) => (stderr += chunk));
+		child.on("error", (error) => resolve({ code: 1, stdout, stderr: stderr + error.message }));
+		child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+	});
+}
+
+function takeoverDeps(env) {
+	const userHome = env.INBOX_USER_HOME || os.homedir();
+	return {
+		deskHome: env.INBOX_DESK_HOME || path.join(userHome, ".omo-desk"),
+		inboxHome: layout(env).home,
+		userHome,
+		agentDir: agentDir(env),
+		appDir: layout(env).app,
+		run: runProcess,
+		now: Date.now,
+		log: (line) => out(line),
+	};
+}
+
+/** A takeover/handback that never ran is not an ok exit: the caller asked for a switch. */
+function switched(lines) {
+	return !lines.some(({ step, result }) => (step === "takeover" || step === "handback") && /failed|skipped/.test(result));
+}
+
+async function cmdTakeover(rest, json) {
+	const mod = await import("./takeover.mjs");
+	const result = await mod.takeover(takeoverDeps(process.env));
+	if (json) out(JSON.stringify(result));
+	return switched(result) ? 0 : 1;
+}
+
+async function cmdHandback(rest, json) {
+	const mod = await import("./takeover.mjs");
+	const result = await mod.handback(takeoverDeps(process.env));
+	if (json) out(JSON.stringify(result));
+	return switched(result) ? 0 : 1;
 }
 
 async function health(env) {
@@ -439,7 +590,7 @@ async function cmdServer(rest, json) {
 	if (action === "start" || action === "restart") {
 		if (action === "restart") await call("POST", "/api/shutdown", {}, env);
 		const launchEnv = { ...env };
-		delete launchEnv.DESK_NO_ENSURE;
+		delete launchEnv.INBOX_NO_ENSURE;
 		const ok = await client.ensure(launchEnv);
 		const live = await health(env);
 		if (!ok || !live) {
@@ -510,6 +661,16 @@ export async function main(argv = []) {
 				return await cmdWait(rest, json);
 			case "server":
 				return await cmdServer(rest, json);
+			case "notify":
+				return await cmdNotify(rest, json);
+			case "threads":
+				return await cmdThreads(rest, json);
+			case "mode":
+				return cmdMode(rest, json);
+			case "takeover":
+				return await cmdTakeover(rest, json);
+			case "handback":
+				return await cmdHandback(rest, json);
 			case "install":
 				return await cmdInstall(rest, json);
 			case "uninstall":

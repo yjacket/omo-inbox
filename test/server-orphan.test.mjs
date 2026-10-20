@@ -6,7 +6,7 @@ import { createOrphanWatch } from "../src/server.mjs";
 
 const GRACE = 20 * 60_000;
 
-function setup({ meta = { channel: "package", source: "C:/src/omo-desk" }, exists = { value: false } } = {}) {
+function setup({ meta = { channel: "package", source: "C:/src/omo-inbox" }, exists = { value: false } } = {}) {
 	const { home, cleanup } = makeTmpHome();
 	const clock = { t: 1_000_000 };
 	const calls = [];
@@ -61,7 +61,7 @@ test("missing for grace -> one detached uninstall spawn, not repeated", () => {
 		assert.equal(s.calls.length, 1);
 		const [cmd, args, opts] = s.calls[0];
 		assert.equal(cmd, "NODE");
-		assert.deepEqual(args, [path.join(s.home, "app", "bin", "desk.mjs"), "uninstall"]);
+		assert.deepEqual(args, [path.join(s.home, "app", "bin", "inbox.mjs"), "uninstall"]);
 		assert.equal(opts.detached, true);
 		s.clock.t += GRACE;
 		s.watch.tick();
@@ -94,7 +94,7 @@ test("source reappearing resets the grace timer", () => {
 });
 
 test("checkout channel or missing source.json -> never spawns", () => {
-	for (const meta of [{ channel: "checkout", source: "C:/src/omo-desk" }, null]) {
+	for (const meta of [{ channel: "checkout", source: "C:/src/omo-inbox" }, null]) {
 		const s = setup({ meta });
 		try {
 			s.watch.tick();

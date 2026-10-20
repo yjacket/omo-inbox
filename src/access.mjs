@@ -27,6 +27,7 @@ export const ALLOW = {
 	feedback: ["local", "pc", "tailnet"],
 	session: ["local"],
 	open: ["local", "pc"],
+	reopen: ["local", "pc", "tailnet"],
 };
 
 export function postGuard(headers) {
@@ -34,6 +35,6 @@ export function postGuard(headers) {
 	return (
 		typeof contentType === "string" &&
 		contentType.startsWith("application/json") &&
-		header(headers, "x-desk") === "1"
+		header(headers, "x-inbox") === "1"
 	);
 }

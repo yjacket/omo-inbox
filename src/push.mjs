@@ -4,9 +4,25 @@ import path from "node:path";
 
 const RECORD_SIZE = 4096;
 const VAPID_TTL_S = 12 * 60 * 60;
-const VAPID_SUBJECT = "mailto:omo-desk@example.invalid";
+const VAPID_SUBJECT = "mailto:omo-inbox@example.invalid";
 const SEND_TIMEOUT_MS = 15000;
 const TTL_S = 86400;
+const TOPIC_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const PAYLOAD_FIELDS = ["title", "body", "url", "tag", "renotify", "actions", "itemId", "rec"];
+
+/** RFC 8030 section 5.4: a Topic is at most 32 base64url characters; anything else is dropped. */
+function normalizeTopic(topic) {
+	return typeof topic === "string" && TOPIC_RE.test(topic) ? topic : null;
+}
+
+/** The JSON payload the phone receives: only the fields the service worker reads. */
+function pushPayload(message) {
+	const out = {};
+	for (const field of PAYLOAD_FIELDS) {
+		if (message[field] !== undefined) out[field] = message[field];
+	}
+	return out;
+}
 
 const b64u = (buffer) => Buffer.from(buffer).toString("base64url");
 const unb64u = (text) => Buffer.from(String(text), "base64url");
@@ -98,7 +114,7 @@ function describe(error) {
 	return error && error.message ? error.message : String(error);
 }
 
-export function createPusher({ dir, fetch = globalThis.fetch, now = Date.now, log = () => {} } = {}) {
+export function createPusher({ dir, fetch = globalThis.fetch, now = Date.now, log = () => {}, sink = process.env.INBOX_PUSH_SINK ?? null } = {}) {
 	if (!dir) throw new Error("dir is required");
 	const keys = loadVapidKeys(dir);
 	const file = path.join(dir, "subscriptions.json");
@@ -131,9 +147,17 @@ export function createPusher({ dir, fetch = globalThis.fetch, now = Date.now, lo
 		remove(endpoint);
 	}
 
-	async function send(subscription, message) {
+	async function send(subscription, message, options = {}) {
 		const endpoint = subscription.endpoint;
 		const result = { endpoint, status: null, delivered: false, removed: false };
+		const topic = normalizeTopic(options.topic);
+		if (sink) {
+			const line = JSON.stringify({ at: new Date(now()).toISOString(), endpoint, topic, payload: message });
+			fs.mkdirSync(path.dirname(sink), { recursive: true });
+			fs.appendFileSync(sink, `${line}\n`);
+			log(`push: sink ${sink}`);
+			return { endpoint, status: null, delivered: true, removed: false, sunk: true };
+		}
 		try {
 			const body = encryptPayload({
 				payload: JSON.stringify(message),
@@ -148,6 +172,7 @@ export function createPusher({ dir, fetch = globalThis.fetch, now = Date.now, lo
 					"Content-Encoding": "aes128gcm",
 					"Content-Type": "application/octet-stream",
 					Authorization: vapidHeader({ endpoint, keys, now: now() }),
+					...(topic ? { Topic: topic } : {}),
 				},
 				body,
 				signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
@@ -169,13 +194,13 @@ export function createPusher({ dir, fetch = globalThis.fetch, now = Date.now, lo
 		return result;
 	}
 
-	async function notify({ title, body, url, tag }) {
-		const message = { title, body, url, tag };
-		return Promise.all(read().map((subscription) => send(subscription, message)));
+	async function notify(message, options = {}) {
+		const payload = pushPayload(message);
+		return Promise.all(read().map((subscription) => send(subscription, payload, options)));
 	}
 
-	function notifyOne(subscription, message) {
-		return send(subscription, message);
+	function notifyOne(subscription, message, options = {}) {
+		return send(subscription, pushPayload(message), options);
 	}
 
 	return { publicKey: keys.publicKey, subscribe, unsubscribe, list: read, notify, notifyOne };

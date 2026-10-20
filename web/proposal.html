@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>검토함</title>
+<title>Inbox</title>
 <link rel="icon" href="data:,">
 <style>
 	/* Tokens: the prototype board.html palette, type and spacing, named so every rule below reads from one place. */
@@ -201,7 +201,8 @@
 <body>
 <main>
 	<nav class="top">
-		<a class="back" href="/">← 검토함</a>
+		<a class="back" href="/">← Inbox</a>
+		<a class="back" id="threadLink" hidden>‹ 대화</a>
 		<div class="chips" id="chips"></div>
 	</nav>
 	<div class="titlebar"><h1 id="title"></h1><button type="button" class="listen" id="listenBtn" aria-pressed="false" hidden>듣기</button><button type="button" class="listen" id="restartBtn" hidden>처음부터</button></div>
@@ -243,7 +244,7 @@
 <button id="aiFab" type="button">AI에게 묻기</button>
 <button id="stopFab" type="button" hidden>멈추기</button>
 <div id="aiPanel" hidden>
-	<h4>이 보드를 AI와 이야기하기</h4>
+	<h4>이 Review를 AI와 이야기하기</h4>
 	<p>결론은 '전체 의견'에 붙여 넣고 보내세요.</p>
 	<div id="aiTargets"></div>
 	<div id="aiMsg"></div>

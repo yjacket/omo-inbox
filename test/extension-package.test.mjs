@@ -3,25 +3,28 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createDesk } from "../extension/omo-desk.ts";
+import { createInbox } from "../extension/inbox/core.ts";
 
 const sha1 = "1111111111111111111111111111111111111111";
 const sha2 = "2222222222222222222222222222222222222222";
 
 async function setup({ packageMode = true, sha = sha1, state, setupOnly = false, loadedSha = sha, disabled = false, env = {}, fetch, execPath } = {}) {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "desk-extension-package-"));
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "inbox-extension-package-"));
 	const source = path.join(root, "clone");
 	const home = path.join(root, "home");
 	const agentDir = path.join(root, "agent");
 	await fs.mkdir(path.join(source, ".git", "refs", "heads"), { recursive: true });
 	await fs.mkdir(path.join(source, "bin"), { recursive: true });
-	await fs.writeFile(path.join(source, "bin", "desk.mjs"), "");
+	await fs.writeFile(path.join(source, "bin", "inbox.mjs"), "");
 	await fs.writeFile(path.join(source, ".git", "HEAD"), "ref: refs/heads/main\n");
 	await fs.writeFile(path.join(source, ".git", "refs", "heads", "main"), `${sha}\n`);
 	await fs.mkdir(path.join(home, "app", "bin"), { recursive: true });
-	await fs.writeFile(path.join(home, "app", "bin", "desk.mjs"), "");
+	await fs.writeFile(path.join(home, "app", "bin", "inbox.mjs"), "");
 	await fs.mkdir(path.join(agentDir, "extensions"), { recursive: true });
-	if (setupOnly) await fs.writeFile(path.join(agentDir, "extensions", "omo-desk.ts"), "");
+	if (setupOnly) {
+		await fs.mkdir(path.join(agentDir, "extensions", "omo-inbox"), { recursive: true });
+		await fs.writeFile(path.join(agentDir, "extensions", "omo-inbox", "index.ts"), "");
+	}
 	if (disabled) await fs.writeFile(path.join(home, "disabled"), "");
 	if (state) await fs.writeFile(path.join(home, "app", "source.json"), JSON.stringify(state));
 	const timers = [];
@@ -33,7 +36,7 @@ async function setup({ packageMode = true, sha = sha1, state, setupOnly = false,
 		registerCommand(name, config) { commands.set(name, config); },
 	};
 	let now = 1_800_000_000_000;
-	const handle = createDesk(pi, {
+	const handle = createInbox(pi, {
 		packageMode, source, home, agentDir, loadedSha, env, fetch, execPath, platform: "win32",
 		now: () => now,
 		timer: {
@@ -51,7 +54,9 @@ async function setup({ packageMode = true, sha = sha1, state, setupOnly = false,
 }
 
 test("non-package mode registers no package timer", async () => {
-	const s = await setup({ packageMode: false });
+	// A reachable server keeps the /api/here refresh from starting the CLI, so the assertion below
+	// holds without depending on a live server on the default port.
+	const s = await setup({ packageMode: false, fetch: async () => ({ ok: true, status: 200, json: async () => ({ footer: "", waiting: [] }) }) });
 	await s.handlers.get("session_start")({}, { sessionManager: { getSessionId: () => "s" } });
 	assert.equal(s.timers.some((timer) => timer.ms === 60_000), false);
 	assert.equal(s.spawned.length, 0);
@@ -69,7 +74,7 @@ test("steady package source does not spawn setup", async () => {
 test("changed sha claims setup and spawns package install", async () => {
 	const s = await setup({ sha: sha2 });
 	await s.tick();
-	assert.deepEqual(s.spawned[0].args, [path.join(s.source, "bin", "desk.mjs"), "install", "--from-package"]);
+	assert.deepEqual(s.spawned[0].args, [path.join(s.source, "bin", "inbox.mjs"), "install", "--from-package"]);
 	assert.deepEqual(JSON.parse(await fs.readFile(path.join(s.home, "setup-state.json"), "utf8")), { sha: sha2, claimMs: 1_800_000_000_000, pid: process.pid });
 	await s.close();
 });
@@ -94,12 +99,12 @@ test("disabled marker and checkout channel prevent setup", async () => {
 	await checkout.close();
 });
 
-test("setup and /desk run the CLI on node even when omo runs on bun", async () => {
-	const bin = await fs.mkdtemp(path.join(os.tmpdir(), "desk-node-bin-"));
+test("setup and /inbox run the CLI on node even when omo runs on bun", async () => {
+	const bin = await fs.mkdtemp(path.join(os.tmpdir(), "inbox-node-bin-"));
 	await fs.writeFile(path.join(bin, "node.exe"), "");
 	const s = await setup({ sha: sha2, execPath: "C:\\tools\\bun.exe", env: { PATH: bin } });
 	await s.tick();
-	await s.commands.get("desk").handler("uninstall", {});
+	await s.commands.get("inbox").handler("uninstall", {});
 	assert.deepEqual(s.spawned.map((entry) => entry.cmd), [path.join(bin, "node.exe"), path.join(bin, "node.exe")]);
 	await s.close();
 	await fs.rm(bin, { recursive: true, force: true });
@@ -111,7 +116,7 @@ test("a disabled package shows no footer and never asks the server", async () =>
 	const statuses = [];
 	await s.handlers.get("session_start")({}, { hasUI: true, cwd: s.root, ui: { setStatus: (_key, value) => statuses.push(value) }, sessionManager: { getSessionId: () => "s" } });
 	assert.deepEqual(fetches, []);
-	assert.equal(statuses.includes("보드 서버 꺼짐"), false);
+	assert.equal(statuses.includes("Inbox 서버 꺼짐"), false);
 	assert.equal(s.spawned.length, 0);
 	await s.close();
 });
@@ -131,7 +136,7 @@ test("setup-only instance reloads once legacy extension disappears", async () =>
 	let reloads = 0;
 	await s.handlers.get("session_start")({}, { isIdle: () => true, requestReload: () => reloads++ });
 	assert.equal(reloads, 0);
-	await fs.rm(path.join(s.agentDir, "extensions", "omo-desk.ts"));
+	await fs.rm(path.join(s.agentDir, "extensions", "omo-inbox", "index.ts"));
 	await s.tick();
 	assert.equal(reloads, 1);
 	await s.tick();
@@ -155,22 +160,46 @@ test("loaded sha mismatch reloads only when idle and prefers requestReload", asy
 
 test("generation guard rejects a second owner and shutdown frees it", async () => {
 	const s = await setup();
-	const second = createDesk({ on() {} }, { packageMode: true, source: s.source, home: s.home, agentDir: s.agentDir, loadedSha: sha1 });
+	const second = createInbox({ on() {} }, { packageMode: true, source: s.source, home: s.home, agentDir: s.agentDir, loadedSha: sha1 });
 	assert.equal(second, null);
 	await s.handlers.get("session_shutdown")();
-	const third = createDesk({ on() {} }, { packageMode: true, source: s.source, home: s.home, agentDir: s.agentDir, loadedSha: sha1 });
+	const third = createInbox({ on() {} }, { packageMode: true, source: s.source, home: s.home, agentDir: s.agentDir, loadedSha: sha1 });
 	assert.notEqual(third, null);
 	await third.stop();
 	await s.close();
 });
 
-test("/desk install and uninstall spawn the expected CLI commands", async () => {
+test("/inbox takeover, handback, status and bogus use the CLI or notify", async () => {
+	const s = await setup({ fetch: async () => ({ ok: false, status: 503, json: async () => ({}) }) });
+	const notices = [];
+	const ctx = { ui: { notify: (text) => notices.push(text) } };
+	await s.commands.get("inbox").handler("takeover", ctx);
+	await s.commands.get("inbox").handler("handback", ctx);
+	const spawnedAfterHandback = s.spawned.length;
+	await s.commands.get("inbox").handler("status", ctx);
+	await s.commands.get("inbox").handler("bogus", ctx);
+	assert.deepEqual(s.spawned.map((entry) => entry.cmd), [process.execPath, process.execPath]);
+	assert.deepEqual(s.spawned.map((entry) => entry.args), [
+		[path.join(s.source, "bin", "inbox.mjs"), "takeover"],
+		[path.join(s.source, "bin", "inbox.mjs"), "handback"],
+	]);
+	assert.equal(s.spawned.length, spawnedAfterHandback, "status and bogus spawn nothing");
+	assert.deepEqual(notices, [
+		"omo-inbox takeover을(를) 시작했습니다.",
+		"omo-inbox handback을(를) 시작했습니다.",
+		"omo-inbox 모드: trial, 서버: 꺼짐, 내 차례: 0건",
+		"사용법: /inbox install | uninstall | takeover | handback | status",
+	]);
+	await s.close();
+});
+
+test("/inbox install and uninstall spawn the expected CLI commands", async () => {
 	const s = await setup();
 	const notices = [];
-	await s.commands.get("desk").handler("install", { ui: { notify: (text) => notices.push(text) } });
-	await s.commands.get("desk").handler("uninstall", { ui: { notify: (text) => notices.push(text) } });
+	await s.commands.get("inbox").handler("install", { ui: { notify: (text) => notices.push(text) } });
+	await s.commands.get("inbox").handler("uninstall", { ui: { notify: (text) => notices.push(text) } });
 	assert.deepEqual(s.spawned.map((entry) => entry.args.slice(1)), [["install", "--from-package"], ["uninstall"]]);
-	assert.equal(s.spawned[1].args[0], path.join(s.source, "bin", "desk.mjs"));
+	assert.equal(s.spawned[1].args[0], path.join(s.source, "bin", "inbox.mjs"));
 	assert.equal(notices.length, 2);
 	await s.close();
 });

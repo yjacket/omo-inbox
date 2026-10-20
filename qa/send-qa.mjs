@@ -1,8 +1,8 @@
-/* Real-browser QA for the omo-desk proposal page send row (round3): 재요청/승인 send once and leave for the inbox, no 닫기,
+/* Real-browser QA for the omo-inbox proposal page send row (round3): 재요청/승인 send once and leave for the inbox, no 닫기,
  * and a floating 멈추기 that stays on screen while 듣기 reads.
  *
  * Usage: bun qa/send-qa.mjs [app dir, default the repo] [screenshot dir, default a new temp dir]
- * Starts <app>/src/server.mjs on a temp OMO_DESK_HOME (port 4399), submits three proposals (one frame + one question each)
+ * Starts <app>/src/server.mjs on a temp OMO_INBOX_HOME (port 4391), submits three proposals (one frame + one question each)
  * and drives one Bun.WebView through CDP: phone 390x844 with touch, then desktop 1440x900. Speech is a recorder stub.
  * Exit 0 only when every check passes. The temp home is deleted at the end; screenshots stay in the printed dir.
  */
@@ -13,13 +13,13 @@ import { fileURLToPath } from "node:url";
 import { framePng } from "./frame.mjs";
 
 const APP = path.resolve(process.argv[2] || path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
-const PORT = 4399;
+const PORT = 4391;
 const base = `http://127.0.0.1:${PORT}`;
-const POST = { "content-type": "application/json", "x-desk": "1" };
-const OUT = process.argv[3] ? path.resolve(process.argv[3]) : fs.mkdtempSync(path.join(os.tmpdir(), "desk-qa-send-"));
+const POST = { "content-type": "application/json", "x-inbox": "1" };
+const OUT = process.argv[3] ? path.resolve(process.argv[3]) : fs.mkdtempSync(path.join(os.tmpdir(), "inbox-qa-send-"));
 const EMPTY_TEXT = "고른 것이나 의견이 없습니다.";
 const FAILED_TEXT = "보내지 못했습니다.";
-const CLOSED_TEXT = "이미 끝난 기획안입니다.";
+const CLOSED_TEXT = "이미 끝난 Review입니다.";
 
 const checks = [];
 function check(name, ok, detail) {
@@ -61,7 +61,7 @@ const FLOATING = `(() => {
 	};
 })()`;
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desk-send-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "inbox-send-"));
 const home = path.join(tmp, "home");
 const src = path.join(tmp, "board");
 fs.mkdirSync(home, { recursive: true });
@@ -98,7 +98,7 @@ const listening = new Promise((resolve, reject) => {
 		}
 	});
 });
-const server = Bun.spawn(["node", path.join(APP, "src", "server.mjs")], { cwd: APP, env: { ...process.env, OMO_DESK_HOME: home }, stdout: "ignore", stderr: "ignore" });
+const server = Bun.spawn(["node", path.join(APP, "src", "server.mjs")], { cwd: APP, env: { ...process.env, OMO_INBOX_HOME: home }, stdout: "ignore", stderr: "ignore" });
 const view = new Bun.WebView({ width: 1440, height: 900 });
 const ev = (expr) => view.evaluate(expr);
 const cdp = (m, p) => view.cdp(m, p || {});
@@ -232,7 +232,7 @@ try {
 	await tap(sb5.cx, sb5.cy);
 	await waitFor(`document.getElementById('status').textContent === ${JSON.stringify(CLOSED_TEXT)}`, 5000, "closed status").catch(() => {});
 	const s5b = await sendRow();
-	check("(s5b) a 409 stays on the page, says 이미 끝난 기획안입니다., both buttons enabled", s5b.path === `/p/${idC}` && s5b.status === CLOSED_TEXT && s5b.sendOn && s5b.approveOn, fmt(s5b));
+	check("(s5b) a 409 stays on the page, says 이미 끝난 Review입니다., both buttons enabled", s5b.path === `/p/${idC}` && s5b.status === CLOSED_TEXT && s5b.sendOn && s5b.approveOn, fmt(s5b));
 	check("(s5b) fetch restored", (await ev(RESTORE_FETCH)) === true);
 
 	// (s6) at 390: the floating 멈추기
@@ -259,7 +259,10 @@ try {
 	const eventsA = await feedbackEvents(idA);
 	check("(s2) option picked, two touch taps on 승인: exactly one feedback event (approve) and the page is at the inbox within 5 s", picked === true && atInboxA && eventsA.length === 1 && eventsA[0].verdict === "approve" && eventsA[0].answers && eventsA[0].answers.q1 === "a", fmt({ picked, atInboxA, tookMs: tookA, eventsA }));
 	const inbox = await ev("({ path: location.pathname, title: document.title, rows: document.getElementById('list') ? document.getElementById('list').children.length : -1, text: (document.getElementById('list') || {}).textContent })");
-	check("(s2) the inbox lists the sent proposals", inbox.path === "/" && inbox.rows > 0 && String(inbox.text).includes("보내기 QA 승인"), fmt({ path: inbox.path, title: inbox.title, rows: inbox.rows }));
+	await view.navigate(`${base}/boards`);
+	await waitFor("document.readyState === 'complete' && document.querySelectorAll('.row').length > 0", 10000, "Review rows").catch(() => {});
+	const reviews = await ev("({ path: location.pathname, rows: [...document.querySelectorAll('.row')].map((row) => row.textContent) })");
+	check("(s2) the inbox lists the sent proposals", inbox.path === "/" && inbox.rows > 0 && reviews.path === "/boards" && reviews.rows.some((text) => String(text).includes("보내기 QA 승인")), fmt({ path: reviews.path, rows: reviews.rows.length }));
 	await shot("inbox-after-approve-390.png");
 
 	// ===== phone 390, proposal B: 재요청 with a comment, two clicks in one task =====

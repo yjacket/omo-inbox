@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const DEFAULT_PORT = 4377;
-export const TAILNET_PORT = 4378;
+export const DEFAULT_PORT = 4387;
+export const TAILNET_PORT = 4388;
 
 const CONFIG_DEFAULT = {
 	v: 1,
@@ -14,7 +14,7 @@ const CONFIG_DEFAULT = {
 };
 
 export function homeDir(env = process.env) {
-	return env.OMO_DESK_HOME || path.join(os.homedir(), ".omo-desk");
+	return env.OMO_INBOX_HOME || path.join(os.homedir(), ".omo-inbox");
 }
 
 export function layout(env = process.env) {
@@ -24,7 +24,7 @@ export function layout(env = process.env) {
 		app: path.join(home, "app"),
 		data: path.join(home, "data"),
 		proposals: path.join(home, "data", "proposals"),
-		inbox: path.join(home, "inbox"),
+		mailbox: path.join(home, "mailbox"),
 		logs: path.join(home, "logs"),
 		push: path.join(home, "push"),
 		config: path.join(home, "config.json"),
@@ -46,7 +46,7 @@ export function readConfig(env = process.env) {
 
 export function agentDir(env = process.env) {
 	return (
-		env.DESK_AGENT_DIR ||
+		env.INBOX_AGENT_DIR ||
 		env.OMO_CODING_AGENT_DIR ||
 		env.SENPI_CODING_AGENT_DIR ||
 		env.PI_CODING_AGENT_DIR ||

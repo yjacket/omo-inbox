@@ -9,13 +9,16 @@ import { agentDir, layout, readConfig } from "./paths.mjs";
 import { SERVE_PROXY, guard, parseServe, serveOff, serveOn, status } from "./tailscale.mjs";
 
 export const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-export const RUN_VALUE = "omo-desk";
+export const RUN_VALUE = "omo-inbox";
 export const RELOAD_HINT = "열린 omo 세션에서 /reload 하면 확장이 반영됩니다.";
 export function runValueName(env = process.env) {
-	return env.DESK_RUN_VALUE || RUN_VALUE;
+	return env.INBOX_RUN_VALUE || RUN_VALUE;
 }
 
 const APP_ENTRIES = ["bin", "src", "web", "extension", "skill", "rules", "package.json"];
+const EXT_ENTRY = "omo-inbox.ts";
+const EXT_DIR_NAME = "omo-inbox";
+const EXT_INDEX = "index.ts";
 const STOP_TIMEOUT_MS = 5_000;
 const SERVER_TIMEOUT_MS = 10_000;
 const POLL_MS = 100;
@@ -39,7 +42,7 @@ function resolve(opts) {
 	return {
 		env,
 		repoRoot: opts.repoRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
-		userHome: opts.userHome ?? env.DESK_USER_HOME ?? os.homedir(),
+		userHome: opts.userHome ?? env.INBOX_USER_HOME ?? os.homedir(),
 		execPath: opts.execPath ?? process.execPath,
 		fetchImpl: opts.fetch ?? globalThis.fetch,
 		now: opts.now ?? Date.now,
@@ -82,7 +85,7 @@ function isSamePath(a, b) {
 	return canonicalPath(a) === canonicalPath(b);
 }
 
-function writeIfChanged(file, text) {
+export function writeIfChanged(file, text) {
 	const current = readText(file);
 	if (current === text) return "unchanged";
 	fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -90,7 +93,7 @@ function writeIfChanged(file, text) {
 	return "written";
 }
 
-function readJsonSafe(file) {
+export function readJsonSafe(file) {
 	try {
 		return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
 	} catch {
@@ -98,7 +101,33 @@ function readJsonSafe(file) {
 	}
 }
 
-function filesEqual(a, b) {
+/** The desk home install reads to detect an active desk and takeover/handback act on (C1/C2). */
+export function deskHomeDir(env = process.env, userHome = env.INBOX_USER_HOME || os.homedir()) {
+	return env.INBOX_DESK_HOME || path.join(userHome, ".omo-desk");
+}
+
+/** An active desk: its bin exists and it is not disabled. Anything else leaves the field to inbox. */
+export function deskActive(env = process.env, userHome = env.INBOX_USER_HOME || os.homedir()) {
+	const home = deskHomeDir(env, userHome);
+	return fs.existsSync(path.join(home, "app", "bin", "desk.mjs")) && !fs.existsSync(path.join(home, "disabled"));
+}
+
+/** C2: primary only when no active desk owns the machine; trial otherwise. */
+export function installMode(env = process.env, userHome = env.INBOX_USER_HOME || os.homedir()) {
+	return deskActive(env, userHome) ? "trial" : "primary";
+}
+
+/** The developer-install copy of the multi-file extension: <agent>/extensions/omo-inbox/. */
+export function devExtensionDir(env = process.env) {
+	return path.join(agentDir(env), "extensions", EXT_DIR_NAME);
+}
+
+/** The wave-1 single-file developer copy that the directory layout replaced. */
+export function legacyExtensionFile(env = process.env) {
+	return path.join(agentDir(env), "extensions", EXT_ENTRY);
+}
+
+export function filesEqual(a, b) {
 	try {
 		return fs.readFileSync(a).equals(fs.readFileSync(b));
 	} catch {
@@ -121,7 +150,7 @@ function dirSnapshot(root) {
 	return files;
 }
 
-function sameDir(a, b) {
+export function sameDir(a, b) {
 	const left = dirSnapshot(a);
 	const right = dirSnapshot(b);
 	if (left === null || right === null) return left === right;
@@ -130,7 +159,7 @@ function sameDir(a, b) {
 	return keys.every((key) => key in right && Buffer.compare(left[key], right[key]) === 0);
 }
 
-function syncDir(src, dst) {
+export function syncDir(src, dst) {
 	if (sameDir(src, dst)) return "unchanged";
 	if (!fs.existsSync(src)) return "skipped";
 	fs.rmSync(dst, { recursive: true, force: true });
@@ -139,10 +168,30 @@ function syncDir(src, dst) {
 	return "written";
 }
 
-function removePath(file) {
+export function removePath(file) {
 	if (!fs.existsSync(file)) return "absent";
 	fs.rmSync(file, { recursive: true, force: true });
 	return "removed";
+}
+
+/**
+ * The installed extension dir is byte-equal to the app copy when the entry file matches index.ts
+ * and the inbox/ directory matches; sameDir on the whole dir would compare different file names.
+ */
+export function extensionDirMatches(srcDir, dstDir) {
+	return filesEqual(path.join(srcDir, EXT_ENTRY), path.join(dstDir, EXT_INDEX)) &&
+		sameDir(path.join(srcDir, "inbox"), path.join(dstDir, "inbox"));
+}
+
+/** index.ts keeps the entry's `./inbox/core.ts` import valid inside the copied directory. */
+export function writeExtensionDir(srcDir, dstDir) {
+	removePath(dstDir);
+	fs.mkdirSync(dstDir, { recursive: true });
+	fs.copyFileSync(path.join(srcDir, EXT_ENTRY), path.join(dstDir, EXT_INDEX));
+	if (fs.existsSync(path.join(srcDir, "inbox"))) {
+		fs.cpSync(path.join(srcDir, "inbox"), path.join(dstDir, "inbox"), { recursive: true });
+	}
+	return "written";
 }
 
 // ---- registry / launcher / config values ---------------------------------------------------------
@@ -272,6 +321,7 @@ export async function install(opts = {}) {
 		ok = false;
 		return `failed:${reason}`;
 	};
+	const mode = installMode(env, userHome);
 
 	// 1. app - refuse a non-repo source before anything is stopped or deleted, so a refused install
 	// leaves a running server alone instead of shutting it down and exiting 1.
@@ -286,7 +336,7 @@ export async function install(opts = {}) {
 		try {
 			await fetchImpl(`http://127.0.0.1:${port}/api/shutdown`, {
 				method: "POST",
-				headers: { "content-type": "application/json", "x-desk": "1" },
+				headers: { "content-type": "application/json", "x-inbox": "1" },
 				body: "{}",
 			});
 		} catch {
@@ -310,6 +360,9 @@ export async function install(opts = {}) {
 	const missing = APP_ENTRIES.filter((entry) => !fs.existsSync(path.join(l.app, entry)));
 	lines.push(missing.length === 0 ? "app: written" : `app: ${fail(`missing ${missing[0]}`)}`);
 
+	// 1b. mode (C2) - trial leaves the skill and rule to desk, so desk keeps its own copies.
+	lines.push(`mode: ${mode}`);
+
 	// 2. launcher
 	const launcher = launcherContent({ nodeExe: execPath, serverPath: path.join(l.app, "src", "server.mjs") });
 	lines.push(`launcher: ${writeIfChanged(l.launcher, launcher)}`);
@@ -327,21 +380,27 @@ export async function install(opts = {}) {
 		}
 	}
 
-	// 4. extension
-	const extSrc = path.join(l.app, "extension", "omo-desk.ts");
-	const extDst = path.join(agentDir(env), "extensions", "omo-desk.ts");
-	if (opts.packageInner) lines.push(`extension: legacy ${removePath(extDst)}`);
-	else if (!fs.existsSync(extSrc)) lines.push("extension: skipped");
-	else if (filesEqual(extSrc, extDst)) lines.push("extension: unchanged");
-	else {
-		fs.mkdirSync(path.dirname(extDst), { recursive: true });
-		fs.copyFileSync(extSrc, extDst);
+	// 4. extension - a package install loads the app copy, so it keeps no developer copy at all.
+	const extSrcDir = path.join(l.app, "extension");
+	const extDir = devExtensionDir(env);
+	if (opts.packageInner) {
+		const dir = removePath(extDir);
+		const legacy = removePath(legacyExtensionFile(env));
+		lines.push(`extension: legacy ${dir === "removed" || legacy === "removed" ? "removed" : "absent"}`);
+	} else if (!fs.existsSync(path.join(extSrcDir, EXT_ENTRY))) lines.push("extension: skipped");
+	else if (extensionDirMatches(extSrcDir, extDir) && !fs.existsSync(legacyExtensionFile(env))) {
+		lines.push("extension: unchanged");
+	} else {
+		removePath(legacyExtensionFile(env));
+		fs.mkdirSync(path.dirname(extDir), { recursive: true });
+		writeExtensionDir(extSrcDir, extDir);
 		lines.push("extension: written");
 	}
 
-	// 5. skill - replace both skill homes with the app copy.
+	// 5. skill - replace both skill homes with the app copy; trial writes neither (C2).
 	const skillSrc = path.join(l.app, "skill");
-	if (!fs.existsSync(skillSrc)) lines.push("skill: skipped");
+	if (mode === "trial") lines.push("skill: skipped (trial)");
+	else if (!fs.existsSync(skillSrc)) lines.push("skill: skipped");
 	else {
 		const statuses = [
 			syncDir(skillSrc, path.join(userHome, ".agents", "skills", "visual-board")),
@@ -353,22 +412,23 @@ export async function install(opts = {}) {
 	// 6. rule
 	const ruleSrc = path.join(l.app, "rules", "visual-board.md");
 	const ruleDst = path.join(userHome, ".claude", "rules", "visual-board.md");
-	if (!fs.existsSync(ruleSrc)) lines.push("rule: skipped");
+	if (mode === "trial") lines.push("rule: skipped (trial)");
+	else if (!fs.existsSync(ruleSrc)) lines.push("rule: skipped");
 	else {
 		fs.mkdirSync(path.dirname(ruleDst), { recursive: true });
 		lines.push(`rule: ${writeIfChanged(ruleDst, fs.readFileSync(ruleSrc, "utf8"))}`);
 	}
 
-	// 7. config from tailscale status
-	const ts = env.DESK_NO_TAILSCALE === "1" ? { publicBase: null, pcTailnetIps: [], owner: null, dns: null } : status(runners.tailscale);
-	lines.push(`config: ${updateConfig(env, { publicBase: ts.publicBase, pcTailnetIps: ts.pcTailnetIps, owner: ts.owner })}`);
+	// 7. config from tailscale status (plus the mode C2 chose above)
+	const ts = env.INBOX_NO_TAILSCALE === "1" ? { publicBase: null, pcTailnetIps: [], owner: null, dns: null } : status(runners.tailscale);
+	lines.push(`config: ${updateConfig(env, { mode, publicBase: ts.publicBase, pcTailnetIps: ts.pcTailnetIps, owner: ts.owner })}`);
 
 	// 8. tailscale serve on the tailnet port, guarded against disturbing 443.
-	if (env.DESK_NO_TAILSCALE === "1" || opts.noTailscale || ts.publicBase === null) {
+	if (env.INBOX_NO_TAILSCALE === "1" || opts.noTailscale || ts.publicBase === null) {
 		lines.push("tailscale: skipped");
 	} else {
 		const baseline = parseServe(runners.tailscale(["serve", "status", "--json"]));
-		const already = baseline.Web?.[`${ts.dns}:4378`]?.Handlers?.["/"]?.Proxy === SERVE_PROXY;
+		const already = baseline.Web?.[`${ts.dns}:4388`]?.Handlers?.["/"]?.Proxy === SERVE_PROXY;
 		if (already) {
 			const stored = updateConfig(env, { baseline443: { web: baseline.Web?.[`${ts.dns}:443`] ?? null, allowFunnel: baseline.AllowFunnel ?? {} } });
 			lines.push(`tailscale: ${stored === "written" ? "written" : "unchanged"}`);
@@ -435,7 +495,7 @@ export async function uninstall(opts = {}) {
 		try {
 			await fetchImpl(`http://127.0.0.1:${cfg.port}/api/shutdown`, {
 				method: "POST",
-				headers: { "content-type": "application/json", "x-desk": "1" },
+				headers: { "content-type": "application/json", "x-inbox": "1" },
 				body: "{}",
 			});
 		} catch {
@@ -454,15 +514,22 @@ export async function uninstall(opts = {}) {
 		lines.push("autostart: absent");
 	}
 
-	lines.push(`extension: ${removePath(path.join(agentDir(env), "extensions", "omo-desk.ts"))}`);
-	const skillDirs = [
-		path.join(userHome, ".agents", "skills", "visual-board"),
-		path.join(userHome, ".claude", "skills", "visual-board"),
-	];
-	lines.push(`skill: ${skillDirs.map(removePath).includes("removed") ? "removed" : "absent"}`);
-	lines.push(`rule: ${removePath(path.join(userHome, ".claude", "rules", "visual-board.md"))}`);
+	const extRemoved = [removePath(devExtensionDir(env)), removePath(legacyExtensionFile(env))];
+	lines.push(`extension: ${extRemoved.includes("removed") ? "removed" : "absent"}`);
+	// Trial never wrote the skill or the rule: those files belong to desk, so uninstall leaves them.
+	if (cfg.mode === "trial") {
+		lines.push("skill: skipped (trial)");
+		lines.push("rule: skipped (trial)");
+	} else {
+		const skillDirs = [
+			path.join(userHome, ".agents", "skills", "visual-board"),
+			path.join(userHome, ".claude", "skills", "visual-board"),
+		];
+		lines.push(`skill: ${skillDirs.map(removePath).includes("removed") ? "removed" : "absent"}`);
+		lines.push(`rule: ${removePath(path.join(userHome, ".claude", "rules", "visual-board.md"))}`);
+	}
 
-	if (env.DESK_NO_TAILSCALE === "1" || opts.noTailscale || cfg.publicBase === null) {
+	if (env.INBOX_NO_TAILSCALE === "1" || opts.noTailscale || cfg.publicBase === null) {
 		lines.push("tailscale: skipped");
 	} else {
 		const dns = status(runners.tailscale).dns;
@@ -503,26 +570,37 @@ export async function doctor(opts = {}) {
 	record("run", readRunValue(runners.reg, runValueName(env)) === runCommandValue(l), "Run value differs");
 	record("launcher", readText(l.launcher) === launcherContent({ nodeExe: execPath, serverPath: path.join(l.app, "src", "server.mjs") }), "content differs");
 	const source = readJsonSafe(path.join(l.app, "source.json"));
-	const noTailscale = env.DESK_NO_TAILSCALE === "1" || opts.noTailscale;
+	const noTailscale = env.INBOX_NO_TAILSCALE === "1" || opts.noTailscale;
+	const extSrcDir = path.join(l.app, "extension");
+	// A package install loads the app copy, so no developer copy may exist; a checkout install
+	// owns the developer directory (and never the superseded single file).
 	const extensionOk = source?.channel === "package"
-		? filesEqual(path.join(l.app, "extension", "omo-desk.ts"), path.join(source.source, "extension", "omo-desk.ts")) &&
-			!fs.existsSync(path.join(agentDir(env), "extensions", "omo-desk.ts"))
-		: filesEqual(path.join(l.app, "extension", "omo-desk.ts"), path.join(agentDir(env), "extensions", "omo-desk.ts"));
+		? filesEqual(path.join(extSrcDir, EXT_ENTRY), path.join(source.source, "extension", EXT_ENTRY)) &&
+			!fs.existsSync(devExtensionDir(env)) && !fs.existsSync(legacyExtensionFile(env))
+		: extensionDirMatches(extSrcDir, devExtensionDir(env)) && !fs.existsSync(legacyExtensionFile(env));
 	record("extension", extensionOk, "differs from the app copy");
-	record(
-		"skill",
-		fs.existsSync(path.join(userHome, ".agents", "skills", "visual-board", "SKILL.md")) &&
-			fs.existsSync(path.join(userHome, ".claude", "skills", "visual-board", "SKILL.md")),
-		"missing",
-	);
-	record("rule", fs.existsSync(path.join(userHome, ".claude", "rules", "visual-board.md")), "missing");
+	// The skill and the rule exist only in primary mode: in trial mode they are desk's (C2).
+	if (cfg.mode === "primary") {
+		record(
+			"skill",
+			fs.existsSync(path.join(userHome, ".agents", "skills", "visual-board", "SKILL.md")) &&
+				fs.existsSync(path.join(userHome, ".claude", "skills", "visual-board", "SKILL.md")),
+			"missing",
+		);
+		record("rule", fs.existsSync(path.join(userHome, ".claude", "rules", "visual-board.md")), "missing");
+		record(
+			"takeover",
+			fs.existsSync(path.join(l.home, "takeover.json")) || !deskActive(env, userHome),
+			"no takeover record and an active desk",
+		);
+	}
 
 	const ts = noTailscale ? { dns: null } : status(runners.tailscale);
 	const serve = noTailscale ? {} : parseServe(runners.tailscale(["serve", "status", "--json"]));
-	const proxy = ts.dns ? serve.Web?.[`${ts.dns}:4378`]?.Handlers?.["/"]?.Proxy : undefined;
+	const proxy = ts.dns ? serve.Web?.[`${ts.dns}:4388`]?.Handlers?.["/"]?.Proxy : undefined;
 	if (!noTailscale) {
-		record("serve", proxy === SERVE_PROXY, "4378 handler missing");
-		record("funnel", !(ts.dns && Object.prototype.hasOwnProperty.call(serve.AllowFunnel ?? {}, `${ts.dns}:4378`)), "AllowFunnel has a 4378 key");
+		record("serve", proxy === SERVE_PROXY, "4388 handler missing");
+		record("funnel", !(ts.dns && Object.prototype.hasOwnProperty.call(serve.AllowFunnel ?? {}, `${ts.dns}:4388`)), "AllowFunnel has a 4388 key");
 	}
 	const baseline443 = cfg.baseline443;
 	if (!noTailscale) record(

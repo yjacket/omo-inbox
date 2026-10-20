@@ -1,17 +1,17 @@
 {
-  "name": "omo-desk",
+  "name": "omo-inbox",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Review inbox for omo/senpi sessions: proposals with screens, ER and flow diagrams, feedback marks, and a per-product history.",
+  "description": "Inbox for omo/senpi sessions: every moment a session waits for you, summarized for the phone, answered back into the session; visual boards included.",
   "pi": {
-    "extensions": ["extension/omo-desk.ts"]
+    "extensions": ["extension/omo-inbox.ts"]
   },
   "engines": {
     "node": ">=24"
   },
   "bin": {
-    "desk": "bin/desk.mjs"
+    "inbox": "bin/inbox.mjs"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.mjs\""

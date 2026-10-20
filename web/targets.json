@@ -1,7 +1,7 @@
 [
-  { "id": "chatgpt", "label": "ChatGPT에서 묻기", "hint": "새 대화에 보드 내용이 채워져 열림", "url": "https://chatgpt.com/?q={q}", "home": "https://chatgpt.com/", "maxEncoded": 7500, "where": "any" },
-  { "id": "claude", "label": "Claude에서 묻기", "hint": "새 대화에 보드 내용이 채워져 열림", "url": "https://claude.ai/new?q={q}", "home": "https://claude.ai/new", "maxEncoded": 14000, "where": "any" },
+  { "id": "chatgpt", "label": "ChatGPT에서 묻기", "hint": "새 대화에 Review 내용이 채워져 열림", "url": "https://chatgpt.com/?q={q}", "home": "https://chatgpt.com/", "maxEncoded": 7500, "where": "any" },
+  { "id": "claude", "label": "Claude에서 묻기", "hint": "새 대화에 Review 내용이 채워져 열림", "url": "https://claude.ai/new?q={q}", "home": "https://claude.ai/new", "maxEncoded": 14000, "where": "any" },
   { "id": "claude-app", "label": "Claude 앱에서 묻기", "hint": "이 PC의 Claude 앱에 채워져 열림", "url": "claude://claude.ai/new?q={q}", "home": "claude://claude.ai/new", "maxEncoded": 13000, "where": "pc" },
-  { "id": "aside", "label": "Aside에서 열기", "hint": "보드를 Aside에 열고 옆 패널에서 묻기", "url": "{board}", "where": "pc" },
+  { "id": "aside", "label": "Aside에서 열기", "hint": "Review를 Aside에 열고 옆 패널에서 묻기", "url": "{board}", "where": "pc" },
   { "id": "copy", "label": "내용 복사", "hint": "다른 AI에 붙여 넣기", "where": "any", "copy": true }
 ]

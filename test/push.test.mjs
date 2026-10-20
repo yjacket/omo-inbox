@@ -33,7 +33,7 @@ function subscriptionFor(endpoint) {
 }
 
 function withPusher(t, { fetch, log = () => {} } = {}) {
-	const tmp = makeTmpHome("desk-push-");
+	const tmp = makeTmpHome("inbox-push-");
 	t.after(() => tmp.cleanup());
 	const dir = path.join(tmp.home, "push");
 	return { dir, pusher: createPusher({ dir, fetch, now: () => NOW, log }) };
@@ -73,7 +73,7 @@ test("vapidHeader carries a verifiable ES256 JWT with the endpoint origin", () =
 	assert.deepEqual(JSON.parse(unb64u(claims).toString()), {
 		aud: "https://fcm.example.test",
 		exp: Math.floor(NOW / 1000) + 12 * 60 * 60,
-		sub: "mailto:omo-desk@example.invalid",
+		sub: "mailto:omo-inbox@example.invalid",
 	});
 	const point = unb64u(k);
 	assert.equal(point.length, 65);
@@ -87,7 +87,7 @@ test("vapidHeader carries a verifiable ES256 JWT with the endpoint origin", () =
 });
 
 test("vapid.json is created once and reused", (t) => {
-	const tmp = makeTmpHome("desk-vapid-");
+	const tmp = makeTmpHome("inbox-vapid-");
 	t.after(() => tmp.cleanup());
 	const dir = path.join(tmp.home, "push");
 	const file = path.join(dir, "vapid.json");
@@ -144,7 +144,7 @@ test("notify keeps 201 and 202, removes 404 and 410, keeps and logs 500 and reje
 	const { pusher } = withPusher(t, { fetch, log: (line) => logs.push(line) });
 	for (const endpoint of statuses.keys()) pusher.subscribe(subscriptionFor(endpoint), {});
 
-	const results = await pusher.notify({ title: "t", body: "b", url: "/p/260101-abcd", tag: "desk-260101-abcd" });
+	const results = await pusher.notify({ title: "t", body: "b", url: "/p/260101-abcd", tag: "inbox-260101-abcd" });
 	assert.equal(results.length, statuses.size);
 	const byEndpoint = new Map(results.map((result) => [result.endpoint, result]));
 	assert.equal(byEndpoint.get("https://push.example/created").delivered, true);
@@ -187,6 +187,96 @@ test("notify never throws, even when fetch throws synchronously or a stored key 
 	assert.equal(results.length, 2);
 	assert.ok(results.every((result) => result.delivered === false && typeof result.error === "string"));
 	assert.equal(pusher.list().length, 2);
+});
+
+test("notify sets the Topic header only for a valid base64url topic", async (t) => {
+	const requests = [];
+	const { pusher } = withPusher(t, {
+		fetch: async (endpoint, init) => {
+			requests.push({ endpoint, init });
+			return { status: 201 };
+		},
+	});
+	pusher.subscribe(subscriptionFor("https://push.example/topic"), {});
+	const message = { title: "🙋 thread", body: "b", url: "/s/abc#i-1", tag: "s-abc" };
+
+	const topic = "a".repeat(32);
+	await pusher.notify(message, { topic });
+	assert.equal(requests[0].init.headers.Topic, topic);
+
+	for (const bad of ["a".repeat(33), "bad topic!", "🙋".repeat(2), "", null]) {
+		await pusher.notify(message, { topic: bad });
+		assert.equal("Topic" in requests.at(-1).init.headers, false, `Topic must be dropped for ${JSON.stringify(bad)}`);
+	}
+	await pusher.notify(message);
+	assert.equal("Topic" in requests.at(-1).init.headers, false);
+	await pusher.notifyOne(pusher.list()[0], message, { topic });
+	assert.equal(requests.at(-1).init.headers.Topic, topic);
+});
+
+test("INBOX_PUSH_SINK appends JSON lines with the pass-through payload and sends nothing", async (t) => {
+	const tmp = makeTmpHome("inbox-push-sink-");
+	t.after(() => tmp.cleanup());
+	const sink = path.join(tmp.home, "push-sink.jsonl");
+	const previous = process.env.INBOX_PUSH_SINK;
+	process.env.INBOX_PUSH_SINK = sink;
+	t.after(() => {
+		if (previous === undefined) delete process.env.INBOX_PUSH_SINK;
+		else process.env.INBOX_PUSH_SINK = previous;
+	});
+
+	const fetches = [];
+	const pusher = createPusher({
+		dir: path.join(tmp.home, "push"),
+		now: () => NOW,
+		fetch: async (endpoint) => {
+			fetches.push(endpoint);
+			return { status: 201 };
+		},
+	});
+	pusher.subscribe(subscriptionFor("https://push.example/one"), {});
+	pusher.subscribe(subscriptionFor("https://push.example/two"), {});
+
+	const topic = "b".repeat(32);
+	const payload = {
+		title: "🙋 thread",
+		body: "headline — ask",
+		url: "/s/abc#i-1",
+		tag: "s-abc",
+		renotify: true,
+		actions: [{ action: "open", title: "열기" }],
+		itemId: "i-1",
+		rec: { questionId: "q1", label: "진행" },
+		secret: "never written",
+	};
+	const results = await pusher.notify({ ...payload, secret: undefined }, { topic });
+	assert.deepEqual(fetches, []);
+	assert.equal(results.length, 2);
+	assert.ok(results.every((result) => result.sunk === true && result.delivered === true && result.status === null));
+
+	const lines = fs.readFileSync(sink, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+	assert.equal(lines.length, 2);
+	assert.deepEqual(lines.map((line) => line.endpoint).sort(), ["https://push.example/one", "https://push.example/two"]);
+	for (const line of lines) {
+		assert.equal(line.at, new Date(NOW).toISOString());
+		assert.equal(line.topic, topic);
+		assert.deepEqual(line.payload, {
+			title: payload.title,
+			body: payload.body,
+			url: payload.url,
+			tag: payload.tag,
+			renotify: true,
+			actions: payload.actions,
+			itemId: payload.itemId,
+			rec: payload.rec,
+		});
+	}
+
+	await pusher.notifyOne(pusher.list()[1], { title: "t" }, { topic: "c".repeat(32) });
+	const appended = fs.readFileSync(sink, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+	assert.equal(appended.length, 3);
+	assert.deepEqual(appended.at(-1).payload, { title: "t" });
+	assert.deepEqual(fetches, []);
 });
 
 test("notifyOne sends to that subscription only", async (t) => {

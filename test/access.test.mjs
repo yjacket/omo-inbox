@@ -120,15 +120,28 @@ test("ALLOW maps roles to the contract's classes", () => {
 		feedback: ["local", "pc", "tailnet"],
 		session: ["local"],
 		open: ["local", "pc"],
+		reopen: ["local", "pc", "tailnet"],
 	});
 });
 
-test("postGuard requires json content-type and x-desk", () => {
-	assert.equal(postGuard({}), false);
-	assert.equal(postGuard({ "content-type": "text/plain", "x-desk": "1" }), false);
-	assert.equal(postGuard({ "content-type": "application/json", "x-desk": "0" }), false);
+test("reopen is tailnet-reachable and a funnel request is rejected, never reopen", () => {
+	assert.ok(ALLOW.reopen.includes("tailnet"));
 	assert.equal(
-		postGuard({ "content-type": "application/json; charset=utf-8", "x-desk": "1" }),
+		classify({
+			remoteAddress: "127.0.0.1",
+			headers: { host: "localhost", "tailscale-funnel-request": "?1" },
+		}),
+		"reject",
+	);
+	assert.equal(ALLOW.reopen.includes("reject"), false);
+});
+
+test("postGuard requires json content-type and x-inbox", () => {
+	assert.equal(postGuard({}), false);
+	assert.equal(postGuard({ "content-type": "text/plain", "x-inbox": "1" }), false);
+	assert.equal(postGuard({ "content-type": "application/json", "x-inbox": "0" }), false);
+	assert.equal(
+		postGuard({ "content-type": "application/json; charset=utf-8", "x-inbox": "1" }),
 		true,
 	);
 });

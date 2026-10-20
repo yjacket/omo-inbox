@@ -73,7 +73,7 @@ export function normPath(p) {
 
 export async function identityFor(cwd, env = process.env) {
 	const session = {
-		id: env.DESK_SESSION || env.PI_SESSION_ID || null,
+		id: env.INBOX_SESSION || env.PI_SESSION_ID || null,
 		file: env.PI_SESSION_FILE || null,
 	};
 	const top = await git(cwd, ["rev-parse", "--show-toplevel"]);

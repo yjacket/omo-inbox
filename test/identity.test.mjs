@@ -176,13 +176,13 @@ describe("identityFor", () => {
 		}
 	});
 
-	test("prefers DESK_SESSION over PI_SESSION_ID and reads PI_SESSION_FILE", async () => {
+	test("prefers INBOX_SESSION over PI_SESSION_ID and reads PI_SESSION_FILE", async () => {
 		const { home, cleanup } = makeTmpHome();
 		try {
 			const dir = path.join(home, "plain");
 			fs.mkdirSync(dir);
-			const both = await identityFor(dir, { DESK_SESSION: "desk-1", PI_SESSION_ID: "pi-1", PI_SESSION_FILE: "C:/x.json" });
-			assert.equal(both.session.id, "desk-1");
+			const both = await identityFor(dir, { INBOX_SESSION: "inbox-1", PI_SESSION_ID: "pi-1", PI_SESSION_FILE: "C:/x.json" });
+			assert.equal(both.session.id, "inbox-1");
 			assert.equal(both.session.file, "C:/x.json");
 			const fallback = await identityFor(dir, { PI_SESSION_ID: "pi-1" });
 			assert.equal(fallback.session.id, "pi-1");

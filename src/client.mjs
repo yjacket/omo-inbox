@@ -4,22 +4,22 @@ import { fileURLToPath } from "node:url";
 import { homeDir, readConfig } from "./paths.mjs";
 import { launchServer } from "./launch.mjs";
 
-const NAME = "omo-desk";
+const NAME = "omo-inbox";
 const HEALTH_TIMEOUT_MS = 1500;
 const ENSURE_ATTEMPTS = 20;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** The board server this CLI talks to: an explicit DESK_URL, else the configured port. */
+/** The board server this CLI talks to: an explicit INBOX_URL, else the configured port. */
 export function baseUrl(env = process.env) {
-	return env.DESK_URL || "http://127.0.0.1:" + readConfig(env).port;
+	return env.INBOX_URL || "http://127.0.0.1:" + readConfig(env).port;
 }
 
-/** One request against the server. POSTs carry the JSON + x-desk guard the server requires. */
+/** One request against the server. POSTs carry the JSON + x-inbox guard the server requires. */
 export async function api(method, route, body, env = process.env) {
 	const init = { method };
 	if (body !== undefined && body !== null) {
-		init.headers = { "content-type": "application/json", "x-desk": "1" };
+		init.headers = { "content-type": "application/json", "x-inbox": "1" };
 		init.body = JSON.stringify(body);
 	}
 	const response = await fetch(baseUrl(env) + route, init);
@@ -74,7 +74,7 @@ function foreign(env) {
 
 async function start(env, version) {
 	await launchServer({ env });
-	const waitMs = Number(env.DESK_ENSURE_POLL_MS) || 500;
+	const waitMs = Number(env.INBOX_ENSURE_POLL_MS) || 500;
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		await sleep(waitMs);
 		const health = await probe(env);
@@ -91,7 +91,7 @@ async function start(env, version) {
 
 /** Wait, at most ENSURE_ATTEMPTS polls, for a server that was just shut down to stop answering health. */
 async function waitForShutdown(env) {
-	const waitMs = Number(env.DESK_ENSURE_POLL_MS) || 500;
+	const waitMs = Number(env.INBOX_ENSURE_POLL_MS) || 500;
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		await sleep(waitMs);
 		if (!(await probe(env))) return;
@@ -100,12 +100,12 @@ async function waitForShutdown(env) {
 
 /**
  * Make sure the board server at this CLI's base URL is the right one and alive.
- * DESK_NO_ENSURE=1 answers the health question only and never launches anything.
+ * INBOX_NO_ENSURE=1 answers the health question only and never launches anything.
  */
 export async function ensure(env = process.env) {
 	const health = await probe(env);
 	if (health && health.name !== NAME) throw foreign(env);
-	if (env.DESK_NO_ENSURE === "1") return Boolean(health && health.ok === true);
+	if (env.INBOX_NO_ENSURE === "1") return Boolean(health && health.ok === true);
 	const version = ownVersion();
 	if (health && version !== null && health.version !== version) {
 		// Only a stale install of our own version is safe to shut down; anything else

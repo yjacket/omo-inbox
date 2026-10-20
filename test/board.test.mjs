@@ -76,7 +76,7 @@ function goodQuestion(overrides = {}) {
 }
 
 function runBoard(board, files = OK_FILES, options) {
-	const { home, cleanup } = makeTmpHome("desk-board-");
+	const { home, cleanup } = makeTmpHome("inbox-board-");
 	try {
 		if (board !== undefined) {
 			fs.writeFileSync(path.join(home, "board.json"), typeof board === "string" ? board : JSON.stringify(board));
@@ -99,7 +99,7 @@ function errors(result) {
 }
 
 test("prototype board validates with exactly its 11 files", () => {
-	const { home, cleanup } = makeTmpHome("desk-prototype-");
+	const { home, cleanup } = makeTmpHome("inbox-prototype-");
 	try {
 		fs.mkdirSync(path.join(home, "diagrams"));
 		for (const name of PROTOTYPE_DIAGRAMS) {
