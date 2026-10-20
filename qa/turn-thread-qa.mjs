@@ -405,15 +405,27 @@ try {
 	});
 
 	// the desktop sheet, taken after the checks so no state they rely on changes
+	// At 1280 the thread lives in iframe.thread of the split view (/?s=<sid>); the same assertions run on its document.
 	await desktop();
-	await openThread(D1, 1);
-	await typeText("데스크톱 답");
-	await clickSel("#send");
-	await waitFor(`Boolean(document.querySelector(".sheet"))`, 8000, "desktop sheet");
-	await shot("sheet-1280-light.png");
-	await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
-	await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
-	await settle();
+	await step("(15) desktop split view: the D1 thread opens in the iframe (back link hidden via data-embed, URL /?s=<sid>) and the reply sheet opens", async () => {
+		await view.navigate(`${base}/?s=${encodeURIComponent(D1)}`);
+		const frame = "document.querySelector('iframe.thread').contentDocument";
+		await waitFor(`${frame} && ${frame}.getElementById('chat') && ${frame}.getElementById('chat').getAttribute('aria-busy') === 'false' && ${frame}.querySelectorAll('section[data-item]').length >= 1`, 15000, `thread ${D1} ready in the iframe`);
+		await settle();
+		const info = await ev(`(() => { const d = ${frame}; const back = d.querySelector("a.back"); return { path: location.pathname + location.search, embed: d.documentElement.hasAttribute("data-embed"), backShown: Boolean(back) && d.defaultView.getComputedStyle(back).display !== "none" }; })()`);
+		expect(info.path === `/?s=${encodeURIComponent(D1)}`, `top URL ${info.path}`);
+		expect(info.embed && !info.backShown, `data-embed ${info.embed}, back link shown ${info.backShown}`);
+		await ev(`(() => { const el = ${frame}.getElementById("reply"); el.value = "데스크톱 답"; el.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+		await ev(`${frame}.getElementById("send").scrollIntoView({ block: "center" })`);
+		await settle();
+		const r = await ev(`(() => { const f = document.querySelector("iframe.thread").getBoundingClientRect(); const b = ${frame}.getElementById("send").getBoundingClientRect(); return { cx: f.left + b.left + b.width / 2, cy: f.top + b.top + b.height / 2 }; })()`);
+		await click(r.cx, r.cy);
+		await waitFor(`Boolean(${frame}.querySelector(".sheet"))`, 8000, "desktop sheet");
+		await shot("sheet-1280-light.png");
+		await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+		await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+		await settle();
+	});
 } catch (error) {
 	record("run completed", false, error && error.stack ? error.stack : String(error));
 } finally {

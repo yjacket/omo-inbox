@@ -241,11 +241,17 @@ try {
 
 	const speechInitial = await ev("({ available: 'speechSynthesis' in window, spoken: window.__spoken.length })");
 	check("(6) page load does not speak automatically", speechInitial.available && speechInitial.spoken === 0, fmt(speechInitial));
+	// At 1280 px /s/<sid> becomes the split view /?s=<sid>; the thread lives in iframe.thread.
 	await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
-	await ev(`document.querySelector(${JSON.stringify(`section[data-item="${ids.first}"] .term`)}).click()`);
-	await waitFor("document.querySelector('.term-pop')", 3000, "desktop popover");
+	await view.navigate("about:blank");
+	await view.navigate(`${base}/?s=${SID}`);
+	const frameDoc = "document.querySelector('iframe.thread').contentDocument";
+	await waitFor(`${frameDoc}?.getElementById('chat')?.getAttribute('aria-busy') === 'false' && ${frameDoc}.querySelectorAll('section[data-item]').length >= 1`, 15000, `split thread ${SID}`);
+	await ev(`${frameDoc}.querySelector(${JSON.stringify(`section[data-item="${ids.first}"] .term`)}).click()`);
+	await waitFor(`${frameDoc}.querySelector('.term-pop')`, 3000, "desktop popover (in iframe)");
 	await screenshot("task-20-popover-1280.png");
-	await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+	// Back to phone width: reload the thread page narrow (the split view would redirect to /s/<sid>).
+	await openThread(SID, 390, 844, true);
 	await ev(`document.querySelector(${JSON.stringify(`section[data-item="${ids.first}"] .term`)}).click()`);
 
 	const listenSelector = `section[data-item="${ids.first}"] .foot button`;

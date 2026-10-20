@@ -237,6 +237,8 @@ try {
 	const desktopState = await view.evaluate(state);
 	await screenshot("task-18-list-1280.png");
 	const desktopFits = desktopState.badge.text === "1" && desktopState.overflow === false;
+	// At 1280 the split view auto-selected the first row (?s=); drop it so going back to 390 stays on the list instead of opening that thread.
+	await view.evaluate(`history.replaceState(null, "", "/")`);
 	await view.cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 	await view.cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
 	check("(8) a proposal waiting on the owner shows badge 1 and accessible label; desktop list has no overflow",

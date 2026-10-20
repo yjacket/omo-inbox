@@ -378,7 +378,13 @@ const listening = new Promise((resolve, reject) => {
 });
 const server = Bun.spawn(["node", path.join(APP, "src", "server.mjs")], { cwd: APP, env: { ...process.env, OMO_INBOX_HOME: home, INBOX_NO_TAILSCALE: "1", INBOX_PUSH_SINK: sink }, stdout: "ignore", stderr: "ignore" });
 const view = new Bun.WebView({ width: 1280, height: 800 });
-const ev = (expr) => view.evaluate(expr);
+// At >= 720 px a thread lives in iframe.thread (same origin), so once one is open there `ev` runs inside that frame's
+// window: document, location, innerWidth, scrollY and localStorage are the thread's. evTop always runs in the top window.
+let wide = false;
+let inFrame = false;
+const evTop = (expr) => view.evaluate(expr);
+// The page CSP has no unsafe-eval, so the expression runs as an inline <script> (allowed) added to the frame's document.
+const ev = (expr) => (inFrame ? view.evaluate(`(() => { const w = document.querySelector("iframe.thread").contentWindow; const s = w.document.createElement("script"); s.textContent = ${JSON.stringify(`window.__qaResult = (async () => (${expr}\n))();`)}; w.document.head.append(s); s.remove(); return w.__qaResult; })()`) : view.evaluate(expr));
 const cdp = (m, p) => view.cdp(m, p || {});
 const waitFor = (cond, ms, what) =>
 	ev(`new Promise((resolve, reject) => { const t0 = performance.now(); const tick = () => { let ok = false; try { ok = Boolean(${cond}); } catch {} if (ok) resolve(true); else if (performance.now() - t0 > ${ms}) reject(new Error(${JSON.stringify(`timeout: ${what}`)})); else setTimeout(tick, 25); }; tick(); })`);
@@ -423,8 +429,13 @@ const shot = async (name, prefix = PREFIX) => {
 	fs.writeFileSync(file, Buffer.from(res.data, "base64"));
 	console.log(`saved ${file}`);
 };
-const rectOf = (selector) =>
-	ev(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2, inView: r.top >= 0 && r.bottom <= innerHeight }; })()`);
+// In the split view the rect is shifted by the iframe's own offset, so CDP pointer events land in top-window coordinates.
+const rectOf = async (selector) => {
+	const r = await ev(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { l: r.left, t: r.top, w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2, inView: r.top >= 0 && r.bottom <= innerHeight }; })()`);
+	if (!inFrame) return r;
+	const o = await evTop(`(() => { const b = document.querySelector("iframe.thread").getBoundingClientRect(); return { x: b.left, y: b.top }; })()`);
+	return { ...r, l: r.l + o.x, t: r.t + o.y, cx: r.cx + o.x, cy: r.cy + o.y };
+};
 // A touch lands only inside the viewport, so a target below the fold is scrolled to the middle first.
 const bringIn = async (selector) => {
 	await ev(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: "center" })`);
@@ -443,26 +454,43 @@ const bringTop = async (selector) => {
 	await ev(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: "start" })`);
 	await stable();
 };
+// Both resize helpers leave the page first: a thread or split page open across the 720 px breakpoint redirects itself.
 const phone = async () => {
+	await view.navigate("about:blank");
 	await cdp("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 	await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+	wide = false;
+	inFrame = false;
 };
 const desktop = async () => {
+	await view.navigate("about:blank");
 	await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
 	await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+	wide = true;
+	inFrame = false;
 };
 const section = (itemId) => `section[data-item="${itemId}"]`;
 const openList = async () => {
+	inFrame = false;
 	await view.navigate(`${base}/`);
 	await waitFor("document.getElementById('list') && document.getElementById('list').getAttribute('aria-busy') === 'false'", 15000, "list ready");
 	await settle();
 };
 const openThread = async (sid, count, hash) => {
-	await view.navigate(`${base}/s/${encodeURIComponent(sid)}${hash ? `#${hash}` : ""}`);
+	inFrame = false;
+	if (wide) {
+		// >= 720 px: the thread opens in the split view at /?s=<sid>, inside iframe.thread; the same checks then run in that frame.
+		await view.navigate(`${base}/?s=${encodeURIComponent(sid)}${hash ? `#${hash}` : ""}`);
+		await waitFor(`(() => { const f = document.querySelector("iframe.thread"); try { return Boolean(f && f.contentDocument && f.contentWindow.location.pathname === ${JSON.stringify(`/s/${encodeURIComponent(sid)}`)} && f.contentDocument.readyState !== "loading"); } catch { return false; } })()`, 15000, `split iframe for ${sid} loaded`);
+		inFrame = true;
+	} else {
+		await view.navigate(`${base}/s/${encodeURIComponent(sid)}${hash ? `#${hash}` : ""}`);
+	}
 	await waitFor(`document.getElementById('chat') && document.getElementById('chat').getAttribute('aria-busy') === 'false' && document.querySelectorAll('section[data-item]').length >= ${count}`, 15000, `thread ${sid} ready`);
 	await settle();
 };
 const openBoards = async () => {
+	inFrame = false;
 	await waitFor("location.pathname === '/boards' && document.getElementById('list') && document.getElementById('list').getAttribute('aria-busy') === 'false' && document.querySelectorAll('#list .row').length > 0", 15000, "boards ready");
 	await settle();
 };
@@ -949,7 +977,10 @@ try {
 	await shot("list-1280.png");
 	await openThread(A, 3);
 	const headD = await ev(HEADER);
-	check("(D2) 1280: the thread keeps a 920px measure with bubbles capped at 640px, the top bar and composer intact, no overflow", headD.measureW <= 920 && headD.maxBubbleW <= 640 && headD.maxBubbleW > 0 && headD.back && headD.back.text === "‹ Inbox" && headD.chip === "🙋 내 차례" && headD.sendOn === true && headD.overflow === false, fmt({ measureW: headD.measureW, maxBubbleW: headD.maxBubbleW, chip: headD.chip, overflow: headD.overflow }));
+	// split view: the ‹ Inbox link is hidden by <html data-embed> and the top URL is /?s=<sid> instead of /s/<sid>
+	const embedD = await ev("({ embed: document.documentElement.hasAttribute('data-embed'), backShown: getComputedStyle(document.querySelector('.back')).display !== 'none' })");
+	const topD = await evTop("location.pathname + location.search");
+	check("(D2) 1280 split: the thread in iframe.thread (top URL /?s=<sid>) keeps a 920px measure with bubbles capped at 640px, ‹ Inbox hidden via data-embed instead of shown, the top bar and composer intact, no overflow", topD === `/?s=${A}` && embedD.embed === true && embedD.backShown === false && headD.measureW <= 920 && headD.maxBubbleW <= 640 && headD.maxBubbleW > 0 && headD.back && headD.chip === "🙋 내 차례" && headD.sendOn === true && headD.overflow === false, fmt({ top: topD, embed: embedD, measureW: headD.measureW, maxBubbleW: headD.maxBubbleW, chip: headD.chip, overflow: headD.overflow }));
 	await shot("thread-a-1280.png");
 	await view.navigate(`${base}/boards`);
 	await openBoards();
