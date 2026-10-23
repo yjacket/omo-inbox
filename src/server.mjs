@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import crypto from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { layout, readConfig } from "./paths.mjs";
@@ -17,6 +18,8 @@ import { redact } from "./redact.mjs";
 import { buildPushPayload, cacheReminderAt, createScheduler, pushPlan, summaryWaitDeadline, topicFor, CACHE_LEAD_MINUTES } from "./policy.mjs";
 import { isExpired, noticeItemInput, validateNotice } from "./notices.mjs";
 import { createReopener } from "./reopen.mjs";
+import { createIssuesStore } from "./issues-store.mjs";
+import { createIssuesHttp, ISSUE_PAGE, ISSUE_UUID } from "./issues-http.mjs";
 
 const BODY_LIMIT = 30 * 1024 * 1024;
 const URL_LIMIT = 30000;
@@ -40,6 +43,7 @@ const TYPES = {
 	".json": "application/json; charset=utf-8",
 	".html": "text/html; charset=utf-8",
 	".js": "text/javascript; charset=utf-8",
+	".css": "text/css; charset=utf-8",
 };
 
 const INVALID_SEGMENT = /^(?:|\.|\.\.)$/;
@@ -226,6 +230,49 @@ function readVersion() {
 	return "0.0.0";
 }
 
+function sha256(bytes) {
+	return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+// The build id covers only the installed serving sources. Sorted relative paths make
+// the digest independent of directory enumeration order on every platform.
+export function sourceManifestId(root) {
+	const files = ["package.json"];
+	for (const [dir, pattern] of [["src", /\.mjs$/], ["web", /\.(?:html|js|css)$/]]) {
+		try {
+			for (const name of fs.readdirSync(path.join(root, dir))) {
+				if (pattern.test(name) && fs.statSync(path.join(root, dir, name)).isFile()) files.push(`${dir}/${name}`);
+			}
+		} catch {
+			// a missing source directory still leaves the rest of the manifest intact
+		}
+	}
+	files.sort();
+	const lines = files.map((rel) => {
+		try {
+			return `${rel}\n${sha256(fs.readFileSync(path.join(root, rel)))}\n`;
+		} catch {
+			return `${rel}\n${sha256(Buffer.from("missing"))}\n`;
+		}
+	});
+	return sha256(Buffer.from(lines.join(""), "utf8"));
+}
+
+function readBuildInfo(root, home) {
+	let channel = null;
+	let sourceSha = null;
+	try {
+		const source = JSON.parse(fs.readFileSync(path.join(home, "app", "source.json"), "utf8"));
+		if (source && typeof source === "object") {
+			channel = typeof source.channel === "string" ? source.channel : null;
+			sourceSha = typeof source.sha === "string" ? source.sha : null;
+		}
+	} catch {
+		// a checkout without install metadata has unknown provenance, not a fake one
+	}
+	return { buildId: sourceManifestId(root), version: readVersion(), channel, sourceSha };
+}
+
 function readTargets(webDir) {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(path.join(webDir, "targets.json"), "utf8"));
@@ -302,6 +349,9 @@ export function createServer({
 	const push = pusher ?? createPusher({ dir: dir.push, log: (line) => appendLog(dir.logs, line) });
 	const targets = readTargets(webDir);
 	const version = readVersion();
+	const buildInfo = readBuildInfo(REPO_ROOT, home);
+	const buildStamp = () => (sourceManifestId(REPO_ROOT) === buildInfo.buildId ? buildInfo.buildId : null);
+	const issues = createIssuesStore({ dataDir: dir.data, now, lockOwner: { pid: process.pid }, redactText: redact });
 	const aside = asidePath ?? asideExe();
 	const lastSeen = new Map();
 	const byeAt = new Map();
@@ -388,14 +438,14 @@ export function createServer({
 		}
 	}
 
-	function readBody(req) {
+	function readBody(req, limit = BODY_LIMIT) {
 		return new Promise((resolve, reject) => {
 			const chunks = [];
 			let size = 0;
 			let tooLong = false;
 			req.on("data", (chunk) => {
 				size += chunk.length;
-				if (size > BODY_LIMIT) tooLong = true;
+				if (size > limit) tooLong = true;
 				else chunks.push(chunk);
 			});
 			req.on("end", () => (tooLong ? reject(fail("too_long", "body too large")) : resolve(Buffer.concat(chunks))));
@@ -403,8 +453,8 @@ export function createServer({
 		});
 	}
 
-	async function readJsonBody(req) {
-		const raw = await readBody(req);
+	async function readJsonBody(req, limit = BODY_LIMIT) {
+		const raw = await readBody(req, limit);
 		try {
 			const parsed = JSON.parse(raw.toString("utf8").replace(/^\uFEFF/, ""));
 			return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
@@ -431,9 +481,107 @@ export function createServer({
 		};
 	}
 
-	function serveStatic(res, file, headers = {}) {
-		sendFile(res, file, headers);
+	function servePage(res, file, headers = {}) {
+		let text;
+		try {
+			text = fs.readFileSync(file, "utf8");
+		} catch {
+			sendJson(res, 404, { error: "not_found" });
+			return;
+		}
+		const stamp = buildStamp();
+		text = text.replace(/<head(?:\s[^>]*)?>/i, (tag) => `${tag}<meta name="inbox-build" content="${stamp ?? "null"}">`);
+		res.writeHead(200, { "content-type": contentType(file), ...headers });
+		res.end(text);
 	}
+
+	function sendMissingPage(res) {
+		res.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...PAGE_HEADERS });
+		res.end(JSON.stringify({ error: "not_found" }));
+	}
+
+	function issueAllowed(access, _headers, level = "read") {
+		if (!ALLOW[level].includes(access)) return false;
+		return !(access === "tailnet" && cfg.owner == null);
+	}
+
+	function issueOriginAllowed(headers, access) {
+		const origin = headers ? headers.origin : undefined;
+		if (origin === undefined) return access === "local";
+		if (typeof origin !== "string" || origin === "null") return false;
+		const allowed = new Set([`http://127.0.0.1:${actualPort}`, `http://localhost:${actualPort}`]);
+		if (cfg.publicBase) {
+			try {
+				allowed.add(new URL(cfg.publicBase).origin);
+			} catch {
+				// an invalid public base contributes no allowed origin
+			}
+		}
+		return allowed.has(origin);
+	}
+
+	function boardHasFrame(board, frame) {
+		for (const section of Array.isArray(board?.sections) ? board.sections : []) {
+			for (const card of Array.isArray(section?.cards) ? section.cards : []) {
+				for (const entry of Array.isArray(card?.frames) ? card.frames : []) {
+					if (Array.isArray(entry) && entry[0] === frame.label && entry[1] === frame.path) return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	// Reference checks only read the owner of each namespace. Expiry and read-mark
+	// paths belong to the GET handlers and must not run while accepting an issue.
+	async function resolveIssueReference(source) {
+		const checkedAt = now().toISOString();
+		if (source === null) return { status: "unversioned", checkedAt };
+		try {
+			if (source.kind === "proposal") {
+				const data = store.get(source.proposalId);
+				if (!data.revs.some((rev) => rev.n === source.revision)) return { status: "mismatch", checkedAt };
+				let hash = null;
+				for (const event of data.events) {
+					if ((event.type === "submitted" || event.type === "revised") && event.rev === source.revision) hash = event.hash;
+				}
+				if (source.recordedContentHash !== null && source.recordedContentHash !== hash) return { status: "mismatch", checkedAt };
+				if (source.frame !== null && !boardHasFrame(store.board(source.proposalId, source.revision), source.frame)) {
+					return { status: "mismatch", checkedAt };
+				}
+				return { status: "matched", checkedAt };
+			}
+			if (source.kind === "thread") {
+				const data = threads.getThread(source.threadId);
+				if (source.itemId !== null && !data.items.some((item) => item.itemId === source.itemId)) return { status: "mismatch", checkedAt };
+				if (source.observedSeq > (data.events.at(-1)?.seq ?? 0)) return { status: "mismatch", checkedAt };
+				return { status: "matched", checkedAt };
+			}
+			const data = issues.get(source.issueId);
+			if (source.observedSeq > data.currentSeq) return { status: "mismatch", checkedAt };
+			return { status: "matched", checkedAt };
+		} catch (error) {
+			if (error && (error.code === "not_found" || error.code === "gone" || error.code === "bad_rev")) {
+				return { status: "missing", checkedAt };
+			}
+			throw error;
+		}
+	}
+
+	const issuesHttp = createIssuesHttp({
+		store: issues,
+		sendJson,
+		readJsonBody,
+		buildInfo,
+		buildStamp,
+		pusher: push,
+		log: (line) => appendLog(dir.logs, line),
+		now,
+		resolveReference: resolveIssueReference,
+		proposalStore: store,
+		bodyLimit: 12 * 1024 * 1024,
+		allowAccess: issueAllowed,
+		allowOrigin: issueOriginAllowed,
+	});
 
 	// Fire and forget: called after the response is written, never awaited by a handler.
 	function notifyLater(message, options = {}) {
@@ -1005,21 +1153,27 @@ export function createServer({
 	async function handleGet(res, rawPath, query, access) {
 		const parts = rawPath.split("/");
 
+		if (rawPath === "/issues" || rawPath === "/issues/new" || (/^\/issues\/[^/]+$/.test(rawPath) && ISSUE_UUID.test(rawPath.slice(8)))) {
+			if (!issueAllowed(access, null, "read")) return sendJson(res, 403, { error: "forbidden" });
+			const file = path.join(webDir, ISSUE_PAGE);
+			if (!fs.existsSync(file)) return sendMissingPage(res);
+			return servePage(res, file, PAGE_HEADERS);
+		}
 		if (rawPath === "/" || rawPath === "") {
 			if (!guard(res, access, "read")) return;
-			return serveStatic(res, path.join(webDir, "inbox.html"), PAGE_HEADERS);
+			return servePage(res, path.join(webDir, "inbox.html"), PAGE_HEADERS);
 		}
 		if (parts[1] === "s" && parts.length === 3) {
 			if (!guard(res, access, "read")) return;
-			return serveStatic(res, path.join(webDir, "thread.html"), PAGE_HEADERS);
+			return servePage(res, path.join(webDir, "thread.html"), PAGE_HEADERS);
 		}
 		if (rawPath === "/boards") {
 			if (!guard(res, access, "read")) return;
-			return serveStatic(res, path.join(webDir, "boards.html"), PAGE_HEADERS);
+			return servePage(res, path.join(webDir, "boards.html"), PAGE_HEADERS);
 		}
 		if (parts[1] === "p" && parts.length === 3) {
 			if (!guard(res, access, "read")) return;
-			return serveStatic(res, path.join(webDir, "proposal.html"));
+			return servePage(res, path.join(webDir, "proposal.html"));
 		}
 		if (parts[1] === "web" && parts.length === 3) {
 			if (!guard(res, access, "read")) return;
@@ -1038,6 +1192,9 @@ export function createServer({
 			return handleFileGet(res, parts);
 		}
 		if (parts[1] === "api") {
+			if (parts[2] === "issues") {
+				return issuesHttp.handleGet(res, parts, query, access);
+			}
 			if (parts[2] === "push" && parts[3] === "key" && parts.length === 4) {
 				if (!guard(res, access, "read")) return;
 				return sendJson(res, 200, { publicKey: push.publicKey });
@@ -1227,6 +1384,9 @@ export function createServer({
 			return;
 		}
 		const parts = rawPath.split("/");
+		if (parts[1] === "api" && parts[2] === "issues") {
+			return issuesHttp.handlePost(res, req, parts, access);
+		}
 		const body = await readJsonBody(req);
 
 		if (parts[1] === "api" && parts[2] === "threads" && parts.length === 5) {
@@ -1515,6 +1675,11 @@ export function createServer({
 
 	function close() {
 		scheduler.cancelPrefix("");
+		try {
+			issues.close();
+		} catch {
+			// a lock already released by a failed startup is not an error at shutdown
+		}
 		return new Promise((resolve) => {
 			if (!httpServer.listening) {
 				resolve();
@@ -1524,7 +1689,7 @@ export function createServer({
 		});
 	}
 
-	return { listen, close, store, threads, scheduler };
+	return { listen, close, store, threads, scheduler, issues, buildInfo };
 }
 
 async function probeHealth(port) {

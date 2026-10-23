@@ -453,9 +453,31 @@ describe("validateCommand", () => {
 			correction: { kind: "inbox-build", buildId: SHA, summary: "빌드" },
 			evidence: null,
 		})).ok, true);
+		// D8: an unknown build is unversioned; null is the explicit unknown value.
+		assert.equal(validateCommand(makeCommand({
+			type: "request_check",
+			note: "빌드를 모릅니다",
+			correction: { kind: "inbox-build", buildId: null, summary: "알 수 없는 빌드" },
+			evidence: null,
+		})).ok, true);
 		assert.equal(validateCommand(makeCommand({ type: "confirm" })).ok, true);
 		assert.equal(validateCommand(makeCommand({ type: "reopen", comment: null })).ok, true);
 		assert.equal(validateCommand(makeCommand({ type: "purge" })).ok, true);
+	});
+
+	test("rejects a non-string or oversized inbox-build id", () => {
+		rejects(makeCommand({
+			type: "request_check",
+			note: "확인",
+			correction: { kind: "inbox-build", buildId: 1, summary: "빌드" },
+			evidence: null,
+		}), "command.correction.buildId", validateCommand);
+		rejects(makeCommand({
+			type: "request_check",
+			note: "확인",
+			correction: { kind: "inbox-build", buildId: "a".repeat(129), summary: "빌드" },
+			evidence: null,
+		}), "command.correction.buildId", validateCommand);
 	});
 
 	test("rejects non-reproduction request-check images at the provenance path", () => {

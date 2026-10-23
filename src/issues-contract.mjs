@@ -580,9 +580,14 @@ function checkCorrection(value, path, errors) {
 	if (kind === "inbox-build") {
 		checkKeys(value, new Set(["kind", "buildId", "summary"]), path, errors);
 		requireKeys(value, ["kind", "buildId", "summary"], path, errors);
+		// D8: an inbox-build correction may name a build the server cannot know
+		// (null) or a bounded opaque identifier. It is never proof of deployed code.
+		const buildId = value.buildId === null
+			? null
+			: checkStringBytes(value.buildId, pathOf(path, "buildId"), errors, { min: 1, max: 128 });
 		return {
 			kind,
-			buildId: checkSha256(value.buildId, pathOf(path, "buildId"), errors),
+			buildId,
 			summary: checkStringBytes(value.summary, pathOf(path, "summary"), errors, { min: 1, max: LIMITS.NOTE_BYTES, trim: true }),
 		};
 	}
