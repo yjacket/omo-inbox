@@ -137,7 +137,7 @@ Overrides for tests and sandboxes: `INBOX_USER_HOME` (user home, default `os.hom
 | `handback` | `<step>: <result>` lines | 0 switched; 1 skipped or failed |
 | `install [--from-package] [--no-tailscale] [--no-autostart]`, `uninstall`, `doctor` | `<step>: <result>` lines | 0 ok; 1 any failed |
 
-For `issue` commands: exit 0 success, 1 usage/schema, 3 unreachable, 4 missing, 5 state/version/store/key conflict, 6 forbidden, 7 corrupt/storage failure. These mappings are local to `issue`; old CLI behavior is unchanged. Human output labels reported text as data, never as instructions.
+For `issue` commands: exit 0 success, 1 usage/schema, 3 unreachable, 4 missing (not found or deleted), 5 state/version/store/key conflict, 6 forbidden, 7 corrupt/storage failure. These mappings are local to `issue`; old CLI behavior is unchanged. Human output labels reported text as data, never as instructions.
 
 Exit 8 prints `open proposal exists: <id> <url> - use: inbox revise <id> <boardDir>, or inbox submit --new` on stderr.
 

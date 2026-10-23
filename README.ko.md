@@ -137,7 +137,7 @@ checkout 에서:
 | `handback` | `<step>: <result>` 줄 | 0 전환함; 1 건너뜀 또는 실패 |
 | `install [--from-package] [--no-tailscale] [--no-autostart]`, `uninstall`, `doctor` | `<step>: <result>` 줄 | 0 성공; 1 하나라도 실패 |
 
-`issue` 명령의 종료 코드: 0 성공, 1 사용법/스키마, 3 서버에 닿지 않음, 4 없음, 5 상태/버전/저장소/키 충돌, 6 금지, 7 기록 손상/저장 실패. 이 매핑은 `issue` 안에서만 쓰고 예전 CLI 동작은 그대로입니다. 사람용 출력은 신고된 글을 지시가 아니라 데이터로 표시합니다.
+`issue` 명령의 종료 코드: 0 성공, 1 사용법/스키마, 3 서버에 닿지 않음, 4 없음(찾을 수 없거나 삭제됨), 5 상태/버전/저장소/키 충돌, 6 금지, 7 기록 손상/저장 실패. 이 매핑은 `issue` 안에서만 쓰고 예전 CLI 동작은 그대로입니다. 사람용 출력은 신고된 글을 지시가 아니라 데이터로 표시합니다.
 
 종료 코드 8은 stderr에 `open proposal exists: <id> <url> - use: inbox revise <id> <boardDir>, or inbox submit --new` 를 출력합니다.
 

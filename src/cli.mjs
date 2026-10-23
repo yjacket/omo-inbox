@@ -26,6 +26,11 @@ const USAGE = [
 	"  wait <id> [--timeout sec]",
 	"  server status|start|stop|restart",
 	"  notify --producer p --key k --title t [--body b] [--urgency now|soon|fyi] [--session id] [--expires iso]",
+	"  issue list [--state s] [--json]",
+	"  issue show <id> [--json]",
+	"  issue triage <id> --category inbox-ui|report-content|other --severity normal|high|low --expected-seq n --request-id uuid [--note text]",
+	"  issue comment <id> --expected-seq n --request-id uuid --file path",
+	"  issue check <id> --expected-seq n --request-id uuid --file correction.json",
 	"  threads [--status s]",
 	"  mode",
 	"  takeover",
@@ -663,6 +668,8 @@ export async function main(argv = []) {
 				return await cmdServer(rest, json);
 			case "notify":
 				return await cmdNotify(rest, json);
+			case "issue":
+				return await (await import("./issues-cli.mjs")).runIssue([...(json ? ["--json"] : []), ...rest], process.env);
 			case "threads":
 				return await cmdThreads(rest, json);
 			case "mode":
