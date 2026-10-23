@@ -124,8 +124,24 @@ async function request(base, route, init, label) {
 	} catch {
 		body = text;
 	}
-	if (res.status !== 200) throw new IssueQaError("http_status", `${label} -> ${res.status} ${typeof body === "string" ? body : JSON.stringify(body)}`);
-	return body;
+	const headers = Object.fromEntries(res.headers.entries());
+	if (res.status < 200 || res.status >= 300) {
+		const error = new IssueQaError("http_status", `${label} -> ${res.status} ${typeof body === "string" ? body : JSON.stringify(body)}`);
+		error.status = res.status;
+		error.body = body;
+		throw error;
+	}
+	// Any 2xx resolves. The parsed JSON fields stay at the top level so existing scenarios that
+	// read `created.receipt` keep working; `status`, `headers` and `json` describe the response.
+	const result = { status: res.status, headers };
+	if (body && typeof body === "object" && !Array.isArray(body)) {
+		for (const [key, value] of Object.entries(body)) {
+			if (!(key in result)) result[key] = value;
+		}
+	}
+	Object.defineProperty(result, "json", { value: body, enumerable: false, configurable: true });
+	Object.defineProperty(result, "__response", { value: { status: res.status, headers }, enumerable: false });
+	return result;
 }
 
 async function tcpClosed(port) {
@@ -261,6 +277,7 @@ async function teardown({ child, port, root, home, evidence, error = null }) {
 	const portClosed = port > 0 ? await tcpClosed(port) : true;
 	const removed = [];
 	const removalLog = [];
+	const reaped = [];
 	let names = [];
 	try {
 		names = fs.existsSync(root) ? fs.readdirSync(root) : [];
@@ -272,11 +289,11 @@ async function teardown({ child, port, root, home, evidence, error = null }) {
 		if (entry === "profile") {
 			// A browser process that outlived its close keeps the private profile locked. Reap by
 			// this exact profile path first: the reaper resolves only after the killed PIDs are gone.
-			await reapQaBrowserProcesses(target).catch(() => {});
+			reaped.push({ attempt: "initial", ...(await reapQaBrowserProcesses(target).catch((reapError) => ({ matched: [], killed: [], remaining: [], error: reapError && reapError.message ? reapError.message : String(reapError) }))) });
 		}
 		let outcome = await removeTree(target);
 		if (!outcome.removed && entry === "profile") {
-			await reapQaBrowserProcesses(target).catch(() => {});
+			reaped.push({ attempt: "retry", ...(await reapQaBrowserProcesses(target).catch((reapError) => ({ matched: [], killed: [], remaining: [], error: reapError && reapError.message ? reapError.message : String(reapError) }))) });
 			outcome = await removeTree(target);
 		}
 		removalLog.push({
@@ -296,7 +313,7 @@ async function teardown({ child, port, root, home, evidence, error = null }) {
 	} catch (statError) {
 		readBack = statError.code || "ERROR";
 	}
-	const receipt = { serverExited, portClosed, removed, readBack, removalLog };
+	const receipt = { serverExited, portClosed, removed, readBack, removalLog, reaped };
 	if (error) receipt.error = error && error.message ? error.message : String(error);
 	try {
 		fs.mkdirSync(evidence, { recursive: true });
@@ -491,27 +508,29 @@ function qaSkillRoot() {
 }
 
 /**
- * Kill Chrome processes that were launched with this harness's private profile. On Windows the
- * process omowright tracks can exit while the real browser process lives on, keeping
- * <runTmp>/profile locked. The match is the exact private profile path, so the user's own
- * Chrome processes are never touched. Bounded by a named deadline.
+ * Kill every process whose command line carries this harness's private profile path. On Windows
+ * Chrome for Testing keeps <runTmp>/profile locked through helper processes that outlive the
+ * browser (notably chrome_crashpad_handler.exe --database=<profile>\Crashpad). Matching the exact
+ * unique mkdtemp path - not an image name - catches those helpers while never touching a process
+ * that merely runs another Chrome. The harness and its PowerShell child both carry the path in
+ * their own command lines, so they are excluded by name and the harness by PID. Bounded by a
+ * named deadline.
  */
-export async function reapQaBrowserProcesses(profileDir, { timeoutMs = 10_000 } = {}) {
-	if (process.platform !== "win32" || !profileDir) return { pids: [], error: null };
+export async function reapQaBrowserProcesses(profileDir, { timeoutMs = 10_000, selfPid = process.pid } = {}) {
+	if (process.platform !== "win32" || !profileDir) return { matched: [], killed: [], remaining: [], error: null };
 	const needle = path.resolve(profileDir).replace(/'/g, "''");
-	// Chrome and Edge both hold the profile lock; a sub-second Stop-Process command used to exit
-	// while the browser was still shutting down. Stop every matching browser process, then wait
-	// for each PID to disappear and report which, if any, survived. The per-PID Get-Process loop
-	// keeps the wait for one PID independent of another PID that already exited; the shared 8 s
-	// limit and the parent's named 10 s deadline keep the whole command bounded.
+	// Every match is stopped, then each PID is awaited independently. The shared 8 s limit keeps
+	// the wait bounded, and the caller's named 10 s deadline bounds the whole PowerShell command.
 	const command = [
 		"$ErrorActionPreference = 'SilentlyContinue'",
-		`$procIds = @(Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'chrome.exe' -or $_.Name -eq 'msedge.exe') -and $_.CommandLine -like '*${needle}*' } | ForEach-Object { $_.ProcessId })`,
-		"foreach ($procId in $procIds) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }",
+		`$selfPid = ${Number(selfPid)}`,
+		"$excluded = @('node.exe', 'bun.exe', 'pwsh.exe', 'powershell.exe', 'cmd.exe', 'conhost.exe')",
+		`$matches = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $selfPid -and $_.Name -notin $excluded -and $_.CommandLine -and $_.CommandLine.Contains('${needle}') } | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name } })`,
+		"foreach ($match in $matches) { Stop-Process -Id $match.pid -Force -ErrorAction SilentlyContinue }",
 		"$limit = (Get-Date).AddSeconds(8)",
-		"foreach ($procId in $procIds) { while ((Get-Process -Id $procId -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $limit)) { Start-Sleep -Milliseconds 50 } }",
-		"$remaining = @($procIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })",
-		"[pscustomobject]@{ pids = @($procIds); remaining = @($remaining) } | ConvertTo-Json -Compress",
+		"foreach ($match in $matches) { while ((Get-Process -Id $match.pid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $limit)) { Start-Sleep -Milliseconds 50 } }",
+		"$remaining = @($matches | Where-Object { Get-Process -Id $_.pid -ErrorAction SilentlyContinue } | ForEach-Object { $_.pid })",
+		"[pscustomobject]@{ matched = @($matches); remaining = @($remaining) } | ConvertTo-Json -Depth 4 -Compress",
 	].join("; ");
 	const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
 		stdio: ["ignore", "pipe", "pipe"],
@@ -548,7 +567,13 @@ export async function reapQaBrowserProcesses(profileDir, { timeoutMs = 10_000 } 
 		const list = value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
 		return list.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0);
 	};
-	return { pids: toIds(parsed?.pids), remaining: toIds(parsed?.remaining), error: null };
+	const listed = parsed?.matched === undefined || parsed?.matched === null ? [] : Array.isArray(parsed.matched) ? parsed.matched : [parsed.matched];
+	const matched = listed
+		.map((item) => ({ pid: Number(item?.pid), name: typeof item?.name === "string" ? item.name : "" }))
+		.filter((item) => Number.isInteger(item.pid) && item.pid > 0);
+	const remaining = toIds(parsed?.remaining);
+	const killed = matched.map((item) => item.pid).filter((pid) => !remaining.includes(pid));
+	return { matched, killed, remaining, error: null };
 }
 
 export async function openQaBrowser(ctx, { width = 1280, height = 800, scheme = "light" } = {}) {

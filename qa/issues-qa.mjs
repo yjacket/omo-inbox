@@ -2,13 +2,19 @@
  *
  * Usage: bun qa/issues-qa.mjs <appDir> <outDir> --scenario QNN [--width 390 --height 844
  *        --scheme light|dark] [--probe-failure] [--q01 <review.md>]
- *        bun qa/issues-qa.mjs <appDir> <outDir> --all|--present-only [--q01 <review.md>]
+ *        bun qa/issues-qa.mjs <appDir> <outDir> --all|--present-only [--width W --height H
+ *        --scheme light|dark] [--q01 <review.md>]
  *
  * Creates a private temp root, starts the isolated server fixture, launches an owned headless
  * browser, runs the requested scenario, then closes the browser and the server in finally and
  * removes the temp root. Writes <outDir>/manifest.json and prints "<passed>/<total> checks passed"
  * as its last line. Exit 0 only when every check passed AND the teardown receipt proves the child
  * exited, the port refuses connections and home/runTmp read back ENOENT.
+ *
+ * Viewport: an explicit --width/--height/--scheme flag wins; otherwise a scenario module MAY export
+ * `viewport = { width, height, scheme? }` (Q09 needs the 720px split view); otherwise the harness
+ * default is 390x844/light. Every scenario result records the effective viewport plus whether each
+ * dimension came from the flag, the scenario or the default.
  *
  * --all enumerates the expected matrix Q02..Q20 from a constant, lists every missing module as
  * {id, status:"missing"} and exits nonzero when one is missing or failed. --present-only runs the
@@ -25,22 +31,32 @@ import { createIssueQa, openQaBrowser, reapQaBrowserProcesses, removeTree, runIs
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXPECTED = ["Q02", "Q03", "Q04", "Q05", "Q06", "Q07", "Q08", "Q09", "Q10", "Q11", "Q12", "Q13", "Q14", "Q15", "Q16", "Q17", "Q18", "Q19", "Q20"];
 
+const DEFAULT_VIEWPORT = { width: 390, height: 844, scheme: "light" };
+
 function usage(message) {
 	if (message) console.error(message);
 	console.error("usage: bun qa/issues-qa.mjs <appDir> <outDir> --scenario QNN [--width 390 --height 844 --scheme light|dark] [--probe-failure] [--q01 <review.md>]");
-	console.error("       bun qa/issues-qa.mjs <appDir> <outDir> --all|--present-only [--q01 <review.md>]");
+	console.error("       bun qa/issues-qa.mjs <appDir> <outDir> --all|--present-only [--width W --height H --scheme light|dark] [--q01 <review.md>]");
+	console.error("       viewport: explicit flag > scenario export > 390x844/light");
 	process.exit(1);
 }
 
 function parseArgs(argv) {
 	const positional = [];
-	const options = { scenario: null, width: 390, height: 844, scheme: "light", all: false, presentOnly: false, probeFailure: false, q01: null };
+	const options = { scenario: null, width: DEFAULT_VIEWPORT.width, height: DEFAULT_VIEWPORT.height, scheme: DEFAULT_VIEWPORT.scheme, all: false, presentOnly: false, probeFailure: false, q01: null, explicit: { width: false, height: false, scheme: false } };
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "--scenario") options.scenario = argv[++index];
-		else if (arg === "--width") options.width = Number(argv[++index]);
-		else if (arg === "--height") options.height = Number(argv[++index]);
-		else if (arg === "--scheme") options.scheme = argv[++index];
+		else if (arg === "--width") {
+			options.width = Number(argv[++index]);
+			options.explicit.width = true;
+		} else if (arg === "--height") {
+			options.height = Number(argv[++index]);
+			options.explicit.height = true;
+		} else if (arg === "--scheme") {
+			options.scheme = argv[++index];
+			options.explicit.scheme = true;
+		}
 		else if (arg === "--all") options.all = true;
 		else if (arg === "--present-only") options.presentOnly = true;
 		else if (arg === "--probe-failure") options.probeFailure = true;
@@ -56,6 +72,40 @@ function parseArgs(argv) {
 	if (!Number.isFinite(options.width) || !Number.isFinite(options.height) || options.width <= 0 || options.height <= 0) usage("width and height must be positive numbers");
 	if (options.q01 && !fs.existsSync(path.resolve(options.q01))) usage(`--q01 receipt not found: ${options.q01}`);
 	return { appDir: path.resolve(positional[0]), outDir: path.resolve(positional[1]), ...options };
+}
+
+async function effectiveViewport(id, args) {
+	let declared = null;
+	const file = path.join(HERE, "issues", `${id.toLowerCase()}.mjs`);
+	if (fs.existsSync(file)) {
+		try {
+			const module = await import(pathToFileURL(file).href);
+			if (module.viewport && typeof module.viewport === "object") declared = module.viewport;
+		} catch {
+			// the scenario import below reports the real failure
+		}
+	}
+	const pick = (dimension) => {
+		if (args.explicit[dimension]) return { value: args[dimension], source: "flag" };
+		if (declared && declared[dimension] !== undefined) {
+			const valid =
+				dimension === "scheme"
+					? ["light", "dark"].includes(declared[dimension])
+					: Number.isFinite(declared[dimension]) && declared[dimension] > 0;
+			if (valid) return { value: declared[dimension], source: "scenario" };
+		}
+		return { value: DEFAULT_VIEWPORT[dimension], source: "default" };
+	};
+	const width = pick("width");
+	const height = pick("height");
+	const scheme = pick("scheme");
+	return {
+		width: width.value,
+		height: height.value,
+		scheme: scheme.value,
+		viewport: { width: width.value, height: height.value, scheme: scheme.value },
+		viewportSource: { width: width.source, height: height.source, scheme: scheme.source },
+	};
 }
 
 function scenarioExists(id) {
@@ -123,7 +173,9 @@ try {
 	if (ctx.port <= 0) throw new Error("server reported no port");
 	if (args.probeFailure) {
 		const id = (args.scenario || "Q06").toUpperCase();
-		scenarios.push(await probeFailure(ctx, browser, args.width, args.height, args.scheme, id));
+		const viewport = await effectiveViewport(id, args);
+		const result = await probeFailure(ctx, browser, viewport.width, viewport.height, viewport.scheme, id);
+		scenarios.push({ ...result, viewport: viewport.viewport, viewportSource: viewport.viewportSource });
 	} else if (args.all || args.presentOnly) {
 		notes.push(`Q01 is a review document, not an executable scenario; receipt: ${q01 === "absent" ? "absent" : q01.path}`);
 		for (const id of EXPECTED) {
@@ -131,12 +183,15 @@ try {
 				scenarios.push({ id, status: "missing" });
 				continue;
 			}
-			const result = await runIssueScenario(id, { browser, ctx, width: args.width, height: args.height, scheme: args.scheme });
-			scenarios.push({ ...result, status: "present" });
+			const viewport = await effectiveViewport(id, args);
+			const result = await runIssueScenario(id, { browser, ctx, width: viewport.width, height: viewport.height, scheme: viewport.scheme });
+			scenarios.push({ ...result, status: "present", viewport: viewport.viewport, viewportSource: viewport.viewportSource });
 		}
 	} else {
 		const id = args.scenario.toUpperCase();
-		scenarios.push({ ...(await runIssueScenario(id, { browser, ctx, width: args.width, height: args.height, scheme: args.scheme })), status: "present" });
+		const viewport = await effectiveViewport(id, args);
+		const result = await runIssueScenario(id, { browser, ctx, width: viewport.width, height: viewport.height, scheme: viewport.scheme });
+		scenarios.push({ ...result, status: "present", viewport: viewport.viewport, viewportSource: viewport.viewportSource });
 	}
 	if (browser.qaRecord) browserRecord = browser.qaRecord;
 } catch (error) {
@@ -157,7 +212,7 @@ try {
 			// before ctx.close so the profile can be removed and the port read-back is honest.
 			if (ctx) {
 				const reaped = await reapQaBrowserProcesses(ctx.profileDir).catch(() => null);
-				if (reaped && reaped.pids.length === 0) await reapQaBrowserProcesses(ctx.profileDir).catch(() => null);
+				if (reaped && reaped.matched.length === 0) await reapQaBrowserProcesses(ctx.profileDir).catch(() => null);
 			}
 		}
 	}
