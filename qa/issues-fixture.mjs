@@ -204,29 +204,63 @@ async function stopChild(child) {
 }
 
 /**
- * Remove a tree with explicit, bounded retries. Windows can keep a just-closed browser profile
- * locked for a moment, and the retry options of fs.rmSync are not reliable on every runtime, so
- * retry here with a fixed budget and give up (reported by the caller's read-back) after it.
+ * Remove a tree. fs.rmSync's retry options are the repository convention
+ * (test/helpers/tmp-home.mjs:10). On Bun 1.4.2 those options do not absorb the browser-profile
+ * lock: a probe with a live Chrome process holding the private profile observed
+ * `EBUSY: resource busy or locked, rm '...\\profile'` thrown by the first fs.rmSync call even
+ * with { maxRetries: 20, retryDelay: 100 }. One bounded fallback loop therefore re-attempts
+ * every 100 ms inside a named 10 s deadline, and only for retryable codes. The whole removal
+ * rejects by name instead of hanging; the caller reports the real outcome.
  */
-export async function removeTree(target, { attempts = 100, delayMs = 100 } = {}) {
-	let last = null;
-	for (let attempt = 0; attempt < attempts; attempt++) {
-		try {
-			fs.rmSync(target, { recursive: true, force: true });
-			return { removed: true, attempts: attempt + 1 };
-		} catch (error) {
-			last = error;
-			if (!["EBUSY", "EPERM", "ENOTEMPTY", "EMFILE", "ENFILE"].includes(error && error.code)) break;
-			await new Promise((resolve) => setTimeout(resolve, delayMs));
-		}
+export async function removeTree(target, { attempts = 100, deadlineMs = 10_000 } = {}) {
+	try {
+		fs.rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		return { removed: true, attempts: 1, fallback: false };
+	} catch (firstError) {
+		return removeTreeFallback(target, firstError, attempts, deadlineMs);
 	}
-	return { removed: false, attempts, error: last && last.code ? last.code : String(last) };
+}
+
+const RETRYABLE_REMOVE_CODES = ["EBUSY", "EPERM", "ENOTEMPTY", "EMFILE", "ENFILE"];
+
+async function removeTreeFallback(target, firstError, attempts, deadlineMs) {
+	let last = firstError;
+	let used = 0;
+	const end = Date.now() + deadlineMs;
+	const loop = (async () => {
+		for (let attempt = 0; attempt < attempts; attempt++) {
+			if (Date.now() >= end) break;
+			used = attempt + 1;
+			const pause = timeout(100, "remove_tree_retry_backoff", "remove_tree retry backoff did not elapse");
+			try {
+				await pause.promise;
+			} catch {
+				// the bounded pause always rejects at its deadline; that is the elapse
+			} finally {
+				pause.cancel();
+			}
+			try {
+				fs.rmSync(target, { recursive: true, force: true });
+				return { removed: true, attempts: attempt + 1, fallback: true, firstError: firstError && firstError.code ? firstError.code : String(firstError) };
+			} catch (error) {
+				last = error;
+				if (!RETRYABLE_REMOVE_CODES.includes(error && error.code)) break;
+			}
+		}
+		return { removed: false, attempts: used, fallback: true, error: last && last.code ? last.code : String(last) };
+	})();
+	try {
+		return await withDeadline(loop, deadlineMs, "remove_tree_deadline");
+	} catch (error) {
+		return { removed: false, attempts: used, fallback: true, error: last && last.code ? last.code : String(last), deadline: error && error.name ? error.name : "deadline" };
+	}
 }
 
 async function teardown({ child, port, root, home, evidence, error = null }) {
 	const serverExited = await stopChild(child);
 	const portClosed = port > 0 ? await tcpClosed(port) : true;
 	const removed = [];
+	const removalLog = [];
 	let names = [];
 	try {
 		names = fs.existsSync(root) ? fs.readdirSync(root) : [];
@@ -235,14 +269,24 @@ async function teardown({ child, port, root, home, evidence, error = null }) {
 	}
 	for (const entry of names) {
 		const target = path.join(root, entry);
+		if (entry === "profile") {
+			// A browser process that outlived its close keeps the private profile locked. Reap by
+			// this exact profile path first: the reaper resolves only after the killed PIDs are gone.
+			await reapQaBrowserProcesses(target).catch(() => {});
+		}
 		let outcome = await removeTree(target);
 		if (!outcome.removed && entry === "profile") {
-			// A browser process that outlived its close keeps the private profile locked.
-			// Reap it once more, then retry within a smaller budget.
 			await reapQaBrowserProcesses(target).catch(() => {});
-			await new Promise((resolve) => setTimeout(resolve, 200));
-			outcome = await removeTree(target, { attempts: 30 });
+			outcome = await removeTree(target);
 		}
+		removalLog.push({
+			entry,
+			removed: outcome.removed === true,
+			attempts: outcome.attempts,
+			fallback: outcome.fallback === true,
+			...(outcome.error ? { error: outcome.error } : {}),
+			...(outcome.deadline ? { deadline: outcome.deadline } : {}),
+		});
 		if (outcome.removed) removed.push(target);
 	}
 	let readBack = "ENOENT";
@@ -252,7 +296,7 @@ async function teardown({ child, port, root, home, evidence, error = null }) {
 	} catch (statError) {
 		readBack = statError.code || "ERROR";
 	}
-	const receipt = { serverExited, portClosed, removed, readBack };
+	const receipt = { serverExited, portClosed, removed, readBack, removalLog };
 	if (error) receipt.error = error && error.message ? error.message : String(error);
 	try {
 		fs.mkdirSync(evidence, { recursive: true });
@@ -455,7 +499,20 @@ function qaSkillRoot() {
 export async function reapQaBrowserProcesses(profileDir, { timeoutMs = 10_000 } = {}) {
 	if (process.platform !== "win32" || !profileDir) return { pids: [], error: null };
 	const needle = path.resolve(profileDir).replace(/'/g, "''");
-	const command = `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -like '*${needle}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }`;
+	// Chrome and Edge both hold the profile lock; a sub-second Stop-Process command used to exit
+	// while the browser was still shutting down. Stop every matching browser process, then wait
+	// for each PID to disappear and report which, if any, survived. The per-PID Get-Process loop
+	// keeps the wait for one PID independent of another PID that already exited; the shared 8 s
+	// limit and the parent's named 10 s deadline keep the whole command bounded.
+	const command = [
+		"$ErrorActionPreference = 'SilentlyContinue'",
+		`$procIds = @(Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'chrome.exe' -or $_.Name -eq 'msedge.exe') -and $_.CommandLine -like '*${needle}*' } | ForEach-Object { $_.ProcessId })`,
+		"foreach ($procId in $procIds) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }",
+		"$limit = (Get-Date).AddSeconds(8)",
+		"foreach ($procId in $procIds) { while ((Get-Process -Id $procId -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $limit)) { Start-Sleep -Milliseconds 50 } }",
+		"$remaining = @($procIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })",
+		"[pscustomobject]@{ pids = @($procIds); remaining = @($remaining) } | ConvertTo-Json -Compress",
+	].join("; ");
 	const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
@@ -468,20 +525,30 @@ export async function reapQaBrowserProcesses(profileDir, { timeoutMs = 10_000 } 
 	const timer = timeout(timeoutMs, "browser_reap_timeout", `browser processes did not stop within ${timeoutMs}ms`);
 	try {
 		await Promise.race([exited, timer.promise]);
-	} catch {
+	} catch (error) {
 		try {
 			child.kill();
 		} catch {
 			// best effort
 		}
+		throw error;
 	} finally {
 		timer.cancel();
 	}
-	const pids = out
-		.split(/\s+/)
-		.map((value) => Number(value))
-		.filter((value) => Number.isInteger(value) && value > 0);
-	return { pids, error: null };
+	const line = out.trim().split(/\r?\n/).filter((value) => value.trim() !== "").pop();
+	let parsed = null;
+	if (line) {
+		try {
+			parsed = JSON.parse(line);
+		} catch {
+			parsed = null;
+		}
+	}
+	const toIds = (value) => {
+		const list = value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
+		return list.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0);
+	};
+	return { pids: toIds(parsed?.pids), remaining: toIds(parsed?.remaining), error: null };
 }
 
 export async function openQaBrowser(ctx, { width = 1280, height = 800, scheme = "light" } = {}) {
