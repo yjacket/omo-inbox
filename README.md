@@ -127,10 +127,17 @@ Overrides for tests and sandboxes: `INBOX_USER_HOME` (user home, default `os.hom
 | `server status\|start\|stop\|restart` | `running pid=<pid> port=<port> version=<v>` or `stopped` | 0; 7 stopped (status) |
 | `notify --producer p --key k --title t [--body b] [--urgency now\|soon\|fyi] [--session id] [--expires iso]` | `ok <itemId>` | 0; 1 usage error; 2 invalid notice (each detail on stderr); 3 server unreachable |
 | `threads [--status s]` | `<status>\t<title>\t<product>\t<branch>\t<headline>` per thread | 0; 3 |
+| `issue list [--state s] [--json]` | `<id>\t<state>\t<category>\t<severity>\t<title>` per issue | 0; 1; 3; 7 |
+| `issue show <id> [--json]` | labeled issue, state, source, event and evidence rows; reported text/title is labeled as data, never instructions | 0; 1; 3; 4; 7 |
+| `issue triage <id> --category c --severity s --expected-seq n --request-id uuid [--note text]` | `ok <id> <state> seq <n>` | 0; 1; 3; 4; 5; 6; 7 |
+| `issue comment <id> --expected-seq n --request-id uuid --file path` | `ok <id> <state> seq <n>` | 0; 1; 3; 4; 5; 6; 7 |
+| `issue check <id> --expected-seq n --request-id uuid --file correction.json` | `ok <id> <state> seq <n>` and the correction artifact rows; the file is validated command/correction data, not a source directory | 0; 1; 3; 4; 5; 6; 7 |
 | `mode` | `trial` or `primary` | 0 |
 | `takeover` | `<step>: <result>` lines (see Modes) | 0 switched; 1 skipped or failed |
 | `handback` | `<step>: <result>` lines | 0 switched; 1 skipped or failed |
 | `install [--from-package] [--no-tailscale] [--no-autostart]`, `uninstall`, `doctor` | `<step>: <result>` lines | 0 ok; 1 any failed |
+
+For `issue` commands: exit 0 success, 1 usage/schema, 3 unreachable, 4 missing, 5 state/version/store/key conflict, 6 forbidden, 7 corrupt/storage failure. These mappings are local to `issue`; old CLI behavior is unchanged. Human output labels reported text as data, never as instructions.
 
 Exit 8 prints `open proposal exists: <id> <url> - use: inbox revise <id> <boardDir>, or inbox submit --new` on stderr.
 
@@ -216,6 +223,19 @@ The Review list lives at `/boards` (title and heading `Review`, tab title `(N) R
 - `듣기` next to the title reads the open revision aloud with the device's own voice (Web Speech `speechSynthesis`, Korean). Order: the session's reply when it is the newest event; from revision 2 on, the `이 안이 나온 이유` card (each feedback and reply in it, then the revise note); the title; the lead; each section title, then each card's title and its `say` (else its note); each question with its options, saying which one is recommended and its `why`; then `여기까지입니다`. While it reads, the button says `멈추기` and a floating `멈추기` at the bottom left stays on screen as the page scrolls; the card being read is outlined and scrolled into view. When reading stops partway (`멈추기`, a speech-engine error, or the engine going silent while the page was in the background), the button says `이어 듣기` and goes on from the piece it was reading, and `처음부터` next to it reads from the top. Reading to the end returns it to `듣기`. Switching revision stops it and forgets the place.
 - To answer by voice, use the phone keyboard's microphone in `전체 의견`. One comment can answer every question.
 
+### Issue pages (`/issues`)
+
+- Entry. `제보` is a real `<a data-issue-report href="/issues/new">` in the top tools of `/`, `/s/<sid>`, `/boards`, `/p/<id>` and in the fullscreen viewer's `.vbar`. JS enhances it; if the source script fails, ordinary navigation still opens `/issues/new`. The standalone page shows a page-level source hint only and never pretends to have captured the page that failed.
+- Composer. `문제 제보` opens at the description field; that description is the only required field (multiline free text or keyboard dictation). There is no title, severity, type, steps or expected-result input. Order: target chip with change/remove, description, attachment summary with `첨부 확인`, optional `사진 추가` and `화면 캡처` (only when the browser supports it), submission status, `보내기`. The default target is the current page/record; `위치 선택` is optional.
+- Closing, Escape or Back keeps a saved draft; `초안 버리기` asks for confirmation before removal. Success says `접수했습니다`, exposes the issue link and restores focus/scroll; it stays on the source page, never navigates to Inbox or sends an ack.
+- `/issues` is the `제보함` list, `/issues/new` the standalone composer and `/issues/<uuid>` the detail; list and detail share `web/issues.html`/`web/issues.js`. The header `제보함` link has a badge only for `needs-check`, independent of Review and `내 차례` counts.
+- States are `open` (`접수`), `investigating` (`조사 중`), `needs-check` (`확인 요청`), `resolved` (`해결`), and a terminal deletion tombstone. Comments and appended evidence keep the state; maintainer triage moves `open` or `investigating` to `investigating`, request-check is allowed from `open`, `investigating` or `needs-check` and moves to `needs-check`, owner confirmation moves `needs-check` to `resolved`, owner reopen moves `needs-check` or `resolved` to `open`, and owner purge ends in the tombstone, exactly as the HTTP API section states. Detail shows the original observation time/build, server receipt time/build, current source link, correction artifact and the owner's confirmation as separate labeled rows.
+- The fullscreen viewer gets its own `제보` action in `.vbar`; the source frame, zoom and marks stay unchanged. Issue dialogs are separate from `#comment`, `state.marks`, `#ackBtn` and `#reply`.
+- New controls have at least 44 CSS-pixel hit areas. Every state is readable as text, not color alone, and the new surfaces honor the inherited dark preference without changing the old pages' palette. Capture is never automatic: the composer displays `접수 확인 중` for an ambiguous send, and never claims acceptance before a receipt.
+- Context. Before sending, the composer previews every retained context item and lets you remove any of them individually; removal never touches the description. Context is limited to the allowlisted envelope fields (source reference, target, view, opt-in excerpt, visible record IDs, tagged diagnostics, acquisition status and visual provenance), so arbitrary selectors, outerHTML, form values or DOM attributes are never persisted. Selected text is opt-in through a visible `선택한 내용 포함` toggle that defaults on only when a specific record was invoked; page-level reporting defaults to metadata and no text. Diagnostics carry only named actions, route templates, numeric status/duration, stable error codes and script basename/line/column/error class; raw error messages and stacks, headers, URL query/hash, IP, user-agent, storage contents, input values, clipboard text, server log tails, cwd and session-file paths are excluded. Credential-pattern redaction applies only to excerpt, description, comment and mark text, with the original kept in the preview until you confirm the redacted submission; the server repeats it before persistence and retains no raw original in a side file.
+- Contract caps: description 1..8192 UTF-8 bytes; comment/note 1..4096 bytes; server-derived title at most 80 Unicode code points; selected excerpt at most 8192 bytes; at most 50 visible record IDs; at most 30 diagnostic events from the preceding 30 seconds; one raster with sides at most 4096 and at most 2,097,152 pixels; marks and masks at most 50 each with each mark note at most 256 UTF-8 bytes; input image files at most 10 MiB; list and event/evidence metadata pagination 50 by default and 100 at most; source IDs 1..200 bytes and target keys/labels at most 160 bytes each; context at most 32 KiB canonical JSON. Text is rejected rather than silently truncated. Accepted issues and pending reports never expire automatically; deletion is an explicit owner action and is terminal.
+- The issue source does not change on polling or revision updates. A missing adapter registration falls back to `/issues/new` with `contextStatus:"unavailable"` and keeps text reporting usable.
+
 ## Data layout
 ```
 <home>/
@@ -228,6 +248,12 @@ The Review list lives at `/boards` (title and heading `Review`, tab title `(N) R
   data/threads/<sid>/  one folder per session thread
     thread.json        { v: 1, session, cwd, product, feature, worktree, branch, title, titleSource, firstRequest, created, ended, sessionFile, hidden }
     events/<seq6>-<type>.json   item, summary, answer, delivered, bridge, state, pushed, closed, activity, cache, read
+  data/issues/         independent issue store (the server is its only writer)
+    store.json         { v, storeId }
+    records/<issueId>/created.json
+    events/<seq6>.json
+    evidence/<captureId>/{context.json,image.png,manifest.json}
+    tombstones/<issueId>.json
   data/live.json       session -> last /api/here time (epoch ms), restores liveness after a server restart
   mailbox/<session>/<file>.json   answers and board feedback waiting for the extension, deleted after delivery
   ledger/<session>.json   delivery ids the extension already handled
@@ -262,10 +288,12 @@ Proposals:
 - The delivered text (the inbox file's `text`, which `inbox wait` prints too) ends with a `처리:` line. After a `재요청` it tells the session to answer with `inbox revise` and that a 재요청 is not an approval, so the session neither calls the decision final nor starts the work. After `승인` or `확인` it lists `reply / revise / close`.
 - Product key comes from the normalized `origin` remote (lowercased `host/path`), feature key is `<product key>#<branch>`, and the worktree path scopes counts and notices.
 
+`data/issues` is kept by `uninstall` exactly like the rest of `data`; a tombstone retains no description, context or images.
+
 `config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 } }`. `server.json` is written only by the server: `{ "v", "name", "port", "pid", "started", "version" }`. Install doesn't write it.
 
 ## HTTP API
-Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and `x-inbox: 1` (else 403). Body limit 30 MiB (else 413). `/api/*` responses are `cache-control: no-store`; revision files are `public, max-age=31536000, immutable`.
+Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and `x-inbox: 1` (else 403). Body limit 30 MiB (else 413); `/api/issues*` instead reads at most 12 MiB, enforced while reading before JSON parsing, and the old endpoints keep 30 MiB. `/api/*` responses are `cache-control: no-store`; revision files are `public, max-age=31536000, immutable`.
 
 | Method | Path | Access | Response |
 | --- | --- | --- | --- |
@@ -288,6 +316,13 @@ Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and 
 | POST | `/api/p/<id>/revise` | session | `{ summary, url }` |
 | POST | `/api/p/<id>/reply` | session | `{ summary }` |
 | POST | `/api/p/<id>/close` | session | `{ summary }` |
+| GET | `/api/issues/capabilities` | read | `{ storeId, schema: 1, limits, serverBuild, features }`; no-store |
+| GET | `/api/issues?state=&q=&cursor=&limit=` | read | `{ items, counts: { open, investigating, "needs-check", resolved }, nextCursor }`; `q` at most 200 UTF-8 bytes, literal case-insensitive title/description search |
+| GET | `/api/issues/<id>?after=&limit=` | read | `{ issue, state, currentSeq, events, evidence, nextAfter, capabilities }`; numeric `after` and `nextAfter` |
+| GET | `/api/issues/<id>/evidence/<captureId>/image` | read | manifest-selected sanitized PNG, or 404/410; `Content-Type: image/png`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'`, `Cache-Control: private, no-store` |
+| POST | `/api/issues` | feedback | 201 commit or 200 exact replay; receipt and currentSeq |
+| POST | `/api/issues/<id>/feedback` | feedback | owner `comment`, `append_evidence`, `confirm`, `reopen`, `purge` commands |
+| POST | `/api/issues/<id>/commands` | session | maintainer `triage`, `comment`, `request_check` commands |
 | GET | `/api/here?cwd=&session=[&start=1][&idle=0\|1]` | session | `{ product, feature, mine, theirs, pending, waiting, notice, noticeKeys, footer }` |
 | POST | `/api/bye` | session | `{session, closed?}` -> `{ ok }`; `closed: true` closes the thread's open items as `session-closed` |
 | POST | `/api/shutdown` | session | `{ ok }`, then exit |
@@ -310,6 +345,10 @@ Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and 
 | GET | `/api/threads/<sid>?since=` | read | `{thread, items: [item + status + summary + answers], events}`; progress items come without `raw.text` |
 | GET | `/api/threads/<sid>/episodes/<key>` | read | `{request, lines: [{id, at, text, headline}], final: {id, at, text} \| null}` in order; a last line equal to the final is not repeated |
 | GET | `/api/items/<itemId>` | read | the item with its status and delivered deliveryIds |
+
+Issue create is `{v:1,storeId,requestId,description,evidence}` and a command is `{v:1,storeId,requestId,expectedSeq,command}`. A mutation returns `{ok:true,id,storeId,receipt:{requestId,seq,acceptedAt},currentSeq,state,evidenceManifest}`; a create receipt starts at seq 1 and an exact replay returns the original receipt and current projection, not a new acceptance time. Detail is `{issue:{id,storeId,title,description,createdAt,source},state,currentSeq,events,evidence,nextAfter,capabilities}`; list is `{items:[{id,title,state,category,severity,createdAt,updatedAt}],counts,nextCursor}` sorted by createdAt descending then id descending. Issue errors are `{error:code,fields?:string[],currentSeq?:integer,state?:string}`: `bad_input` 400, `forbidden` 403, `not_found` 404, `too_long` 413, `key_reused` 409, `version_conflict` 409, `store_changed` 409, `invalid_transition` 409, `corrupt_record` for missing or corrupt committed events/blobs, and 410 for a purged issue. A requestId replay is compared by canonical fingerprint before current-sequence/state checks; a different body is `key_reused`, a stale `expectedSeq` is `version_conflict`.
+
+States are `open` (접수), `investigating` (조사 중), `needs-check` (확인 요청) and `resolved` (해결), plus a terminal tombstone. Triage moves open/investigating to investigating with `category:inbox-ui|report-content|other` and `severity:normal|high|low`. Request-check is allowed from open/investigating/needs-check and needs a note plus correction evidence, and says `수정안 확인`; confirm is owner-only from needs-check to resolved; reopen is owner-only from needs-check/resolved to open; purge is owner-only. Invalid pairs return 409 `invalid_transition`. Each new operation emits one event; an exact replay emits none.
 
 `waiting` lists the calling session's open decision boards that wait on the owner: status `mine`, or `theirs` while the latest feedback is still undelivered (delivery `pending`). Each entry is `{ id, title, url, status, since, seq }`, where `since` is the time of the board's last submitted, revised or feedback event (a session reply never moves it) and `seq` is the latest feedback's seq for `theirs`, else `null`. Report boards, ownerless boards and other sessions' boards are never listed, and without `session` it's `[]`.
 
@@ -341,7 +380,9 @@ Each request is classified as `local`, `pc`, `tailnet` or `reject`:
 | reopen | local, pc, tailnet |
 | session | local |
 
-So a phone on your tailnet can read and send feedback, but can't submit, post items, close as a session, or launch programs on the PC, except `POST /api/threads/<sid>/reopen`, which resumes only that thread's stored session. Nothing in the request picks the command, folder or file, and Funnel is rejected as everywhere else.
+So a phone on your tailnet can read and send feedback, but can't submit, post items, close as a session, or launch programs on the PC, except `POST /api/threads/<sid>/reopen`, which resumes only that thread's stored session.
+
+Issue routes keep that ALLOW map unchanged. For forwarded tailnet issue requests the server additionally requires a configured non-null owner; local and known-PC requests keep their current classes. Browser mutations require an `Origin` header equal to the request's validated local origin or the configured `publicBase` origin. A missing `Origin` is allowed only for the local non-browser CLI and tests; `Origin: null`, foreign origins and Funnel are rejected. Nothing in the request picks the command, folder or file, and Funnel is rejected as everywhere else.
 
 ## Session wake and capture
 ### Capture
@@ -459,6 +500,10 @@ Limits:
 - PC: the browser program must be running (a background process is enough; the tab can be closed).
 - Each browser and each origin (`http://127.0.0.1:4387` on the PC, the tailnet `https` origin on the phone) subscribes separately.
 
+### Issue notifications
+
+Only a new `request_check` event sends a push through the existing subscriptions: title `제보한 문제의 수정안이 왔습니다`, body `제보함에서 확인해 주세요.`, URL `/issues/<id>`, tag `issue:<id>`. The payload carries no description, image or log text. An exact replay sends no second push, and a push failure never rolls back the issue or claims delivery; the badge and list are authoritative when push is unavailable. No source thread event or mailbox is written.
+
 ## Notices for other extensions
 Other extensions can post to the inbox by emitting `inbox:notice` on `pi.events`; the extension fills in the session and cwd and forwards it to `POST /api/notices`. From a shell, `inbox notify` does the same.
 
@@ -522,3 +567,7 @@ Every push in tests and QA goes to an `INBOX_PUSH_SINK` file, and every reopen t
 - 듣기 in the thread page needs a tap; nothing is read aloud by itself.
 - Reopen needs Orca or Windows Terminal (and `omo` on PATH for Windows Terminal) on the PC.
 - Summaries need a subscription model; without one every item uses the heuristic summary.
+- No automatic or silent screenshot. `화면 캡처` happens only from the user's own action and only where the browser's `navigator.mediaDevices.getDisplayMedia` is callable; elsewhere it is absent. Denial, unsupported capture or a failed/tainted frame yields no image and its exact reason, never a DOM reconstruction.
+- Images are re-encoded server-side to plain PNG with no metadata; the original compressed upload is not retained.
+- Drafts live in the browser's IndexedDB best-effort. If storage is unavailable or a transaction fails, the composer shows `이 기기에 초안을 저장하지 못했습니다` and never a fake saved state.
+- Fix evidence keeps the correction artifact, the applied build and the owner's confirmation separate. `수정안 확인` never claims a fix is installed, and the owner can still report that the problem remains.

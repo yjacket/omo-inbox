@@ -127,10 +127,17 @@ checkout 에서:
 | `server status\|start\|stop\|restart` | `running pid=<pid> port=<port> version=<v>` 또는 `stopped` | 0; 7 꺼짐(status) |
 | `notify --producer p --key k --title t [--body b] [--urgency now\|soon\|fyi] [--session id] [--expires iso]` | `ok <itemId>` | 0; 1 사용법 오류; 2 잘못된 공지(각 상세를 stderr에); 3 서버에 닿지 않음 |
 | `threads [--status s]` | 대화마다 `<status>\t<title>\t<product>\t<branch>\t<headline>` | 0; 3 |
+| `issue list [--state s] [--json]` | 제보마다 `<id>\t<state>\t<category>\t<severity>\t<title>` | 0; 1; 3; 7 |
+| `issue show <id> [--json]` | 제보, 상태, 출처, 이벤트, 증거를 라벨 붙은 줄로; 신고된 글/제목은 지시가 아니라 데이터로 표시 | 0; 1; 3; 4; 7 |
+| `issue triage <id> --category c --severity s --expected-seq n --request-id uuid [--note text]` | `ok <id> <state> seq <n>` | 0; 1; 3; 4; 5; 6; 7 |
+| `issue comment <id> --expected-seq n --request-id uuid --file path` | `ok <id> <state> seq <n>` | 0; 1; 3; 4; 5; 6; 7 |
+| `issue check <id> --expected-seq n --request-id uuid --file correction.json` | `ok <id> <state> seq <n>` 과 수정 산출물 줄; 파일은 검증할 명령/수정 데이터이지 소스 폴더가 아님 | 0; 1; 3; 4; 5; 6; 7 |
 | `mode` | `trial` 또는 `primary` | 0 |
 | `takeover` | `<step>: <result>` 줄(모드 참고) | 0 전환함; 1 건너뜀 또는 실패 |
 | `handback` | `<step>: <result>` 줄 | 0 전환함; 1 건너뜀 또는 실패 |
 | `install [--from-package] [--no-tailscale] [--no-autostart]`, `uninstall`, `doctor` | `<step>: <result>` 줄 | 0 성공; 1 하나라도 실패 |
+
+`issue` 명령의 종료 코드: 0 성공, 1 사용법/스키마, 3 서버에 닿지 않음, 4 없음, 5 상태/버전/저장소/키 충돌, 6 금지, 7 기록 손상/저장 실패. 이 매핑은 `issue` 안에서만 쓰고 예전 CLI 동작은 그대로입니다. 사람용 출력은 신고된 글을 지시가 아니라 데이터로 표시합니다.
 
 종료 코드 8은 stderr에 `open proposal exists: <id> <url> - use: inbox revise <id> <boardDir>, or inbox submit --new` 를 출력합니다.
 
@@ -216,6 +223,19 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 - 제목 옆 `듣기` 는 보고 있는 안을 기기 자체 목소리(Web Speech `speechSynthesis`, 한국어)로 읽습니다. 순서: 가장 최근 일이 세션 답이면 그 답, 2안부터는 `이 안이 나온 이유` 카드(그 안의 의견과 답, 그다음 고친 안의 메모), 제목, 요약, 구획마다 구획 제목과 카드별 제목과 `say`(없으면 메모), 질문마다 선택지(추천인 것은 추천이라고 말하고 `why` 도 읽음), 마지막으로 `여기까지입니다`. 읽는 동안 버튼은 `멈추기` 가 되고, 화면이 넘어가도 왼쪽 아래에 떠 있는 `멈추기` 가 남아 있으며, 읽고 있는 카드에 테두리가 생기며 화면 가운데로 옵니다. 중간에 멈추면(`멈추기`, 음성 엔진 오류, 페이지가 뒤로 가 있는 사이 엔진이 말을 끊은 경우) 버튼은 `이어 듣기` 가 되어 읽던 조각부터 이어 읽고, 옆의 `처음부터` 는 처음부터 읽습니다. 끝까지 읽으면 다시 `듣기` 가 됩니다. 다른 안으로 바꾸면 멈추고 읽던 자리도 잊습니다.
 - 말로 답하려면 `전체 의견` 에서 폰 키보드의 마이크를 씁니다. 의견 하나로 모든 질문에 답해도 됩니다.
 
+### 제보 페이지 (`/issues`)
+
+- 입구. `제보` 는 `/`, `/s/<sid>`, `/boards`, `/p/<id>` 의 위 도구와 전체 화면 뷰어의 `.vbar` 에 있는 실제 `<a data-issue-report href="/issues/new">` 입니다. JS가 이것을 보강하고, 원본 스크립트가 실패해도 보통 링크 이동으로 `/issues/new` 가 열립니다. 독립 페이지는 페이지 수준의 출처 힌트만 보이고, 실패한 페이지를 수집한 척하지 않습니다.
+- 작성창. `문제 제보` 는 설명 칸에서 열리고, 그 설명이 유일한 필수 칸입니다(여러 줄 자유 글 또는 키보드 받아쓰기). 제목, 심각도, 유형, 단계, 기대 결과 입력은 없습니다. 순서: 바꾸기/지우기가 있는 위치 칩, 설명, `첨부 확인` 이 있는 첨부 요약, 브라우저가 지원할 때만 나오는 선택 `사진 추가`/`화면 캡처`, 전송 상태, `보내기`. 기본 위치는 지금 페이지/기록이고 `위치 선택` 은 선택입니다.
+- 닫기, Escape, 뒤로 가기는 저장된 초안을 남깁니다. `초안 버리기` 는 지우기 전에 확인을 받습니다. 성공하면 `접수했습니다` 라고 알리고 제보 링크를 보여 주며 초점/스크롤을 되돌립니다. 원래 페이지에 머물고 Inbox로 이동하거나 ack를 보내지 않습니다.
+- `/issues` 는 `제보함` 목록, `/issues/new` 는 독립 작성창, `/issues/<uuid>` 는 상세입니다. 목록과 상세는 `web/issues.html`/`web/issues.js` 를 함께 씁니다. 머리의 `제보함` 링크 배지는 `needs-check` 만 세며 Review와 `내 차례` 수와 별개입니다.
+- 상태는 `open`(`접수`), `investigating`(`조사 중`), `needs-check`(`확인 요청`), `resolved`(`해결`), 그리고 끝난 삭제 표석입니다. 의견과 덧붙인 증거는 상태를 바꾸지 않고, 관리자의 분류는 `open`/`investigating` 을 `investigating` 으로, 수정 확인 요청은 `open`/`investigating`/`needs-check` 에서 `needs-check` 로, 소유자 확인은 `needs-check` 를 `resolved` 로, 소유자 다시 열기는 `needs-check`/`resolved` 를 `open` 으로, 소유자 삭제는 표석으로 HTTP API 절의 규칙대로 움직입니다. 상세는 처음 관찰 시각/빌드, 서버 접수 시각/빌드, 현재 출처 링크, 수정 산출물, 소유자 확인을 각각 라벨 붙은 줄로 나눠 보입니다.
+- 전체 화면 뷰어는 `.vbar` 에 자기 `제보` 동작을 얻습니다. 원본 그림, 확대, 표시는 그대로입니다. 제보 대화 상자는 `#comment`, `state.marks`, `#ackBtn`, `#reply` 와 별개입니다.
+- 새 조작은 최소 44 CSS 픽셀의 누름 영역을 가집니다. 모든 상태는 색만이 아니라 글자로도 읽히고, 새 화면은 상속된 어두운 설정을 따르며 예전 페이지 색은 바꾸지 않습니다. 캡처는 절대 저절로 하지 않으며, 결과가 불확실한 전송은 `접수 확인 중` 으로 보이고 receipt 전에는 접수됐다고 말하지 않습니다.
+- 문맥. 보내기 전에 작성창은 남길 문맥 항목을 모두 미리 보여 주고, 항목마다 지울 수 있습니다. 지워도 설명은 그대로입니다. 문맥은 허용 목록에 든 봉투 필드(출처 참조, 대상, 보기, 선택한 발췌, 보이는 기록 id, 태그 붙은 진단, 수집 상태, 그림 출처)로만 제한하므로 임의 선택자, outerHTML, 입력값, DOM 속성은 저장하지 않습니다. 글은 보이는 `선택한 내용 포함` 토글로 선택하며, 특정 기록에서 연 경우에만 기본으로 켜지고 페이지 수준 제보는 문맥만 담고 글은 담지 않습니다. 진단은 정해진 동작 이름, 경로 템플릿, 숫자 상태/시간, 안정된 오류 코드, 스크립트 파일 이름/줄/열/오류 종류만 담습니다. 원본 오류 문구와 스택, 헤더, URL 질의/해시, IP, 사용자 에이전트, 저장소 내용, 입력값, 클립보드 글, 서버 로그 끝, cwd, 세션 파일 경로는 넣지 않습니다. 자격 증명 모양 가리기는 발췌, 설명, 의견, 표시 글에만 적용하고, 가린 제출을 확인할 때까지 미리보기에는 원문을 둡니다. 서버는 저장 전에 같은 가리기를 다시 하고 원문을 곁 파일에 남기지 않습니다.
+- 계약 한도: 설명 1..8192 UTF-8 바이트, 의견/메모 1..4096 바이트, 서버가 만드는 제목 80 유니코드 코드 포인트까지, 고른 발췌 8192 바이트까지, 보이는 기록 id 50개까지, 앞선 30초의 진단 이벤트 30개까지, 래스터 한 변 4096 이하이면서 2,097,152 픽셀까지, 표시/가리기 각각 50개이며 표시 메모는 각각 256 UTF-8 바이트까지, 입력 그림 파일 10 MiB까지, 목록과 이벤트/증거 메타데이터 쪽은 기본 50개·최대 100개, 출처 id 1..200 바이트와 대상 키/라벨 각각 160 바이트까지, 문맥 32 KiB 정규 JSON까지. 글은 조용히 자르지 않고 거부합니다. 접수된 제보와 대기 중인 제보는 저절로 만료되지 않으며, 삭제는 소유자가 명시적으로 할 때만 끝나는 동작입니다.
+- 조회 중이거나 안이 바뀌어도 제보의 출처는 바뀌지 않습니다. 어댑터 등록을 쓸 수 없으면 `contextStatus:"unavailable"` 로 `/issues/new` 로 낮추고 글 제보는 계속 쓸 수 있습니다.
+
 ## 데이터 구조
 ```
 <home>/
@@ -228,6 +248,12 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
   data/threads/<sid>/  세션 대화마다 폴더 하나
     thread.json        { v: 1, session, cwd, product, feature, worktree, branch, title, titleSource, firstRequest, created, ended, sessionFile, hidden }
     events/<seq6>-<type>.json   item, summary, answer, delivered, bridge, state, pushed, closed, activity, cache, read
+  data/issues/         독립 제보 저장소 (서버만 씀)
+    store.json         { v, storeId }
+    records/<issueId>/created.json
+    events/<seq6>.json
+    evidence/<captureId>/{context.json,image.png,manifest.json}
+    tombstones/<issueId>.json
   data/live.json       세션 -> 마지막 /api/here 시각(epoch ms). 서버를 다시 시작해도 살아 있음을 되살림
   mailbox/<session>/<file>.json   확장을 기다리는 답과 보드 의견. 전달 후 지움
   ledger/<session>.json   확장이 이미 처리한 전달 id
@@ -262,10 +288,12 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 - 전달 문구(우편함 파일의 `text`, `inbox wait` 도 같은 문구를 출력)는 `처리:` 줄로 끝납니다. `재요청` 이면 세션에 `inbox revise` 로 수정안을 올리라고 하고, 재요청은 승인이 아니니 확정하거나 작업을 시작하지 말라고 적습니다. `승인` 이나 `확인` 이면 `reply / revise / close` 를 나열합니다.
 - 제품 키는 정규화한 `origin` remote(소문자 `host/path`), 기능 키는 `<제품 키>#<브랜치>`, 개수와 알림의 범위는 워크트리 경로입니다.
 
+`data/issues` 는 `uninstall` 이 나머지 `data` 와 똑같이 간직합니다. 삭제 표석에는 설명, 문맥, 그림을 남기지 않습니다.
+
 `config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 } }`. `server.json` 은 서버만 씁니다: `{ "v", "name", "port", "pid", "started", "version" }`. 설치는 쓰지 않습니다.
 
 ## HTTP API
-서버는 `127.0.0.1:4387`. 모든 POST는 `content-type: application/json` 과 `x-inbox: 1` 이 필요합니다(없으면 403). 본문 제한 30 MiB(넘으면 413). `/api/*` 응답은 `cache-control: no-store`, 안 파일은 `public, max-age=31536000, immutable`.
+서버는 `127.0.0.1:4387`. 모든 POST는 `content-type: application/json` 과 `x-inbox: 1` 이 필요합니다(없으면 403). 본문 제한 30 MiB(넘으면 413). `/api/issues*` 는 대신 12 MiB까지만 읽고 JSON을 해석하기 전에 적용하며, 예전 경로는 30 MiB를 그대로 씁니다. `/api/*` 응답은 `cache-control: no-store`, 안 파일은 `public, max-age=31536000, immutable`.
 
 | 메서드 | 경로 | 권한 | 응답 |
 | --- | --- | --- | --- |
@@ -288,6 +316,13 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 | POST | `/api/p/<id>/revise` | session | `{ summary, url }` |
 | POST | `/api/p/<id>/reply` | session | `{ summary }` |
 | POST | `/api/p/<id>/close` | session | `{ summary }` |
+| GET | `/api/issues/capabilities` | read | `{ storeId, schema: 1, limits, serverBuild, features }`; no-store |
+| GET | `/api/issues?state=&q=&cursor=&limit=` | read | `{ items, counts: { open, investigating, "needs-check", resolved }, nextCursor }`; `q` 200 UTF-8 바이트까지, 제목/설명의 문자 그대로 대소문자 무시 검색 |
+| GET | `/api/issues/<id>?after=&limit=` | read | `{ issue, state, currentSeq, events, evidence, nextAfter, capabilities }`; 숫자 `after`/`nextAfter` |
+| GET | `/api/issues/<id>/evidence/<captureId>/image` | read | manifest가 고른 정리된 PNG, 또는 404/410; `Content-Type: image/png`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'`, `Cache-Control: private, no-store` |
+| POST | `/api/issues` | feedback | 201 커밋 또는 200 정확한 재전송; receipt와 currentSeq |
+| POST | `/api/issues/<id>/feedback` | feedback | 소유자 `comment`, `append_evidence`, `confirm`, `reopen`, `purge` 명령 |
+| POST | `/api/issues/<id>/commands` | session | 관리자 `triage`, `comment`, `request_check` 명령 |
 | GET | `/api/here?cwd=&session=[&start=1][&idle=0\|1]` | session | `{ product, feature, mine, theirs, pending, waiting, notice, noticeKeys, footer }` |
 | POST | `/api/bye` | session | `{session, closed?}` -> `{ ok }`; `closed: true` 면 그 대화의 열린 항목을 `session-closed` 로 닫음 |
 | POST | `/api/shutdown` | session | `{ ok }`, 이후 종료 |
@@ -310,6 +345,10 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 | GET | `/api/threads/<sid>?since=` | read | `{thread, items: [item + status + summary + answers], events}`. 진행 항목은 `raw.text` 없이 옴 |
 | GET | `/api/threads/<sid>/episodes/<key>` | read | 차례대로 `{request, lines: [{id, at, text, headline}], final: {id, at, text} \| null}`. 마지막 메시지와 같은 마지막 줄은 다시 넣지 않음 |
 | GET | `/api/items/<itemId>` | read | 상태와 전달된 deliveryId를 담은 항목 |
+
+제보 생성은 `{v:1,storeId,requestId,description,evidence}`, 명령은 `{v:1,storeId,requestId,expectedSeq,command}` 입니다. 변경 성공은 `{ok:true,id,storeId,receipt:{requestId,seq,acceptedAt},currentSeq,state,evidenceManifest}` 이고, 생성 receipt는 seq 1부터 시작하며 정확한 재전송은 새 접수 시각을 만들지 않고 원래 receipt와 현재 상태를 돌려줍니다. 상세는 `{issue:{id,storeId,title,description,createdAt,source},state,currentSeq,events,evidence,nextAfter,capabilities}`, 목록은 `{items:[{id,title,state,category,severity,createdAt,updatedAt}],counts,nextCursor}` 이며 createdAt 내림차순, 같으면 id 내림차순입니다. 제보 오류는 `{error:code,fields?:string[],currentSeq?:integer,state?:string}` 입니다: `bad_input` 400, `forbidden` 403, `not_found` 404, `too_long` 413, `key_reused` 409, `version_conflict` 409, `store_changed` 409, `invalid_transition` 409, 커밋된 이벤트/블롭이 없거나 손상되면 `corrupt_record`, 삭제된 제보는 410입니다. 같은 requestId는 현재 순번/상태 검사보다 먼저 정규 지문으로 비교합니다. 다른 본문은 `key_reused`, 오래된 `expectedSeq` 는 `version_conflict` 입니다.
+
+상태는 `open`(접수), `investigating`(조사 중), `needs-check`(확인 요청), `resolved`(해결), 그리고 끝난 삭제 표석입니다. 분류는 open/investigating을 investigating으로 옮기며 `category:inbox-ui|report-content|other`, `severity:normal|high|low` 를 기록합니다. 수정 확인 요청은 open/investigating/needs-check 에서 허용되고 메모와 수정 증거가 필요하며 `수정안 확인` 이라고 말합니다. 확인은 소유자만 needs-check에서 resolved로, 다시 열기는 소유자만 needs-check/resolved에서 open으로, 삭제는 소유자만 할 수 있습니다. 맞지 않는 짝은 409 `invalid_transition` 입니다. 새 동작마다 이벤트 하나를 쓰고 정확한 재전송은 아무 이벤트도 쓰지 않습니다.
 
 `waiting` 은 부른 세션의 열린 결정 보드 중 소유자 답을 기다리는 것을 나열합니다. 상태가 `mine` 이거나, `theirs` 인데 마지막 의견이 아직 전달되지 않은(delivery `pending`) 보드입니다. 항목은 `{ id, title, url, status, since, seq }` 이고, `since` 는 보드의 마지막 제출, 수정, 의견 이벤트 시각입니다(세션 답장은 바꾸지 않습니다). `seq` 는 `theirs` 일 때 마지막 의견의 seq, 아니면 `null` 입니다. 보고 보드, 소유자 없는 보드, 다른 세션의 보드는 나오지 않고, `session` 이 없으면 `[]` 입니다.
 
@@ -341,7 +380,9 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 | reopen | local, pc, tailnet |
 | session | local |
 
-그래서 tailnet의 휴대폰은 읽고 의견을 보낼 수 있지만, 세션처럼 제출하거나 항목을 올리거나 닫거나 PC에서 프로그램을 띄울 수는 없습니다. 예외는 `POST /api/threads/<sid>/reopen` 이고, 그 대화에 저장된 세션 하나만 다시 엽니다. 요청 내용으로는 명령, 폴더, 파일을 고를 수 없고, Funnel은 다른 곳과 마찬가지로 거부합니다.
+그래서 tailnet의 휴대폰은 읽고 의견을 보낼 수 있지만, 세션처럼 제출하거나 항목을 올리거나 닫거나 PC에서 프로그램을 띄울 수는 없습니다. 예외는 `POST /api/threads/<sid>/reopen` 이고, 그 대화에 저장된 세션 하나만 다시 엽니다.
+
+제보 경로는 위 ALLOW 표를 바꾸지 않습니다. 전달된 tailnet 제보 요청은 설정된 non-null 소유자도 있어야 하고, local과 알려진 PC는 지금 분류를 그대로 씁니다. 브라우저 변경 요청은 요청의 검증된 local origin 또는 설정된 `publicBase` origin과 같은 `Origin` 헤더가 필요합니다. `Origin` 이 없는 것은 local 비브라우저 CLI와 테스트에만 허용하고, `Origin: null`, 다른 origin, Funnel은 거부합니다. 요청 내용으로는 명령, 폴더, 파일을 고를 수 없고, Funnel은 다른 곳과 마찬가지로 거부합니다.
 
 ## 세션 깨우기와 수집
 ### 수집
@@ -459,6 +500,10 @@ Inbox 머리글에서 브라우저마다 한 번 켭니다. `알림 받기` 는 
 - PC: 브라우저 프로그램이 실행 중이어야 합니다(백그라운드 프로세스면 충분하고 탭은 닫아도 됩니다).
 - 브라우저마다, origin마다(PC의 `http://127.0.0.1:4387`, 휴대폰의 tailnet `https` origin) 따로 구독합니다.
 
+### 제보 알림
+
+새 `request_check` 이벤트만 기존 구독으로 푸시합니다: 제목 `제보한 문제의 수정안이 왔습니다`, 본문 `제보함에서 확인해 주세요.`, URL `/issues/<id>`, tag `issue:<id>`. 설명, 그림, 로그 글은 싣지 않습니다. 정확한 재전송은 두 번째 푸시를 보내지 않고, 푸시 실패가 제보를 되돌리거나 전달됐다고 주장하지 않습니다. 푸시를 쓸 수 없을 때는 배지와 목록이 기준입니다. 원래 대화 이벤트나 우편함에는 쓰지 않습니다.
+
 ## 다른 확장의 공지
 다른 확장은 `pi.events` 에 `inbox:notice` 를 보내 Inbox에 글을 올릴 수 있습니다. 확장이 세션과 cwd를 채워 `POST /api/notices` 로 넘깁니다. 셸에서는 `inbox notify` 가 같은 일을 합니다.
 
@@ -522,3 +567,7 @@ Inbox 차례 흐름 브라우저 QA: `bun qa/turn-list-qa.mjs`(포트 4395), `bu
 - 대화 페이지의 듣기는 눌러야 읽습니다. 저절로 읽는 일은 없습니다.
 - 다시 열기에는 PC에 Orca나 Windows Terminal(Windows Terminal이면 PATH의 `omo` 도)이 있어야 합니다.
 - 요약에는 구독 모델이 필요합니다. 없으면 모든 항목이 휴리스틱 요약을 씁니다.
+- 저절로, 몰래 화면을 찍지 않습니다. `화면 캡처` 는 사용자가 직접 누를 때, 브라우저의 `navigator.mediaDevices.getDisplayMedia` 를 부를 수 있을 때만 됩니다. 그 밖에는 버튼이 없습니다. 거부, 미지원, 실패/오염된 프레임은 그림 없이 정확한 이유만 남기고 DOM 재구성으로 대신하지 않습니다.
+- 그림은 서버에서 메타데이터 없는 평범한 PNG로 다시 인코딩하며, 원본 압축 업로드는 간직하지 않습니다.
+- 초안은 브라우저 IndexedDB에 최선 노력으로 저장합니다. 저장소를 쓸 수 없거나 트랜잭션이 실패하면 작성창은 `이 기기에 초안을 저장하지 못했습니다` 라고 보이고 저장된 척하지 않습니다.
+- 수정 증거는 수정 산출물, 적용된 빌드, 소유자 확인을 각각 나눠 간직합니다. `수정안 확인` 은 수정이 설치됐다고 주장하지 않고, 소유자는 여전히 문제가 남았다고 제보할 수 있습니다.
