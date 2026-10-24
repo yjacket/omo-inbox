@@ -1185,6 +1185,7 @@ export function createServer({
 	async function handleItemAction(res, itemId, body, access) {
 		const actionId = typeof body.action === "string" ? body.action : null;
 		if (actionId !== "close" && actionId !== "new-session") return handleItemActionBody(res, itemId, body, access);
+		if (!guard(res, access, "reopen")) return;
 		if (actionInflight.has(itemId)) return sendJson(res, 409, { error: "busy" });
 		actionInflight.add(itemId);
 		try {
