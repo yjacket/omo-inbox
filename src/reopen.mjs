@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -78,6 +79,45 @@ export function orcaAttempt({ orcaPath, worktreePath, title, command }) {
 
 export function wtAttempt({ wtPath, cwd, title, argv }) {
 	return { via: "wt", cmd: wtPath, args: ["-w", "-1", "new-tab", "-d", cwd, "--title", title, ...argv] };
+}
+
+export function uuidv7(now = Date.now(), randomBytes = crypto.randomBytes) {
+	const bytes = Buffer.from(randomBytes(16));
+	let time = Number(now);
+	for (let index = 5; index >= 0; index -= 1) {
+		bytes[index] = time % 256;
+		time = Math.floor(time / 256);
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x70;
+	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	const hex = bytes.toString("hex");
+	return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+}
+
+function matchingWorktree(worktrees, cwd) {
+	return worktrees.find((w) => {
+		const listed = safePath(w, "win32") ?? safePath(w, "posix") ?? (typeof w === "string" ? w.replace(/\\/g, "/").replace(/\/$/, "") : null);
+		return listed !== null && samePath(w, cwd);
+	});
+}
+
+export function planNewSession({ sid, folder, message, env, exists, isDir, worktrees }) {
+	if (typeof message !== "string" || !/^\/skill:ulw-execute [a-z0-9][a-z0-9-]{0,79}$/.test(message)) return { error: "bad_message" };
+	if (!SID_RE.test(sid)) return { error: "bad_sid" };
+	const cwd = safePath(folder);
+	if (!cwd || !isDir(cwd)) return { error: "cwd_missing" };
+	const slug = message.slice("/skill:ulw-execute ".length);
+	const title = safeTitle("ulw-execute " + slug);
+	const attempts = [];
+	const orcaPath = orcaPathFor(env, exists);
+	if (orcaPath) {
+		const match = matchingWorktree(worktrees, cwd);
+		if (match) attempts.push(orcaAttempt({ orcaPath, worktreePath: match, title, command: "omo --session-id " + sid + ' "' + message + '"' }));
+	}
+	const wtPath = wtPathFor(env, exists);
+	const omoPath = omoPathFor(env, exists);
+	if (wtPath && omoPath) attempts.push(wtAttempt({ wtPath, cwd, title, argv: [omoPath, "--session-id", sid, message] }));
+	return attempts.length ? { attempts, cwd, title } : { error: "no_launcher" };
 }
 
 export function planReopen({ sid, thread, env, exists, isDir, worktrees }) {
@@ -177,6 +217,7 @@ export function createReopener({ env = process.env, exists = pathExists, isDir =
 	const last = new Map();
 	const lastVia = new Map();
 	const inflight = new Map();
+	const launchInflight = new Map();
 	return {
 		async reopen(sid, thread) {
 			if (inflight.has(sid)) return inflight.get(sid).then((r) => r.ok ? { ...r, already: true } : r);
@@ -203,6 +244,25 @@ export function createReopener({ env = process.env, exists = pathExists, isDir =
 			})();
 			inflight.set(sid, launch);
 			try { return await launch; } finally { inflight.delete(sid); }
+		},
+		async launch({ sid, folder, message }) {
+			if (launchInflight.has(sid)) return launchInflight.get(sid).then((r) => r.ok ? { ...r, already: true } : r);
+			const start = (async () => {
+				const orcaPath = orcaPathFor(env, exists);
+				const worktrees = orcaPath ? await listOrcaWorktrees({ orcaPath, spawnImpl }) : [];
+				const plan = planNewSession({ sid, folder, message, env, exists, isDir, worktrees });
+				if (plan.error) return { ok: false, error: plan.error };
+				if (sink) {
+					fs.appendFileSync(sink, JSON.stringify({ at: new Date(now()).toISOString(), sid, kind: "launch", attempts: plan.attempts }) + "\n");
+					return { ok: true, via: "sink" };
+				}
+				const result = await runAttempts(plan.attempts, { spawnImpl });
+				if (result.ok) return { ok: true, via: result.via };
+				log("launch " + sid + " failed " + JSON.stringify(result.tried));
+				return { ok: false, error: "launch_failed" };
+			})();
+			launchInflight.set(sid, start);
+			try { return await start; } finally { launchInflight.delete(sid); }
 		},
 	};
 }

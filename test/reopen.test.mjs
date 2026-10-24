@@ -8,11 +8,13 @@ import {
 	createReopener,
 	listOrcaWorktrees,
 	pathExists,
+	planNewSession,
 	planReopen,
 	runAttempts,
 	safePath,
 	safeTitle,
 	sessionTarget,
+	uuidv7,
 } from "../src/reopen.mjs";
 
 function fakeSpawn(plan) {
@@ -146,6 +148,63 @@ test("plan opens Windows Terminal alone when no Orca worktree matches, and Orca 
 	assert.deepEqual(wtOnly.attempts.map((attempt) => attempt.via), ["wt"]);
 	const orcaOnly = planReopen({ ...base, env: { PATH: "C:/bin" }, exists: (p) => p === "C:/bin/orca.exe", worktrees: ["C:/work"] });
 	assert.deepEqual(orcaOnly.attempts.map((attempt) => attempt.via), ["orca"]);
+});
+
+test("uuidv7 stamps the time, version and variant in lowercase hex", () => {
+	const bytes = Buffer.alloc(16, 0xab);
+	assert.equal(uuidv7(0x0123456789ab, () => bytes), "01234567-89ab-7bab-abab-abababababab");
+	const early = uuidv7(0, () => Buffer.alloc(16, 0xff));
+	assert.equal(early, "00000000-0000-7fff-bfff-ffffffffffff");
+	assert.match(uuidv7(1700000000000), /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+	assert.equal(uuidv7(1700000000000).replace(/-/g, "").slice(0, 12), (1700000000000).toString(16).padStart(12, "0"));
+});
+
+test("new session plan launches Orca in a listed worktree with a kickoff command", () => {
+	const exists = (p) => ["C:/bin/orca.exe", "C:/bin/wt.exe", "C:/bin/omo.exe"].includes(p);
+	const plan = planNewSession({ sid: "valid-sid1", folder: "C:/Work/Repo", message: "/skill:ulw-execute x", env: { PATH: "C:/bin" }, exists, isDir: () => true, worktrees: ["c:\\work\\repo"] });
+	assert.equal(plan.title, "ulw-execute x");
+	assert.deepEqual(plan.attempts.map((attempt) => attempt.via), ["orca", "wt"]);
+	assert.equal(plan.attempts[0].args[3], "path:c:\\work\\repo");
+	assert.equal(plan.attempts[0].args[7], 'omo --session-id valid-sid1 "/skill:ulw-execute x"');
+});
+
+test("new session plan passes the kickoff as one Windows Terminal argv entry when Orca has no worktree", () => {
+	const plan = planNewSession({ sid: "valid-sid1", folder: "C:/work", message: "/skill:ulw-execute x", env: { PATH: "C:/bin" }, exists: (p) => ["C:/bin/orca.exe", "C:/bin/wt.exe", "C:/bin/omo.exe"].includes(p), isDir: () => true, worktrees: ["C:/elsewhere"] });
+	assert.deepEqual(plan.attempts.map((attempt) => attempt.via), ["wt"]);
+	assert.deepEqual(plan.attempts[0].args.slice(7), ["C:/bin/omo.exe", "--session-id", "valid-sid1", "/skill:ulw-execute x"]);
+});
+
+test("new session plan validates the kickoff, sid, folder and launchers", () => {
+	const base = { sid: "valid-sid1", folder: "C:/work", message: "/skill:ulw-execute x", env: { PATH: "C:/bin" }, exists: (p) => ["C:/bin/wt.exe", "C:/bin/omo.exe"].includes(p), isDir: () => true, worktrees: [] };
+	for (const message of ["/skill:ulw-execute ../x", "rm -rf /", "/skill:ulw-execute ", "/skill:ulw-execute X"]) assert.deepEqual(planNewSession({ ...base, message }), { error: "bad_message" });
+	assert.deepEqual(planNewSession({ ...base, sid: "bad" }), { error: "bad_sid" });
+	assert.deepEqual(planNewSession({ ...base, folder: "C:/missing", isDir: (p) => p !== "C:/missing" }), { error: "cwd_missing" });
+	assert.deepEqual(planNewSession({ ...base, exists: () => false }), { error: "no_launcher" });
+});
+
+test("reopener launch records a launch line each time and dedupes overlapping calls", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "launch-"));
+	try {
+		const sink = path.join(dir, "sink.jsonl");
+		const env = { PATH: "C:/bin", INBOX_REOPEN_SINK: sink };
+		const exists = (p) => ["C:/bin/wt.exe", "C:/bin/omo.exe"].includes(p) || p === "C:/work";
+		const reopener = createReopener({ env, exists, isDir: () => true, now: () => 1000 });
+		assert.deepEqual(await reopener.launch({ sid: "valid-sid1", folder: "C:/work", message: "/skill:ulw-execute x" }), { ok: true, via: "sink" });
+		await reopener.launch({ sid: "valid-sid2", folder: "C:/work", message: "/skill:ulw-execute y" });
+		const lines = fs.readFileSync(sink, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.equal(lines.length, 2);
+		assert.equal(lines[0].kind, "launch");
+		assert.equal(lines[0].sid, "valid-sid1");
+		assert.equal(lines[1].sid, "valid-sid2");
+		const overlapping = createReopener({ env, exists, isDir: () => true, now: () => 2000 });
+		const first = overlapping.launch({ sid: "valid-sid3", folder: "C:/work", message: "/skill:ulw-execute z" });
+		const second = overlapping.launch({ sid: "valid-sid3", folder: "C:/work", message: "/skill:ulw-execute z" });
+		assert.deepEqual(await first, { ok: true, via: "sink" });
+		assert.deepEqual(await second, { ok: true, via: "sink", already: true });
+		assert.equal(fs.readFileSync(sink, "utf8").trim().split("\n").length, 3);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("attempt runner reports launch_failed with every attempt tried when each one exits with an error", async () => {
