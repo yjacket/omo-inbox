@@ -48,6 +48,33 @@ function findKey(value, key) {
 	return null;
 }
 
+function waitExit(child, timeoutMs) {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => {
+			child.kill();
+			resolve({ code: null, error: new Error(`close-tab did not exit within ${timeoutMs} ms`) });
+		}, timeoutMs);
+		child.once("exit", (code) => {
+			clearTimeout(timer);
+			resolve({ code, error: null });
+		});
+		child.once("error", (error) => {
+			clearTimeout(timer);
+			resolve({ code: null, error });
+		});
+	});
+}
+
+async function waitGone(terminal, timeoutMs) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const list = await run(orcaPath, ["terminal", "list", "--json"]);
+		if (list.code === 0 && !list.stdout.includes(terminal)) return;
+		if (Date.now() >= deadline) throw new Error(`terminal ${terminal} is still listed after ${timeoutMs} ms`);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+	}
+}
+
 function waitForFile(file, timeoutMs) {
 	return new Promise((resolve, reject) => {
 		const name = path.basename(file);
@@ -123,6 +150,38 @@ try {
 		handle = null;
 	});
 
+	await check("close-tab closes the Orca tab after the process exits", async () => {
+		assert(listedWorktree, "no listed Orca worktree from check 1");
+		const created = await runAttempts([orcaAttempt({ orcaPath, worktreePath: listedWorktree, title: `${TITLE}-close`, command: "cd" })], { spawnImpl: spawn });
+		assert(created.ok, `orca create failed: ${JSON.stringify(created.tried)}`);
+		const tabHandle = findKey(JSON.parse(created.output).result, "handle");
+		assert(tabHandle, "orca create output has no handle");
+		let dummy = null;
+		try {
+			dummy = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { windowsHide: true, stdio: "ignore" });
+			const pid = await new Promise((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error("dummy process did not spawn within 5000 ms")), 5000);
+				dummy.once("spawn", () => {
+					clearTimeout(timer);
+					resolve(dummy.pid);
+				});
+				dummy.once("error", (error) => {
+					clearTimeout(timer);
+					reject(error);
+				});
+			});
+			const closer = spawn(process.execPath, [path.join(REPO, "bin", "close-tab.mjs"), "--pid", String(pid), "--terminal", tabHandle], { cwd: REPO, windowsHide: true, stdio: "ignore" });
+			dummy.kill();
+			const exited = await waitExit(closer, 15000);
+			assert(!exited.error, exited.error?.message);
+			assert(exited.code === 0, `close-tab exited ${exited.code}`);
+			dummy = null;
+			await waitGone(tabHandle, 10000);
+		} finally {
+			dummy?.kill();
+		}
+	});
+
 	await check("wt opens a tab in a temp folder that runs a command", async () => {
 		assert(wtPath, "wt.exe not found");
 		fs.mkdirSync(dir, { recursive: true });
@@ -141,4 +200,4 @@ try {
 
 const passed = results.filter(Boolean).length;
 console.log(`${passed}/${results.length} checks passed`);
-process.exitCode = passed === results.length && results.length === 4 ? 0 : 1;
+process.exitCode = passed === results.length && results.length === 5 ? 0 : 1;
