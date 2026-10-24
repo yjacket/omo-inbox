@@ -576,7 +576,7 @@ export async function reapQaBrowserProcesses(profileDir, { timeoutMs = 10_000, s
 	return { matched, killed, remaining, error: null };
 }
 
-export async function openQaBrowser(ctx, { width = 1280, height = 800, scheme = "light" } = {}) {
+export async function openQaBrowser(ctx, { width = 1280, height = 800, scheme = "light", extraArgs = [], profileDir = ctx.profileDir } = {}) {
 	const root = qaSkillRoot();
 	const modulePath = path.join(root, "scripts", "omowright.mjs");
 	const { loadOmowright } = await import(pathToFileURL(modulePath).href);
@@ -586,14 +586,15 @@ export async function openQaBrowser(ctx, { width = 1280, height = 800, scheme = 
 		"--headless=new",
 		"--no-first-run",
 		"--no-default-browser-check",
-		`--user-data-dir=${ctx.profileDir}`,
+		`--user-data-dir=${profileDir}`,
 		`--window-size=${width},${height}`,
+		...extraArgs,
 	];
 	const dialogPolicy = { accept: true };
 	const browser = await omowright.connectPipe({
 		browserPath,
 		browserArgs,
-		storageRoot: ctx.profileDir,
+		storageRoot: profileDir,
 		dialogPolicy,
 	});
 	// Always reap this private profile after closing: the tracked child can exit before the real
@@ -603,7 +604,7 @@ export async function openQaBrowser(ctx, { width = 1280, height = 800, scheme = 
 		try {
 			return await closeBrowser();
 		} finally {
-			browser.qaReaped = await reapQaBrowserProcesses(ctx.profileDir);
+			browser.qaReaped = await reapQaBrowserProcesses(profileDir);
 		}
 	};
 	browser.qaPath = browserPath;
@@ -612,8 +613,8 @@ export async function openQaBrowser(ctx, { width = 1280, height = 800, scheme = 
 		skillRoot: path.resolve(root),
 		omowright: path.resolve(modulePath),
 		browserPath,
-		profileDir: ctx.profileDir,
-		storageRoot: ctx.profileDir,
+		profileDir,
+		storageRoot: profileDir,
 		browserArgs,
 		dialogPolicy,
 		width,
@@ -637,7 +638,7 @@ export async function pinQaPage(page, { width, height, scheme = "light" }) {
 	return { width, height, scheme };
 }
 
-export async function newQaPage(browser, { width, height, scheme = "light" } = {}) {
+export async function newQaPage(browser, { width, height, scheme = "light", deviceScaleFactor } = {}) {
 	// The agent-tab manager owns the record it re-pins after every main-frame navigation; creating
 	// the tab through it with our viewport keeps that record in agreement with the CDP override.
 	const { createAgentTabs } = await loadQaOmowright();
@@ -645,6 +646,11 @@ export async function newQaPage(browser, { width, height, scheme = "light" } = {
 	const tab = await manager.create("about:blank", { viewport: { width, height } });
 	const page = tab.page;
 	await pinQaPage(page, { width, height, scheme });
+	const pinDpr = async () => {
+		if (deviceScaleFactor === undefined) return;
+		await page.cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor, mobile: false }, await page.resolveSessionId());
+	};
+	await pinDpr();
 	// A cross-document navigation lands on a fresh renderer session, so reapply the pin after
 	// every completed goto; the wrapper keeps it part of the awaited signal.
 	const goto = page.goto.bind(page);
@@ -654,6 +660,7 @@ export async function newQaPage(browser, { width, height, scheme = "light" } = {
 	page.goto = async (...args) => {
 		const result = await goto(...args);
 		await pinQaPage(page, { width, height, scheme });
+		await pinDpr();
 		return result;
 	};
 	return page;

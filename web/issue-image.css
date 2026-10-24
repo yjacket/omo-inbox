@@ -1,0 +1,173 @@
+/* Image evidence editor (web/issue-image.js).
+ * Reuses the inbox/thread tokens recorded in DESIGN.md by name; the fallbacks are those same
+ * values for a page (web/proposal.html) that does not define them. `--tap` is the named
+ * 44px hit-area reference from web/thread.html. Masks render in the exact opaque black the
+ * server burns in, so the preview never shows something the retained PNG will not. */
+
+.issue-image {
+	display: grid;
+	gap: var(--s2, 8px);
+	color: var(--ink, #15171b);
+	font-family: var(--font, system-ui, sans-serif);
+	font-size: var(--fs-body, 0.875rem);
+	--issue-mask: #000;
+}
+
+.issue-image__stage {
+	position: relative;
+	display: none;
+	max-width: 100%;
+	border: 1px solid var(--line, rgb(21 23 27 / 0.1));
+	border-radius: var(--r-ctl, 8px);
+	background: var(--wash-1, rgb(21 23 27 / 0.04));
+	overflow: hidden;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.issue-image[data-state="ready"] .issue-image__stage {
+	display: block;
+}
+
+.issue-image__stage:focus-visible {
+	outline: 2px solid var(--accent, #b4530a);
+	outline-offset: 2px;
+}
+
+.issue-image__stage[data-tool] {
+	touch-action: none;
+	cursor: crosshair;
+}
+
+.issue-image__canvas {
+	display: block;
+}
+
+.issue-image__layer {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.issue-image__box {
+	position: absolute;
+	box-sizing: border-box;
+}
+
+.issue-image__box--mask {
+	background: var(--issue-mask);
+}
+
+.issue-image__box--mark {
+	border: 2px solid var(--accent, #b4530a);
+	box-shadow: 0 0 0 1px var(--surface, #fcfcfd);
+}
+
+.issue-image__box--pending {
+	border: 2px dashed var(--accent, #b4530a);
+	background: color-mix(in srgb, var(--accent, #b4530a) 16%, transparent);
+}
+
+.issue-image__box--mask-pending {
+	border-color: var(--ink, #15171b);
+	background: color-mix(in srgb, var(--issue-mask) 45%, transparent);
+}
+
+.issue-image__badge {
+	position: absolute;
+	left: -2px;
+	top: -2px;
+	min-width: 20px;
+	padding: 0 var(--s1, 4px);
+	border-radius: var(--r-xs, 4px);
+	background: var(--accent, #b4530a);
+	color: var(--accent-ink, #fff7ee);
+	font-size: var(--fs-micro, 0.75rem);
+	font-weight: 600;
+	line-height: 20px;
+	text-align: center;
+	transform: translateY(-100%);
+}
+
+.issue-image__tools {
+	display: none;
+	flex-wrap: wrap;
+	gap: var(--s2, 8px);
+}
+
+.issue-image[data-state="ready"] .issue-image__tools {
+	display: flex;
+}
+
+.issue-image__tools button {
+	min-height: var(--tap, 44px);
+	min-width: var(--tap, 44px);
+	padding: 0 var(--s3, 12px);
+	border: 1px solid var(--line, rgb(21 23 27 / 0.1));
+	border-radius: var(--r-ctl, 8px);
+	background: var(--surface, #fcfcfd);
+	color: var(--ink, #15171b);
+	font: inherit;
+	cursor: pointer;
+	transition: background var(--t-micro, 120ms ease-out), border-color var(--t-micro, 120ms ease-out);
+}
+
+.issue-image__tools button[aria-pressed="true"] {
+	border-color: var(--accent, #b4530a);
+	background: var(--accent, #b4530a);
+	color: var(--accent-ink, #fff7ee);
+}
+
+.issue-image__tools button:focus-visible {
+	outline: 2px solid var(--accent, #b4530a);
+	outline-offset: 2px;
+}
+
+.issue-image__tools button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.issue-image__note {
+	display: none;
+	align-items: center;
+	gap: var(--s2, 8px);
+	color: var(--ink-2, #5b6069);
+	font-size: var(--fs-cap, 0.8125rem);
+}
+
+.issue-image[data-state="ready"][data-notes="true"] .issue-image__note {
+	display: flex;
+}
+
+.issue-image__note input {
+	flex: 1;
+	min-width: 0;
+	min-height: var(--tap, 44px);
+	padding: 0 var(--s3, 12px);
+	border: 1px solid var(--line, rgb(21 23 27 / 0.1));
+	border-radius: var(--r-ctl, 8px);
+	background: var(--surface, #fcfcfd);
+	color: var(--ink, #15171b);
+	font: inherit;
+	font-size: var(--fs-body, 0.875rem);
+}
+
+.issue-image__note input:focus-visible {
+	outline: 2px solid var(--accent, #b4530a);
+	outline-offset: 1px;
+}
+
+.issue-image__note input[aria-invalid="true"] {
+	border-color: var(--danger, #b42318);
+}
+
+.issue-image__status {
+	margin: 0;
+	color: var(--ink-2, #5b6069);
+	font-size: var(--fs-cap, 0.8125rem);
+}
+
+.issue-image[data-state="error"] .issue-image__status {
+	color: var(--danger, #b42318);
+}
