@@ -172,6 +172,12 @@
 		/* the chips row with the 과정 보기 toggle at its end */
 		.bar { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--s2); min-width: 0; }
 		.chips { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
+		.tools { display: flex; align-items: center; gap: var(--s2); flex: none; }
+		.tool { display: inline-flex; align-items: center; justify-content: center; gap: var(--s1); min-width: var(--tap); min-height: var(--tap); padding: 0 var(--s3); font-size: var(--fs-micro); font-weight: 600; color: var(--ink-2); text-decoration: none; border: 1px solid var(--line); border-radius: var(--r-pill); white-space: nowrap; }
+		.tool:hover { color: var(--ink); }
+		.tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+		.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; font-size: 10px; font-variant-numeric: tabular-nums; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-pill); }
+		.badge[hidden] { display: none; }
 		/* a pressed toggle reads like a working chip (ink wash), an unpressed one like an ended chip (outline, muted) */
 		.toggle {
 			flex: none;
@@ -479,6 +485,7 @@
 			border-radius: var(--r-ctl);
 			cursor: pointer;
 		}
+		.foot [data-action="report"] { min-width: var(--tap); min-height: var(--tap); }
 		.foot .text:hover:not(:disabled) { background: var(--wash-1); color: var(--ink); }
 		.foot .text:disabled { color: var(--ink-3); cursor: default; }
 		.foot .text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -601,6 +608,10 @@
 			<h1 id="title">대화</h1>
 			<div class="bar">
 				<div class="chips" id="chips"></div>
+				<nav class="tools" aria-label="도구">
+					<a class="tool" href="/issues">제보함<span class="badge" id="issuesBadge" hidden></span></a>
+					<a class="tool" data-issue-report href="/issues/new">제보</a>
+				</nav>
 				<button type="button" class="toggle" id="hideToggle" aria-pressed="false">숨기기</button>
 				<button type="button" class="toggle" id="progressToggle" aria-pressed="true">과정 보기</button>
 			</div>
