@@ -9,8 +9,10 @@
  *
  * S12-S24 (plan todo 16) judge the episode flow: one owner request = one line per assistant message + one final report.
  * They add the terminal builtin (background bash, monitor), INBOX_EPISODE_STALL_MS, a fake desk (S14) and a primary-mode run (S13).
+ * S25-S26 (plan todo 18) judge next actions against a real session: owner close and a new-session handoff.
+ * Both delete ORCA_TERMINAL_HANDLE and set next.closeTab false, so close never touches a real Orca tab.
  *
- * Usage: bun qa/session-qa.mjs [S1 S2 ...]   (no argument = S1-S24 + the bridge-off run)
+ * Usage: bun qa/session-qa.mjs [S1 S2 ...]   (no argument = S1-S26 + the bridge-off run)
  * Env: QA_EVIDENCE_DIR (where the per-scenario evidence files go), QA_EVIDENCE_PREFIX, QA_MODEL, QA_KEEP=1.
  */
 import { spawn as nodeSpawn } from "node:child_process";
@@ -255,7 +257,7 @@ export class Screen {
 // ---------------------------------------------------------------------------------------------
 
 export class OmoPty {
-	/** @param {{cwd:string, sessionDir:string, env:Record<string,string>, extra?:string[], extensions?:string[], model?:string}} options */
+	/** @param {{cwd:string, sessionDir:string, env:Record<string,string>, extra?:string[], extensions?:string[], model?:string, deleteEnv?:string[]}} options */
 	constructor(options) {
 		this.options = options;
 		this.screen = new Screen();
@@ -274,10 +276,12 @@ export class OmoPty {
 	}
 
 	start() {
-		const { cwd, env } = this.options;
+		const { cwd, env, deleteEnv = [] } = this.options;
+		const childEnv = { ...process.env, ...env, TERM: "xterm-256color", NO_COLOR: "1" };
+		for (const key of deleteEnv) delete childEnv[key];
 		this.proc = Bun.spawn(["omo", ...this.args()], {
 			cwd,
-			env: { ...process.env, ...env, TERM: "xterm-256color", NO_COLOR: "1" },
+			env: childEnv,
 			terminal: {
 				cols: COLS,
 				rows: ROWS,
@@ -358,7 +362,7 @@ export { sleep, PORT, BASE, MODEL, REPO, EVIDENCE, FORBIDDEN_PORTS, nodeSpawn, c
 // Harness: isolated server, API client, transcript reader, evidence writer.
 // ---------------------------------------------------------------------------------------------
 
-const H = { root: "", home: "", server: null, serverEnv: {}, runLines: [] };
+const H = { root: "", home: "", sink: "", reopenSink: "", server: null, serverEnv: {}, runLines: [] };
 const EXTENSION = path.join(REPO, "extension", "omo-inbox.ts").replace(/\\/g, "/");
 const BASE_EXTENSIONS = ["builtin:ask-user", "builtin:goal", EXTENSION];
 const OVERLAY = /Ask user · |Type your own answer/;
@@ -564,6 +568,7 @@ class Run {
 		this.jsonl = [];
 		this.notes = [];
 		this.omo = null;
+		this.secondOmo = null;
 		this.logStart = logSize();
 		this.sessionDir = path.join(H.root, "sessions", name);
 	}
@@ -594,14 +599,15 @@ class Run {
 		return this.checks.length > 0 && this.checks.every((entry) => entry.ok);
 	}
 
-	async open({ extra = [], extensions = BASE_EXTENSIONS, env = {} } = {}) {
+	async open({ cwd = H.work, extra = [], extensions = BASE_EXTENSIONS, env = {}, deleteEnv = [] } = {}) {
 		fs.mkdirSync(this.sessionDir, { recursive: true });
 		this.omo = new OmoPty({
-			cwd: H.work,
+			cwd,
 			sessionDir: this.sessionDir,
 			env: { ...H.omoEnv, ...env },
 			extensions,
 			extra,
+			deleteEnv,
 		}).start();
 		await this.omo.waitForScreen((visible) => /❯/.test(visible), 90000, "the omo prompt");
 		this.screen("start");
@@ -638,6 +644,10 @@ class Run {
 
 	async finish() {
 		this.screen("final");
+		if (this.secondOmo) {
+			this.pty.newSessionFull = this.secondOmo.full();
+			await this.secondOmo.stop();
+		}
 		if (this.omo) {
 			this.pty.finalFull = this.omo.full();
 			const transcript = this.transcript();
@@ -1473,6 +1483,178 @@ async function s21(t) {
 	await checkEpisode(t, "S21", final, { exactLines: true });
 }
 
+/** Write the temp inbox config the two next-action scenarios run with: close never touches an Orca tab. */
+function setCloseTabOff() {
+	fs.writeFileSync(path.join(H.home, "config.json"), JSON.stringify({ ...H.config, next: { closeTab: false } }));
+}
+
+/** Reopen launches (new-session and reopen) written to INBOX_REOPEN_SINK instead of spawning a terminal. */
+function reopenEntries() {
+	try {
+		return fs.readFileSync(H.reopenSink, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+	} catch {
+		return [];
+	}
+}
+
+/** The final's next verdict, computed asynchronously by the server after the final appears. */
+const waitNext = (t, itemId, timeoutMs = 60000) => until(async () => (await threadItems(t)).find((item) => item.id === itemId)?.next ?? null, timeoutMs, `the next verdict for ${itemId}`, { retryable: true, everyMs: 500 });
+
+const exitOf = async (pty, timeoutMs, label) => (await until(() => (pty.exited !== null ? { code: pty.exited } : null), timeoutMs, label)).code;
+
+/**
+ * S25 (GAP-15): the owner taps close on a real session's done final. The server writes a session-control file, the
+ * extension shuts the session down, the bye closes the thread's items as closed-by-owner, and the PTY exits.
+ */
+async function s25(t) {
+	setCloseTabOff();
+	await t.open({ extensions: NEW_EXTENSIONS, deleteEnv: ["ORCA_TERMINAL_HANDLE"] });
+	await t.prompt("안녕이라고만 답해");
+	const finals = await waitFinals(t, 1, 180000);
+	const final = finals[0];
+	t.snap("final", final);
+	t.check("the final reads needs-you", final.policy === "needs-you", JSON.stringify(final.policy));
+	const next = await waitNext(t, final.id);
+	t.snap("next", next);
+	t.check("the done final's next state is done", next.state === "done", JSON.stringify(next.state));
+	t.check("the done final offers the close action", next.actions.some((action) => action.id === "close"), JSON.stringify(next.actions.map((action) => action.id)));
+	const wasOpen = (await threadItems(t)).filter((item) => item.status === "open").map((item) => item.id);
+	const response = await api("POST", `/api/items/${final.id}/action`, { action: "close" });
+	t.snap("closeResponse", response);
+	t.check("POST action close returns 200 through the session control", response.status === 200 && response.body?.via === "session", JSON.stringify(response));
+	const exitCode = await exitOf(t.omo, 60000, "the PTY exits after close").catch((error) => {
+		t.note(error.message);
+		return null;
+	});
+	t.check("the PTY exits after close", exitCode !== null, String(exitCode));
+	if (exitCode !== null) t.note(`S25 exit code: ${exitCode}`);
+	const closed = await until(async () => {
+		const items = await threadItems(t);
+		return items.length > 0 && items.every((item) => item.status === "closed") ? items : null;
+	}, 30000, "the thread's items close").catch(() => null);
+	t.snap("itemsAfterClose", closed ?? (await threadItems(t)));
+	t.check("every item that was open closes closed-by-owner", wasOpen.length > 0 && wasOpen.every((id) => {
+		const item = (closed ?? []).find((entry) => entry.id === id);
+		return item?.closedReason === "closed-by-owner";
+	}), JSON.stringify((closed ?? []).map((item) => [item.id, item.closedReason])));
+	const view = await threadView(t.sid);
+	t.check("the thread reads ended", view?.thread?.status === "ended", JSON.stringify(view?.thread?.status));
+}
+
+/**
+ * S26 (GAP-15): the owner taps new-session on a plan final. The launcher goes to INBOX_REOPEN_SINK; the scenario reads
+ * the sid and kickoff from the Windows Terminal attempt, starts that session for real, and checks the handoff, the old
+ * session's exit and handed-off close, the expanded skill in the new transcript and the new thread's executes slug.
+ */
+async function s26(t) {
+	setCloseTabOff();
+	const project = path.join(H.root, "s26-project");
+	fs.mkdirSync(path.join(project, ".omo", "plans"), { recursive: true });
+	fs.writeFileSync(path.join(project, ".omo", "plans", "qa-plan.md"), "- [ ] 1. say hello\n");
+	const skillDir = process.env.QA_ULW_EXECUTE_SKILL || path.join(os.homedir(), ".bun", "install", "global", "node_modules", "omo-ai", "plugin", "skills", "ulw-execute");
+	if (!fs.existsSync(path.join(skillDir, "SKILL.md"))) throw new Error(`S26 needs the ulw-execute skill: ${skillDir} is missing (set QA_ULW_EXECUTE_SKILL)`);
+	const skillBody = fs.readFileSync(path.join(skillDir, "SKILL.md"), "utf8").replace(/^---[\s\S]*?---\s*/, "");
+	const skillMarker = skillBody.split("\n").find((line) => /^## /.test(line)) ?? "";
+	const prompt = "다음 문장만 그대로 출력해: 별도 실행은 새 세션에서 /ulw-execute qa-plan 으로 시작합니다.";
+	await t.open({ cwd: project, extensions: NEW_EXTENSIONS, deleteEnv: ["ORCA_TERMINAL_HANDLE"] });
+	await t.prompt(prompt);
+	const final = (await waitFinals(t, 1, 180000))[0];
+	t.snap("final", final);
+	t.check("the final reads needs-you", final.policy === "needs-you", JSON.stringify(final.policy));
+	const next = await waitNext(t, final.id);
+	t.snap("next", next);
+	t.check("the plan final's next state is plan", next.state === "plan", JSON.stringify(next.state));
+	t.check("the plan fact points at the temp project's qa-plan", next.facts?.plan?.slug === "qa-plan" && next.facts?.plan?.root === project, JSON.stringify(next.facts?.plan));
+	const wasOpen = (await threadItems(t)).filter((item) => item.status === "open").map((item) => item.id);
+	const response = await api("POST", `/api/items/${final.id}/action`, { action: "new-session" });
+	t.snap("newSessionResponse", response);
+	t.check("POST action new-session returns 200 through the reopen sink", response.status === 200 && response.body?.via === "sink", JSON.stringify(response));
+	const newSid = response.body?.session ?? null;
+	const launch = await until(() => reopenEntries().find((entry) => entry.kind === "launch" && entry.sid === newSid), 15000, "the launch line in the reopen sink").catch(() => null);
+	t.snap("reopenSink", reopenEntries());
+	t.check("the reopen sink has the launch for the returned sid", Boolean(launch), JSON.stringify(newSid));
+	const attempt = Array.isArray(launch?.attempts) ? launch.attempts.find((entry) => entry.via === "wt") : null;
+	t.check("the launch has a Windows Terminal attempt", Boolean(attempt), JSON.stringify(launch?.attempts?.map((entry) => entry.via)));
+	const argv = Array.isArray(attempt?.args) ? attempt.args : [];
+	const kickoff = argv.at(-1) ?? "";
+	t.check("the WT attempt carries --session-id with the sink sid", argv.includes("--session-id") && argv[argv.indexOf("--session-id") + 1] === newSid, JSON.stringify(argv));
+	t.check("the WT attempt's kickoff is /skill:ulw-execute qa-plan", kickoff === "/skill:ulw-execute qa-plan", JSON.stringify(kickoff));
+	if (!newSid || kickoff !== "/skill:ulw-execute qa-plan") return;
+	const newDir = path.join(H.root, "sessions", "S26-new");
+	fs.mkdirSync(newDir, { recursive: true });
+	const fresh = new OmoPty({
+		cwd: project,
+		sessionDir: newDir,
+		env: { ...H.omoEnv },
+		extensions: NEW_EXTENSIONS,
+		extra: ["--skill", skillDir, "--session-id", newSid, kickoff],
+		deleteEnv: ["ORCA_TERMINAL_HANDLE"],
+	}).start();
+	t.secondOmo = fresh;
+	t.note("S26: --no-skills stays; the runtime merges explicit --skill paths under it, so the kickoff skill loads (resource-loader.js: skillPaths = merge(cliEnabledSkills, additionalSkillPaths))");
+	await fresh.waitForScreen((visible) => /❯/.test(visible), 90000, "the new session's omo prompt");
+	t.pty.newSession = fresh.visible();
+	const handoff = await until(async () => {
+		// GET /api/threads/<sid> returns {thread, items, events}; the latest handoff lives on thread.handoff.
+		const view = await threadView(t.sid);
+		return view?.thread?.handoff?.status === "connected" ? view.thread.handoff : null;
+	}, 60000, "the old thread's handoff becomes connected", { retryable: true, everyMs: 500 }).catch((error) => {
+		t.note(error.message);
+		return null;
+	});
+	t.snap("handoff", handoff);
+	t.check("the old thread's handoff becomes connected to the new sid", handoff?.to === newSid && handoff?.via === "sink" && handoff?.slug === "qa-plan", JSON.stringify(handoff));
+	const exitCode = await exitOf(t.omo, 60000, "the old PTY exits after the handoff").catch((error) => {
+		t.note(error.message);
+		return null;
+	});
+	t.check("the old PTY exits after the handoff", exitCode !== null, String(exitCode));
+	if (exitCode !== null) t.note(`S26 old exit code: ${exitCode}`);
+	const closed = await until(async () => {
+		const items = await threadItems(t);
+		return items.length > 0 && items.every((item) => item.status === "closed") ? items : null;
+	}, 30000, "the old thread's items close").catch(() => null);
+	t.snap("itemsAfterHandoff", closed ?? (await threadItems(t)));
+	t.check("every old item that was open closes handed-off", wasOpen.length > 0 && wasOpen.every((id) => {
+		const item = (closed ?? []).find((entry) => entry.id === id);
+		return item?.closedReason === "handed-off";
+	}), JSON.stringify((closed ?? []).map((item) => [item.id, item.closedReason])));
+	const jsonl = await until(() => {
+		const file = fs.existsSync(newDir) ? fs.readdirSync(newDir).find((name) => name.endsWith(`_${newSid}.jsonl`)) : null;
+		return file ? path.join(newDir, file) : null;
+	}, 60000, `the new session's *_${newSid}.jsonl`).catch((error) => {
+		t.note(error.message);
+		return null;
+	});
+	t.check("the new session's jsonl exists", Boolean(jsonl), jsonl ?? newDir);
+	const firstUser = jsonl ? await until(() => {
+		const transcript = readTranscript(newDir);
+		const message = userMessages(transcript.entries)[0];
+		return message ? { message, entries: transcript.entries } : null;
+	}, 90000, "the new session's first user message").catch(() => null) : null;
+	const firstText = firstUser ? textOf(firstUser.message) : "";
+	t.excerpt("new session first user message", firstUser ? [{ role: firstUser.message.role, text: firstText.slice(0, 1200), at: firstUser.message.at }] : []);
+	t.check("the first user message carries the expanded ulw-execute skill block", firstText.includes('The user explicitly invoked the "ulw-execute" skill') && firstText.includes('<skill-instruction name="ulw-execute"'), firstText.slice(0, 300));
+	t.check("the first user message carries the skill body", skillMarker !== "" && firstText.includes(skillMarker), skillMarker);
+	t.check("the first user message is not an unknown-command reply", !/unknown command|skill not loaded/i.test(firstText), firstText.slice(0, 300));
+	const threadJson = path.join(H.home, "data", "threads", newSid, "thread.json");
+	const executes = await until(() => {
+		try {
+			return JSON.parse(fs.readFileSync(threadJson, "utf8")).executes ?? null;
+		} catch {
+			return null;
+		}
+	}, 60000, `the new thread.json executes qa-plan`).catch((error) => {
+		t.note(error.message);
+		return null;
+	});
+	t.snap("threadJson", fs.existsSync(threadJson) ? JSON.parse(fs.readFileSync(threadJson, "utf8")) : null);
+	t.check("the new thread.json has executes qa-plan", executes === "qa-plan", JSON.stringify(executes));
+	await fresh.stop();
+	const stopped = await until(() => (fresh.exited !== null ? true : null), 15000, "the new session stops").catch(() => null);
+	t.check("the new session stops after the abort", stopped === true, String(fresh.exited));
+}
+
 const SCENARIOS = [
 	["S1", s1],
 	["S2", s2],
@@ -1498,6 +1680,8 @@ const SCENARIOS = [
 	["S22", s22],
 	["S23", s23],
 	["S24", s24],
+	["S25", s25],
+	["S26", s26],
 ];
 const EXTRA = [["B1", sBridgeOff]];
 
@@ -1537,6 +1721,7 @@ async function main() {
 	H.home = path.join(H.root, "home");
 	H.work = path.join(H.root, "work");
 	H.sink = path.join(H.root, "push.jsonl");
+	H.reopenSink = path.join(H.root, "reopen.jsonl");
 	for (const dir of [H.home, path.join(H.home, "app"), H.work, path.join(H.root, "agent"), path.join(H.root, "user"), path.join(H.root, "sessions")]) fs.mkdirSync(dir, { recursive: true });
 	// QA_SUMMARY_MODELS=a,b overrides the server's summary model list (diagnosis only; the default run uses the shipped list).
 	const summary = process.env.QA_SUMMARY_MODELS ? { summary: { enabled: true, models: process.env.QA_SUMMARY_MODELS.split(",") } } : {};
@@ -1552,6 +1737,7 @@ async function main() {
 		OMO_INBOX_HOME: H.home,
 		INBOX_NO_TAILSCALE: "1",
 		INBOX_PUSH_SINK: H.sink,
+		INBOX_REOPEN_SINK: H.reopenSink,
 		INBOX_AGENT_DIR: path.join(H.root, "agent"),
 		INBOX_USER_HOME: path.join(H.root, "user"),
 	};
