@@ -261,6 +261,56 @@ const DETAIL_SNAPSHOT = `(() => {
 	};
 })()`;
 
+/* Every header link/button and every visible detail action, with both bounding-box dimensions.
+ * The tap target contract is 44 x 44 CSS px, not height alone (the back link used to be 39.5 px
+ * wide at 390 and 41.3 px on the detail header). The detail group covers every control that can
+ * appear in any detail state: the actions card (comment, photo, confirm/reopen/purge and the
+ * purge confirmation), the build notice reload link, and the pending-send retry. Info links in
+ * .facts are records, not actions, so they stay out. */
+/* The build notice and its reload action only exist while the page build differs from the
+ * server build. Give the detail API a foreign server build before a document script runs, so the
+ * real page renders the mismatch notice; the meta stamp on the document still carries the real
+ * loaded build, which is what makes the two differ. */
+const MISMATCH_BUILD = "e".repeat(64);
+const stampBuildMismatch = `(() => {
+	const realFetch = window.fetch.bind(window);
+	window.fetch = async (input, init) => {
+		const url = typeof input === 'string' ? input : input.url;
+		const res = await realFetch(input, init);
+		if (!/^\\/api\\/issues\\/[0-9a-f-]{36}$/.test(url.split('?')[0])) return res;
+		const text = await res.clone().text();
+		let body = null;
+		try { body = JSON.parse(text); } catch { return res; }
+		if (!body || typeof body !== 'object' || !body.capabilities || !body.capabilities.build) return res;
+		body.capabilities = { ...body.capabilities, build: { ...body.capabilities.build, buildId: ${JSON.stringify(MISMATCH_BUILD)} } };
+		return new Response(JSON.stringify(body), { status: res.status, statusText: res.statusText, headers: res.headers });
+	};
+})()`;
+
+async function stubBuildMismatch(page, withDeadline) {
+	return withDeadline(page.cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+		source: stampBuildMismatch,
+	}, await page.resolveSessionId()), DEADLINE_MS, "q14_stub_build_mismatch");
+}
+
+const HIT_AREAS = `(() => {
+	const visible = (node) => {
+		const rect = node.getBoundingClientRect();
+		const style = getComputedStyle(node);
+		return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+	};
+	const measure = (node) => {
+		const rect = node.getBoundingClientRect();
+		const id = node.id ? '#' + node.id : '';
+		const cls = typeof node.className === 'string' && node.className.trim() ? '.' + node.className.trim().split(/\\s+/).join('.') : '';
+		return { control: id || cls || node.tagName.toLowerCase(), label: (node.textContent || '').trim().slice(0, 40), width: Math.round(rect.width * 10) / 10, height: Math.round(rect.height * 10) / 10 };
+	};
+	return {
+		header: [...document.querySelectorAll('header.top a, header.top button')].filter(visible).map(measure),
+		detail: [...document.querySelectorAll('#issue-detail .actions-card a[href], #issue-detail .actions-card button, #issue-detail .actions-card label.btn, #issue-detail .notice button, #issue-detail .notice a[href], #issue-pending button')].filter(visible).map(measure),
+	};
+})()`;
+
 export default async function run({ browser, ctx, width, height, scheme = "dark", check, evidence }) {
 	const { newQaPage, pinQaPage, withDeadline } = await import(pathToFileURL(path.join(qaRoot(), "issues-fixture.mjs")).href);
 	const actions = [];
@@ -282,6 +332,51 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 	const evalIn = (page, expression, name) => withDeadline(page.evaluate(expression), DEADLINE_MS, name);
 	const waitRender = (page, route, minimum, name) => evalIn(page, waitForDom(RENDER_AT_LEAST(route, minimum), name), name);
 	const waitDetail = (page, state, seq, name) => evalIn(page, waitForDom(DETAIL_AT(state, seq), name), name);
+	const hitAreaProblems = (groups) => [...groups.header, ...groups.detail].filter((entry) => entry.width < 44 || entry.height < 44);
+	const assertHitAreas = (label, groups, minimum) => {
+		const controls = [...groups.header, ...groups.detail];
+		const undersized = hitAreaProblems(groups);
+		check(`Q14 every header link and detail action is at least 44x44 at ${label}`, controls.length >= minimum && undersized.length === 0, JSON.stringify({ undersized, controls }));
+		return controls;
+	};
+	// Drive a fresh page into the build-mismatch state, require the visible reload action, then prove
+	// the same 44px gate rejects it at 40px before restoring it.
+	const measureBuildMismatch = async (target, label, slug, prefix, artifact) => {
+		await stubBuildMismatch(target, withDeadline);
+		await withDeadline(target.goto(`${ctx.base}/issues/${ISSUE_A}`, { waitUntil: "load" }), DEADLINE_MS, `${slug}_goto`);
+		await waitRender(target, "detail", 1, `${slug}_rendered`);
+		await evalIn(target, waitForDom("() => { const el = document.getElementById('issue-reload'); if (!el) return null; const rect = el.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 ? true : null; }", `${slug}_visible`), `${slug}_visible`);
+		const hits = await evalIn(target, HIT_AREAS, `${slug}_hit_areas`);
+		const reload = hits.detail.find((entry) => entry.control === "#issue-reload") ?? null;
+		states.detail[`${prefix}BuildMismatch`] = { label, hits, reload, notice: await evalIn(target, "document.getElementById('issue-reload')?.closest('.notice')?.textContent ?? null", `${slug}_notice`) };
+		check(`Q14 a build mismatch renders the reload action at least 44x44 at ${label}`, reload !== null && reload.width >= 44 && reload.height >= 44 && hitAreaProblems(hits).length === 0, JSON.stringify(states.detail[`${prefix}BuildMismatch`]));
+		await evalIn(target, `(() => {
+			const el = document.getElementById('issue-reload');
+			el.dataset.q14Style = el.getAttribute('style') ?? '';
+			el.style.width = '40px';
+			el.style.minWidth = '0';
+			el.style.paddingInline = '0';
+			return true;
+		})()`, `${slug}_force_40px`);
+		const forcedHits = await evalIn(target, HIT_AREAS, `${slug}_forced_hit_areas`);
+		const forcedProblems = hitAreaProblems(forcedHits);
+		states.detail[`${prefix}ForcedReload`] = { hits: forcedHits, problems: forcedProblems };
+		check(`Q14 the reload action forced to 40px fails the hit-area gate at ${label}`, forcedProblems.some((entry) => entry.control === "#issue-reload" && entry.width < 44), JSON.stringify(forcedProblems));
+		await evalIn(target, `(() => {
+			const el = document.getElementById('issue-reload');
+			const previous = el.dataset.q14Style;
+			if (previous === '') el.removeAttribute('style');
+			else el.setAttribute('style', previous);
+			delete el.dataset.q14Style;
+			return el.getAttribute('style');
+		})()`, `${slug}_restore_40px`);
+		const restoredHits = await evalIn(target, HIT_AREAS, `${slug}_restored_hit_areas`);
+		states.detail[`${prefix}RestoredReload`] = restoredHits;
+		check(`Q14 the reload action is restored above 44x44 at ${label}`, hitAreaProblems(restoredHits).length === 0 && restoredHits.detail.some((entry) => entry.control === "#issue-reload" && entry.width >= 44 && entry.height >= 44), JSON.stringify(restoredHits.detail));
+		await evalIn(target, "(() => { document.getElementById('issue-reload')?.scrollIntoView({ block: 'center' }); return true; })()", `${slug}_scroll`);
+		evidence(artifact, Buffer.from(await withDeadline(target.screenshot({ type: "png" }), DEADLINE_MS, `${slug}_screenshot`)));
+		act("screenshot", artifact, "page.screenshot resolved");
+	};
 
 	// ---- seed over HTTP ----
 	const caps = await request("capabilities", "/api/issues/capabilities");
@@ -326,6 +421,9 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 		const expectedBackground = scheme === "dark" ? "rgb(17, 18, 20)" : "rgb(243, 244, 246)";
 		check(`Q14 list paints the ${scheme} scheme background`, list.scheme.includes(scheme) && list.background === expectedBackground, JSON.stringify({ scheme: list.scheme, background: list.background, expected: expectedBackground }));
 		check("Q14 list controls have 44px hit areas", list.filters.every((entry) => entry.height >= 44) && list.newLink.height >= 44 && list.rows.every((row) => row.height >= 44), JSON.stringify({ filters: list.filters.map((entry) => entry.height), newLink: list.newLink.height, rows: list.rows.map((row) => row.height) }));
+		const listHits = await evalIn(page, HIT_AREAS, "q14_list_hit_areas");
+		states.list.hitAreas = listHits;
+		assertHitAreas(`${width}x${height} list`, listHits, 2);
 		const listShot = await withDeadline(page.screenshot({ type: "png" }), DEADLINE_MS, "q14_list_screenshot");
 		const listFile = evidence("Q14-list.png", Buffer.from(listShot));
 		act("screenshot", listFile, "page.screenshot resolved");
@@ -360,6 +458,36 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 		check("Q14 the maintainer event is read-only in the history", detail.history.length === 2 && detail.history[0].type === "created" && detail.history[1].type === "request_check" && detail.history[1].readOnly === true && detail.history[1].text === "제보 화면을 고쳤습니다. 확인해 주세요.", JSON.stringify(detail.history));
 		check("Q14 owner actions follow needs-check", detail.buttons["issue-confirm"]?.disabled === false && detail.buttons["issue-reopen"]?.disabled === false && detail.buttons["issue-purge"]?.disabled === false, JSON.stringify(detail.buttons));
 		check("Q14 detail buttons have 44px hit areas", ["issue-confirm", "issue-reopen", "issue-purge", "issue-comment-send"].every((id) => detail.buttons[id]?.height >= 44), JSON.stringify(Object.fromEntries(Object.entries(detail.buttons).map(([id, entry]) => [id, entry?.height]))));
+		const detailHits = await evalIn(page, HIT_AREAS, "q14_detail_hit_areas");
+		states.detail.hitAreas = detailHits;
+		assertHitAreas(`${width}x${height} detail`, detailHits, 7);
+
+		// Failure path: force one visible control to 40px with an inline style, prove the same gate
+		// catches it in both the measurement and the assertion, then restore the exact markup.
+		await evalIn(page, `(() => {
+			const el = document.getElementById('issue-comment-send');
+			el.dataset.q14Style = el.getAttribute('style') ?? '';
+			el.style.width = '40px';
+			el.style.minWidth = '0';
+			el.style.paddingInline = '0';
+			return true;
+		})()`, "q14_force_40px");
+		const forcedHits = await evalIn(page, HIT_AREAS, "q14_forced_hit_areas");
+		const forcedProblems = hitAreaProblems(forcedHits);
+		states.detail.forced = { hits: forcedHits, problems: forcedProblems };
+		check("Q14 a control forced to 40px fails the hit-area gate", forcedProblems.some((entry) => entry.control === "#issue-comment-send" && entry.width < 44), JSON.stringify(forcedProblems));
+		await evalIn(page, `(() => {
+			const el = document.getElementById('issue-comment-send');
+			const previous = el.dataset.q14Style;
+			if (previous === '') el.removeAttribute('style');
+			else el.setAttribute('style', previous);
+			delete el.dataset.q14Style;
+			return el.getAttribute('style');
+		})()`, "q14_restore_40px");
+		const restoredHits = await evalIn(page, HIT_AREAS, "q14_restored_hit_areas");
+		states.detail.restored = restoredHits;
+		assertHitAreas(`${width}x${height} detail after restore`, restoredHits, 7);
+		check("Q14 the forced control is restored above 44px", hitAreaProblems(restoredHits).length === 0 && restoredHits.detail.some((entry) => entry.control === "#issue-comment-send" && entry.width >= 44 && entry.height >= 44), JSON.stringify(restoredHits.detail));
 
 		// ---- comment, confirm, reopen ----
 		await withDeadline(page.fill("#issue-comment", "아직 그대로입니다. 버튼이 안 보여요."), DEADLINE_MS, "q14_fill_comment");
@@ -434,6 +562,10 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 		await withDeadline(page.click("#issue-comment-send"), DEADLINE_MS, "q14_send_uncertain");
 		act("malformed-comment", "feedback POST answered 200 {} (no receipt)", "click on #issue-comment-send");
 		const pendingView = await evalIn(page, waitForDom(PENDING_SHOWN, "q14_pending_shown"), "q14_pending_shown");
+		const pendingHits = await evalIn(page, HIT_AREAS, "q14_pending_hit_areas");
+		states.failures.pendingHitAreas = pendingHits;
+		assertHitAreas(`${width}x${height} pending retry`, pendingHits, 3);
+		check("Q14 the visible retry and every disabled action still measure at least 44x44", pendingHits.detail.some((entry) => entry.control === "#issue-retry") && hitAreaProblems(pendingHits).length === 0, JSON.stringify(pendingHits.detail));
 		const serverPending = await request("detail-b-pending", `/api/issues/${ISSUE_B}`);
 		states.failures.malformed = { ...pendingView, serverSeq: serverPending.body?.currentSeq };
 		await evalIn(page, "(() => { document.getElementById('issue-pending')?.scrollIntoView({ block: 'end' }); return true; })()", "q14_scroll_pending");
@@ -479,6 +611,10 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 		act("choose-image", "64x32 PNG through DOM.setFileInputFiles", "file input change");
 		const ready = await evalIn(page, waitForDom(IMAGE_READY, "q14_image_ready"), "q14_image_ready");
 		check("Q14 a chosen image is previewed and the photo send is live", ready.status.includes("64×32") && ready.ready === true && ready.canvas === true, JSON.stringify(ready));
+		const readyHits = await evalIn(page, HIT_AREAS, "q14_image_ready_hit_areas");
+		states.failures.imageReadyHitAreas = readyHits;
+		assertHitAreas(`${width}x${height} image ready`, readyHits, 8);
+		check("Q14 the live photo send is measured above 44x44", readyHits.detail.some((entry) => entry.control === "#issue-append-send" && entry.width >= 44 && entry.height >= 44), JSON.stringify(readyHits.detail));
 		await withDeadline(page.fill("#issue-comment", IMAGE_COMMENT), DEADLINE_MS, "q14_fill_comment_with_image");
 		await withDeadline(page.click("#issue-comment-send"), DEADLINE_MS, "q14_send_comment_with_image");
 		act("comment-with-image", IMAGE_COMMENT, "click on #issue-comment-send while an image is selected");
@@ -542,6 +678,10 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 		act("purge", "#issue-purge", "click");
 		const purgeBox = await evalIn(page, waitForDom("() => { const box = document.getElementById('issue-purge-box'); return box && !box.hidden ? { text: box.textContent } : null; }", "q14_purge_box"), "q14_purge_box");
 		check("Q14 purge asks for a second confirmation naming the issue", purgeBox.text.includes(DESCRIPTION_B) && purgeBox.text.includes("되돌릴 수 없습니다"), purgeBox.text);
+		const purgeHits = await evalIn(page, HIT_AREAS, "q14_purge_hit_areas");
+		states.failures.purgeHitAreas = purgeHits;
+		assertHitAreas(`${width}x${height} purge confirmation`, purgeHits, 9);
+		check("Q14 the visible purge confirmation controls are measured above 44x44", ["#issue-purge-confirm", "#issue-purge-cancel"].every((id) => purgeHits.detail.some((entry) => entry.control === id && entry.width >= 44 && entry.height >= 44)) && hitAreaProblems(purgeHits).length === 0, JSON.stringify(purgeHits.detail));
 		await withDeadline(page.click("#issue-purge-confirm"), DEADLINE_MS, "q14_click_purge_confirm");
 		act("purge-confirm", "#issue-purge-confirm", "click");
 		const gone = await evalIn(page, waitForDom("() => document.getElementById('issues-app')?.dataset.state === 'tombstone' ? true : null", "q14_tombstone"), "q14_tombstone");
@@ -611,11 +751,22 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 		states.standalone.retried = { id: retriedId, status: retriedRecord.status, description: retriedRecord.body?.issue?.description };
 		check("Q14 the retry resolves the uncertain report under its own requestId, not the fake id", retriedId !== FAKE_ID && retriedRecord.status === 200 && retriedRecord.body?.issue?.description === FAKE_TEXT, JSON.stringify(states.standalone.retried));
 
+		// ---- build mismatch: the stale page must offer a full-size reload action ----
+		const mismatchPage = await withDeadline(newQaPage(browser, { width, height, scheme }), DEADLINE_MS, "q14_mismatch_page");
+		try {
+			await measureBuildMismatch(mismatchPage, `${width}x${height}`, "q14_build_mismatch", "", "Q14-reload-mismatch.png");
+		} finally {
+			await withDeadline(mismatchPage.close(), DEADLINE_MS, "q14_mismatch_page_close").catch(() => mismatchPage.dispose?.());
+		}
+
 		// ---- 390px dark: the same screens on a phone ----
 		narrow = await withDeadline(newQaPage(browser, { width: 390, height: 844, scheme }), DEADLINE_MS, "q14_narrow_page");
 		await withDeadline(narrow.goto(`${ctx.base}/issues`, { waitUntil: "load" }), DEADLINE_MS, "q14_narrow_list");
 		await waitRender(narrow, "list", 1, "q14_narrow_list_rendered");
 		const narrowList = await evalIn(narrow, LIST_SNAPSHOT, "q14_narrow_list_snapshot");
+		const narrowListHits = await evalIn(narrow, HIT_AREAS, "q14_narrow_list_hit_areas");
+		states.list.narrowHitAreas = narrowListHits;
+		assertHitAreas("390x844 list", narrowListHits, 2);
 		const narrowOverflow = await evalIn(narrow, "({ scrollWidth: document.documentElement.scrollWidth, innerWidth })", "q14_narrow_overflow");
 		states.list.narrow = { rows: narrowList.rows.length, overflow: narrowOverflow };
 		// A, C and the two standalone reports remain; the purged B is gone.
@@ -624,6 +775,23 @@ export default async function run({ browser, ctx, width, height, scheme = "dark"
 		evidence("Q14-list-390.png", Buffer.from(narrowListShot));
 		await withDeadline(narrow.goto(`${ctx.base}/issues/${ISSUE_A}`, { waitUntil: "load" }), DEADLINE_MS, "q14_narrow_detail");
 		await waitRender(narrow, "detail", 1, "q14_narrow_detail_rendered");
+		const narrowDetailHits = await evalIn(narrow, HIT_AREAS, "q14_narrow_detail_hit_areas");
+		states.detail.narrowHitAreas = narrowDetailHits;
+		assertHitAreas("390x844 detail", narrowDetailHits, 7);
+		await measureBuildMismatch(narrow, "390x844", "q14_narrow_build_mismatch", "narrow", "Q14-reload-mismatch-390.png");
+		await withDeadline(narrow.click("#issue-purge"), DEADLINE_MS, "q14_narrow_click_purge");
+		await evalIn(narrow, waitForDom("() => { const box = document.getElementById('issue-purge-box'); return box && !box.hidden ? true : null; }", "q14_narrow_purge_box"), "q14_narrow_purge_box");
+		const narrowPurgeHits = await evalIn(narrow, HIT_AREAS, "q14_narrow_purge_hit_areas");
+		states.detail.narrowPurgeHitAreas = narrowPurgeHits;
+		assertHitAreas("390x844 purge confirmation", narrowPurgeHits, 9);
+		check("Q14 the phone purge confirmation controls are measured above 44x44", ["#issue-purge-confirm", "#issue-purge-cancel"].every((id) => narrowPurgeHits.detail.some((entry) => entry.control === id && entry.width >= 44 && entry.height >= 44)) && hitAreaProblems(narrowPurgeHits).length === 0, JSON.stringify(narrowPurgeHits.detail));
+		await withDeadline(narrow.click("#issue-purge-cancel"), DEADLINE_MS, "q14_narrow_cancel_purge");
+		await chooseFile(narrow, withDeadline, "#issue-append-file", pngFile, "q14_narrow_choose_image");
+		await evalIn(narrow, waitForDom(IMAGE_READY, "q14_narrow_image_ready"), "q14_narrow_image_ready");
+		const narrowReadyHits = await evalIn(narrow, HIT_AREAS, "q14_narrow_image_ready_hit_areas");
+		states.detail.narrowImageReadyHitAreas = narrowReadyHits;
+		assertHitAreas("390x844 image ready", narrowReadyHits, 8);
+		check("Q14 the phone photo send is measured above 44x44", narrowReadyHits.detail.some((entry) => entry.control === "#issue-append-send" && entry.width >= 44 && entry.height >= 44), JSON.stringify(narrowReadyHits.detail));
 		const narrowDetailOverflow = await evalIn(narrow, "({ scrollWidth: document.documentElement.scrollWidth, innerWidth })", "q14_narrow_detail_overflow");
 		states.detail.narrow = narrowDetailOverflow;
 		check("Q14 the phone detail has no horizontal overflow", narrowDetailOverflow.scrollWidth <= narrowDetailOverflow.innerWidth, JSON.stringify(narrowDetailOverflow));

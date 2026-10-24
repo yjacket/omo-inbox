@@ -85,7 +85,12 @@ a { color: var(--accent); }
 	flex: none;
 	display: inline-flex;
 	align-items: center;
+	min-width: var(--tap);
 	min-height: var(--tap);
+	/* the padding gives the label a full tap target; the matching negative margin keeps its
+	 * text exactly where it was, so the header's visual rhythm does not move */
+	margin-inline: calc(var(--s2) * -1);
+	padding-inline: var(--s2);
 	font-size: var(--fs-cap);
 	color: var(--ink-2);
 	text-decoration: none;
