@@ -7,9 +7,13 @@
  *
  * Creates a private temp root, starts the isolated server fixture, launches an owned headless
  * browser, runs the requested scenario, then closes the browser and the server in finally and
- * removes the temp root. Writes <outDir>/manifest.json and prints "<passed>/<total> checks passed"
- * as its last line. Exit 0 only when every check passed AND the teardown receipt proves the child
- * exited, the port refuses connections and home/runTmp read back ENOENT.
+ * removes the temp root. Writes <outDir>/manifest.json. On success the last line is
+ * "<passed>/<total> checks passed". On failure the checks line may still appear, but the LAST
+ * stdout line is "RUN FAILED: <reason>" with the teardown problem (entry, error and holder PIDs)
+ * in the lines just above it, and the exit code is nonzero. Exit 0 only when every check passed
+ * AND the teardown receipt proves the child exited, the port refuses connections and home/runTmp
+ * read back ENOENT. In aggregate mode every scenario fixture is reaped by its exact profile path
+ * (including second browsers a scenario opened) before the aggregate receipt is built.
  *
  * Viewport: an explicit --width/--height/--scheme flag wins; otherwise a scenario module MAY export
  * `viewport = { width, height, scheme? }` (Q09 needs the 720px split view); otherwise the harness
@@ -27,7 +31,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createIssueQa, openQaBrowser, reapQaBrowserProcesses, removeTree, runIssueScenario, withDeadline } from "./issues-fixture.mjs";
+import { createIssueQa, openQaBrowser, profileHolders, reapQaBrowserProcesses, removeTree, runIssueScenario, withDeadline } from "./issues-fixture.mjs";
+import { IS_COVERAGE } from "./issues/fixture-data.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXPECTED = ["Q02", "Q03", "Q04", "Q05", "Q06", "Q07", "Q08", "Q09", "Q10", "Q11", "Q12", "Q13", "Q14", "Q15", "Q16", "Q17", "Q18", "Q19", "Q20"];
@@ -132,6 +137,16 @@ function q01Record(file) {
 function cleanupProblems(cleanup) {
 	if (!cleanup) return ["cleanup receipt is missing"];
 	const problems = [];
+	if (cleanup.aggregate === true) {
+		// The aggregate receipt is built from each scenario's FINAL disk/process state after the
+		// exact-profile reaper ran, so early removal attempts that were later resolved are kept in
+		// reaped/initialProblems for the record but must not fail the run.
+		if (Array.isArray(cleanup.problems)) problems.push(...cleanup.problems);
+		if (cleanup.serverExited !== true) problems.push("one or more scenario servers did not exit");
+		if (cleanup.portClosed !== true) problems.push("one or more scenario ports stayed open");
+		if (cleanup.readBack !== "ENOENT") problems.push("one or more scenario fixtures read back " + cleanup.readBack);
+		return problems;
+	}
 	const reaped = Array.isArray(cleanup.reaped) ? cleanup.reaped : [];
 	const matched = [];
 	for (const attempt of reaped) {
@@ -182,6 +197,66 @@ function armCloseProbe(browser, ctx, args) {
 	else console.error("close probe - browser close is stalled with no holder");
 }
 
+// Every browser a scenario opens lives under its private fixture root: the primary profile plus
+// second profiles such as Q12's native-capture directories. Reap every one by its exact path
+// until no matching process remains, bounded by the same 30 s named close deadline.
+function scenarioProfileDirs(root) {
+	const found = [];
+	const walk = (dir, depth) => {
+		if (depth > 4) return;
+		let entries = [];
+		try {
+			entries = fs.readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			const full = path.join(dir, entry.name);
+			if (entry.name === "profile" || entry.name.startsWith("q12-native-")) found.push(full);
+			else walk(full, depth + 1);
+		}
+	};
+	walk(root, 0);
+	return found;
+}
+
+function summarizeReap(passes) {
+	const matched = [];
+	const killed = [];
+	const remaining = [];
+	let error = null;
+	for (const pass of passes) {
+		if (Array.isArray(pass.matched)) matched.push(...pass.matched);
+		if (Array.isArray(pass.killed)) killed.push(...pass.killed);
+		if (Array.isArray(pass.remaining)) remaining.push(...pass.remaining);
+		if (pass.error) error ??= pass.error;
+	}
+	return { matched, killed, remaining, error, passes: passes.length };
+}
+
+async function reapFixtureProfiles(root, { deadlineMs = BROWSER_CLOSE_TIMEOUT_MS } = {}) {
+	const passes = [];
+	const end = Date.now() + deadlineMs;
+	for (let cycle = 0; cycle < 400; cycle++) {
+		const dirs = scenarioProfileDirs(root);
+		if (dirs.length === 0) break;
+		let seen = 0;
+		let failed = null;
+		for (const dir of dirs) {
+			const result = await reapQaBrowserProcesses(dir).catch((error) => ({ matched: [], killed: [], remaining: [], error: error && error.message ? error.message : String(error) }));
+			passes.push(result);
+			seen += (result.matched?.length ?? 0) + (result.remaining?.length ?? 0);
+			if (result.error) failed = result.error;
+		}
+		if (failed) break;
+		if (seen === 0) break;
+		if (Date.now() >= end) break;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	return passes;
+}
+
 function cleanupOk(cleanup, runTmpReadBack) {
 	return (
 		Boolean(cleanup) &&
@@ -225,6 +300,8 @@ fs.mkdirSync(args.outDir, { recursive: true });
 const scenarios = [];
 const notes = [];
 const q01 = q01Record(args.q01);
+const aggregateMode = args.all || args.presentOnly;
+const scenarioCleanups = [];
 let ctx = null;
 let browser = null;
 let cleanup = null;
@@ -233,115 +310,265 @@ let harnessError = null;
 let closeTimedOut = false;
 let closeReap = null;
 
+async function runIsolatedScenario(id, viewport) {
+	const scenarioTmp = path.join(runTmp, id);
+	const scenarioDir = path.join(args.outDir, id);
+	fs.mkdirSync(scenarioTmp, { recursive: true });
+	fs.mkdirSync(scenarioDir, { recursive: true });
+	let localCtx = null;
+	let localBrowser = null;
+	let result = null;
+	let receipt = null;
+	let localTimedOut = false;
+	let localReap = null;
+	let localError = null;
+	const startedAt = Date.now();
+	try {
+		localCtx = await createIssueQa({ appDir: args.appDir, runTmp: scenarioTmp, evidenceDir: scenarioDir, port: 0 });
+		localBrowser = await withDeadline(openQaBrowser(localCtx, { width: viewport.width, height: viewport.height, scheme: viewport.scheme }), 60_000, "scenario_browser_launch_" + id);
+		if (localCtx.port <= 0) throw new Error("server reported no port");
+		result = await runIssueScenario(id, { browser: localBrowser, ctx: localCtx, width: viewport.width, height: viewport.height, scheme: viewport.scheme });
+	} catch (error) {
+		localError = error && error.stack ? error.stack : String(error);
+		console.error("scenario " + id + " failed - " + localError);
+		result = { id, checks: [{ name: id + " scenario ran", ok: false, detail: localError }], passed: 0, failed: 1 };
+	} finally {
+		if (localBrowser) {
+			try {
+				await withDeadline(localBrowser.close(), BROWSER_CLOSE_TIMEOUT_MS, "scenario_browser_close_" + id);
+			} catch (error) {
+				const message = error && error.message ? error.message : String(error);
+				if (error && error.code === "deadline" && error.operation === "scenario_browser_close_" + id) {
+					localTimedOut = true;
+					console.error("scenario " + id + " browser close timed out - reaping");
+				} else {
+					localError ??= "browser close failed: " + message;
+				}
+			} finally {
+				if (localCtx) {
+					// Before the server teardown removes the fixture, reap every profile a scenario opened
+					// (the primary one and second browsers like Q12's) by exact path.
+					const passes = await reapFixtureProfiles(scenarioTmp);
+					localReap = passes.length
+						? summarizeReap(passes)
+						: { matched: [], killed: [], remaining: [], error: null };
+				}
+			}
+		}
+		if (localCtx) {
+			try {
+				receipt = await withDeadline(localCtx.close({ closeTimedOut: localTimedOut, closeReap: localReap }), 60_000, "scenario_ctx_close_" + id);
+			} catch (error) {
+				localError ??= "server cleanup failed: " + (error && error.message ? error.message : String(error));
+				try { receipt = JSON.parse(fs.readFileSync(path.join(scenarioDir, "cleanup.json"), "utf8")); } catch { receipt = null; }
+			}
+		} else {
+			try { receipt = JSON.parse(fs.readFileSync(path.join(scenarioDir, "cleanup.json"), "utf8")); } catch { receipt = null; }
+		}
+		const removal = await removeTree(scenarioTmp);
+		let readBack = "ENOENT";
+		try { fs.statSync(scenarioTmp); readBack = "PRESENT"; } catch (error) { readBack = error.code || "ERROR"; }
+		const problems = cleanupProblems(receipt);
+		scenarioCleanups.push({ id, receipt, readBack, problems, closeTimedOut: localTimedOut, removal, error: localError });
+	}
+	return {
+		...result,
+		status: "present",
+		total: result.checks.length,
+		durationMs: Date.now() - startedAt,
+		evidenceDir: scenarioDir,
+		viewport: viewport.viewport,
+		viewportSource: viewport.viewportSource,
+	};
+}
+
 try {
-	ctx = await createIssueQa({ appDir: args.appDir, runTmp, evidenceDir: args.outDir, port: 0 });
-	browser = await withDeadline(openQaBrowser(ctx, { width: args.width, height: args.height, scheme: args.scheme }), 60_000, "harness_browser_launch");
-	if (ctx.port <= 0) throw new Error("server reported no port");
-	if (args.probeFailure) {
-		const id = (args.scenario || "Q06").toUpperCase();
-		const viewport = await effectiveViewport(id, args);
-		const result = await probeFailure(ctx, browser, viewport.width, viewport.height, viewport.scheme, id);
-		scenarios.push({ ...result, viewport: viewport.viewport, viewportSource: viewport.viewportSource });
-	} else if (args.all || args.presentOnly) {
-		notes.push(`Q01 is a review document, not an executable scenario; receipt: ${q01 === "absent" ? "absent" : q01.path}`);
+	if (aggregateMode) {
+		notes.push("Q01 is a review document, not an executable scenario; receipt: " + (q01 === "absent" ? "absent" : q01.path));
+		notes.push("every executable scenario ran against its own fresh fixture home, so state from another scenario cannot change its counts");
 		for (const id of EXPECTED) {
 			if (!scenarioExists(id)) {
-				scenarios.push({ id, status: "missing" });
+				scenarios.push({ id, status: "missing", evidenceDir: path.join(args.outDir, id) });
 				continue;
 			}
 			const viewport = await effectiveViewport(id, args);
-			const result = await runIssueScenario(id, { browser, ctx, width: viewport.width, height: viewport.height, scheme: viewport.scheme });
-			scenarios.push({ ...result, status: "present", viewport: viewport.viewport, viewportSource: viewport.viewportSource });
+			scenarios.push(await runIsolatedScenario(id, viewport));
 		}
+		// Every browser a scenario opened may outlive its page close (a Chrome helper can recreate
+		// a profile entry just after ctx.close reports the profile removed). For every scenario run
+		// root, reap each profile directory by exact path with the 30 s bounded close, then retry the
+		// removal and derive the FINAL clean state from the real disk and process table. Early
+		// failures stay in initialProblems/reaped for the record; only an actual leftover fails.
+		for (const run of scenarioCleanups) {
+			run.initialProblems = cleanupProblems(run.receipt);
+			const fixtureDir = path.join(runTmp, run.id);
+			const passes = await reapFixtureProfiles(fixtureDir);
+			const reap = summarizeReap(passes);
+			const removal = fs.existsSync(fixtureDir) ? await removeTree(fixtureDir) : { removed: true, attempts: 0, fallback: false };
+			run.retryRemoval = { reap, removal };
+			run.readBack = fs.existsSync(fixtureDir) ? "PRESENT" : "ENOENT";
+			const problems = [];
+			if (run.receipt) {
+				if (run.receipt.serverExited !== true) problems.push("server did not exit");
+				if (run.receipt.portClosed !== true) problems.push("port stayed open");
+				if (run.receipt.readBack !== "ENOENT") problems.push(`fixture home read back ${run.receipt.readBack}`);
+			}
+			run.finalHolders = [];
+			if (run.readBack !== "ENOENT") {
+				const holders = await profileHolders(fixtureDir).catch(() => []);
+				run.finalHolders = holders;
+				const profile = (run.receipt?.removalLog ?? []).find((entry) => entry.entry === "profile");
+				const holderText = holders.length ? holders.map((item) => `${item.name || "process"} pid ${item.pid}`).join(", ") : "no matching browser process";
+				problems.push(`fixture was not removed${profile?.error ? ` (${profile.error})` : removal.error ? ` (${removal.error})` : ""}; holder: ${holderText}`);
+			}
+			if (reap.remaining.length) problems.push(`browser processes remain: ${reap.remaining.join(",")}`);
+			if (reap.error) problems.push(`browser reaper failed: ${reap.error}`);
+			run.problems = problems;
+			if (run.problems.length) console.error("fixture " + run.id + " final cleanup problem - " + run.problems.join("; "));
+		}
+		const mergedLog = [];
+		const mergedReaped = [];
+		for (const run of scenarioCleanups) {
+			if (Array.isArray(run.receipt?.removalLog)) mergedLog.push(...run.receipt.removalLog);
+			if (Array.isArray(run.receipt?.reaped)) mergedReaped.push(...run.receipt.reaped);
+			if (Array.isArray(run.retryRemoval?.reap?.matched) && run.retryRemoval.reap.matched.length) mergedReaped.push({ attempt: "aggregate-retry", ...run.retryRemoval.reap });
+		}
+		const cleanRuns = scenarioCleanups.filter((run) => run.receipt && run.receipt.serverExited === true && run.receipt.portClosed === true && run.receipt.readBack === "ENOENT" && run.readBack === "ENOENT" && run.problems.length === 0);
+		cleanup = {
+			aggregate: true,
+			serverExited: scenarioCleanups.length > 0 && cleanRuns.length === scenarioCleanups.length,
+			portClosed: scenarioCleanups.length > 0 && cleanRuns.length === scenarioCleanups.length,
+			readBack: scenarioCleanups.length > 0 && cleanRuns.length === scenarioCleanups.length ? "ENOENT" : "PRESENT",
+			removalLog: mergedLog,
+			reaped: mergedReaped,
+			holders: scenarioCleanups.flatMap((run) => run.finalHolders ?? []),
+			closeTimedOut: scenarioCleanups.some((run) => run.closeTimedOut),
+			problems: scenarioCleanups.flatMap((run) => run.problems.map((problem) => `${run.id}: ${problem}`)),
+			perScenario: scenarioCleanups.map((run) => ({ id: run.id, checkpoint: run.receipt ? { serverExited: run.receipt.serverExited, portClosed: run.receipt.portClosed, readBack: run.receipt.readBack } : null, runTmpReadBack: run.readBack, retryRemoval: run.retryRemoval ?? null, initialProblems: run.initialProblems, problems: run.problems })),
+		};
+		if (!cleanup.serverExited) harnessError = "one or more isolated scenario fixtures did not clean up";
+		fs.writeFileSync(path.join(args.outDir, "cleanup.json"), JSON.stringify(cleanup, null, "\t"));
+		browserRecord = { aggregate: true, isolatedFixtures: true, runs: scenarioCleanups.map((run) => run.id) };
 	} else {
-		const id = args.scenario.toUpperCase();
-		const viewport = await effectiveViewport(id, args);
-		const result = await runIssueScenario(id, { browser, ctx, width: viewport.width, height: viewport.height, scheme: viewport.scheme });
-		scenarios.push({ ...result, status: "present", viewport: viewport.viewport, viewportSource: viewport.viewportSource });
+		ctx = await createIssueQa({ appDir: args.appDir, runTmp, evidenceDir: args.outDir, port: 0 });
+		browser = await withDeadline(openQaBrowser(ctx, { width: args.width, height: args.height, scheme: args.scheme }), 60_000, "harness_browser_launch");
+		if (ctx.port <= 0) throw new Error("server reported no port");
+		if (args.probeFailure) {
+			const id = (args.scenario || "Q06").toUpperCase();
+			const viewport = await effectiveViewport(id, args);
+			const result = await probeFailure(ctx, browser, viewport.width, viewport.height, viewport.scheme, id);
+			scenarios.push({ ...result, viewport: viewport.viewport, viewportSource: viewport.viewportSource });
+		} else {
+			const id = args.scenario.toUpperCase();
+			const viewport = await effectiveViewport(id, args);
+			const scenarioDir = path.join(args.outDir, id);
+			fs.mkdirSync(scenarioDir, { recursive: true });
+			const previousEvidenceDir = ctx.evidenceDir;
+			ctx.evidenceDir = scenarioDir;
+			const startedAt = Date.now();
+			try {
+				const result = await runIssueScenario(id, { browser, ctx, width: viewport.width, height: viewport.height, scheme: viewport.scheme });
+				scenarios.push({ ...result, status: "present", total: result.checks.length, durationMs: Date.now() - startedAt, evidenceDir: scenarioDir, viewport: viewport.viewport, viewportSource: viewport.viewportSource });
+			} finally {
+				ctx.evidenceDir = previousEvidenceDir;
+			}
+		}
+		if (browser.qaRecord) browserRecord = browser.qaRecord;
+		if (args.probeCloseTimeout || args.probeCloseHolder) armCloseProbe(browser, ctx, args);
 	}
-	if (browser.qaRecord) browserRecord = browser.qaRecord;
-	if (args.probeCloseTimeout || args.probeCloseHolder) armCloseProbe(browser, ctx, args);
 } catch (error) {
 	harnessError = error && error.stack ? error.stack : String(error);
-	console.error(`harness error - ${harnessError}`);
+	console.error("harness error - " + harnessError);
 	scenarios.push({ id: args.scenario || "harness", status: "present", checks: [{ name: "harness ran", ok: false, detail: harnessError }], passed: 0, failed: 1 });
 } finally {
-	if (browser) {
+	if (!aggregateMode && browser) {
 		try {
-			// Under parallel QA load a Chrome close can outlive 10 s. The named 30 s deadline is
-			// the close budget; when it expires the reaper below finishes the teardown by profile
-			// path. Only a leftover process or an unremovable profile fails the run.
 			await withDeadline(browser.close(), BROWSER_CLOSE_TIMEOUT_MS, "harness_browser_close");
 		} catch (error) {
 			const message = error && error.message ? error.message : String(error);
 			if (error && error.code === "deadline" && error.operation === "harness_browser_close") {
 				closeTimedOut = true;
-				console.error(`browser close exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms - reaping ${ctx ? ctx.profileDir : "the private profile"}`);
+				console.error("browser close exceeded " + BROWSER_CLOSE_TIMEOUT_MS + "ms - reaping " + (ctx ? ctx.profileDir : "the private profile"));
 			} else {
-				console.error(`browser close failed - ${message}`);
-				harnessError ??= `browser close failed: ${message}`;
+				console.error("browser close failed - " + message);
+				harnessError ??= "browser close failed: " + message;
 			}
 		} finally {
-			// Even if browser.close stalls or rejects, reap the private-profile Chrome processes
-			// before ctx.close so the profile can be removed and the port read-back is honest.
 			if (ctx) {
 				closeReap = await reapQaBrowserProcesses(ctx.profileDir).catch((error) => ({ matched: [], killed: [], remaining: [], error: error && error.message ? error.message : String(error) }));
 				if (closeReap && closeReap.matched.length === 0 && closeTimedOut) await reapQaBrowserProcesses(ctx.profileDir).catch(() => null);
 			}
 		}
 	}
-	if (ctx) {
-		try {
-			cleanup = await withDeadline(ctx.close({ closeTimedOut, closeReap }), 60_000, "harness_ctx_close");
-		} catch (error) {
-			const message = error && error.message ? error.message : String(error);
-			console.error(`server cleanup failed - ${message}`);
-			harnessError ??= `server cleanup failed: ${message}`;
+	if (!aggregateMode) {
+		if (ctx) {
 			try {
-				cleanup = JSON.parse(fs.readFileSync(path.join(args.outDir, "cleanup.json"), "utf8"));
-			} catch {
-				cleanup = null;
+				cleanup = await withDeadline(ctx.close({ closeTimedOut, closeReap }), 60_000, "harness_ctx_close");
+			} catch (error) {
+				const message = error && error.message ? error.message : String(error);
+				console.error("server cleanup failed - " + message);
+				harnessError ??= "server cleanup failed: " + message;
+				try { cleanup = JSON.parse(fs.readFileSync(path.join(args.outDir, "cleanup.json"), "utf8")); } catch { cleanup = null; }
 			}
-		}
-	} else {
-		try {
-			cleanup = JSON.parse(fs.readFileSync(path.join(args.outDir, "cleanup.json"), "utf8"));
-		} catch {
-			cleanup = null;
+		} else {
+			try { cleanup = JSON.parse(fs.readFileSync(path.join(args.outDir, "cleanup.json"), "utf8")); } catch { cleanup = null; }
 		}
 	}
 	if (!browserRecord && fs.existsSync(path.join(args.outDir, "browser.json"))) {
-		try {
-			browserRecord = JSON.parse(fs.readFileSync(path.join(args.outDir, "browser.json"), "utf8"));
-		} catch {
-			browserRecord = null;
-		}
+		try { browserRecord = JSON.parse(fs.readFileSync(path.join(args.outDir, "browser.json"), "utf8")); } catch { browserRecord = null; }
 	}
 	const cleanupIssues = cleanupProblems(cleanup);
-	if (cleanupIssues.length) console.error(`cleanup not clean - ${cleanupIssues.join("; ")}`);
-	if (closeTimedOut) {
-		console.error(`browser close timed out after ${BROWSER_CLOSE_TIMEOUT_MS}ms; ${cleanupIssues.length ? "reaper cleanup did not finish" : "reaper finished the cleanup"}`);
-	}
-	const rootRemoval = await removeTree(runTmp);
+	if (cleanupIssues.length) console.error("cleanup not clean - " + cleanupIssues.join("; "));
+	if (closeTimedOut) console.error("browser close timed out after " + BROWSER_CLOSE_TIMEOUT_MS + "ms; " + (cleanupIssues.length ? "reaper cleanup did not finish" : "reaper finished the cleanup"));
+	let rootRemoval = await removeTree(runTmp);
 	if (!rootRemoval.removed) {
-		// Never throw out of cleanup: the manifest below still records the read-back and the CLI
-		// exits nonzero because the temp root did not go away.
-		console.error(`temp cleanup failed - ${rootRemoval.error}`);
-		harnessError ??= `temp cleanup failed: ${rootRemoval.error}`;
+		const rootReap = await reapQaBrowserProcesses(runTmp).catch((error) => ({ matched: [], remaining: [], error: error && error.message ? error.message : String(error) }));
+		const retry = await removeTree(runTmp);
+		rootRemoval = { ...retry, firstError: rootRemoval.error, reap: { matched: rootReap.matched?.length ?? 0, remaining: rootReap.remaining?.length ?? 0 } };
+	}
+	if (!rootRemoval.removed) {
+		console.error("temp cleanup failed - " + rootRemoval.error);
+		harnessError ??= "temp cleanup failed: " + rootRemoval.error;
 	}
 	let runTmpReadBack = "ENOENT";
-	try {
-		fs.statSync(runTmp);
-		runTmpReadBack = "PRESENT";
-	} catch (error) {
-		runTmpReadBack = error.code || "ERROR";
-	}
+	try { fs.statSync(runTmp); runTmpReadBack = "PRESENT"; } catch (error) { runTmpReadBack = error.code || "ERROR"; }
 	const missing = scenarios.filter((scenario) => scenario.status === "missing").map((scenario) => scenario.id);
 	const cleanupFile = path.join(args.outDir, "cleanup.json");
 	const cleanupRecorded = fs.existsSync(cleanupFile);
+	const total = scenarios.reduce((sum, scenario) => sum + (scenario.checks?.length ?? 0), 0);
+	const passed = scenarios.reduce((sum, scenario) => sum + (scenario.passed ?? 0), 0);
+	const failed = scenarios.reduce((sum, scenario) => sum + (scenario.failed ?? 0), 0);
+	const teardownOk = cleanupOk(cleanup, runTmpReadBack) && cleanupRecorded;
+	if (closeTimedOut && !teardownOk) harnessError ??= "browser close timed out and cleanup did not finish cleanly";
+	const failureReasons = [];
+	if (failed > 0) failureReasons.push(`${failed} check(s) failed`);
+	if (missing.length > 0) failureReasons.push(`missing scenarios: ${missing.join(", ")}`);
+	if (harnessError) failureReasons.push(`harness error: ${String(harnessError).split("\n")[0]}`);
+	if (!teardownOk) {
+		failureReasons.push(
+			cleanupIssues.length
+				? `teardown not clean - ${cleanupIssues.join("; ")}`
+				: `teardown not clean - cleanup receipt ${cleanupRecorded ? `missing or runTmp read back ${runTmpReadBack}` : "missing"}`,
+		);
+	}
+	const matrixOk = !args.all || missing.length === 0;
+	const allPassed = failed === 0 && total > 0 && harnessError === null && teardownOk && matrixOk;
+	const coverage = Object.fromEntries(Object.entries(IS_COVERAGE).map(([ideal, row]) => {
+		const evidence = row.checks.map((anchor) => {
+			const scenario = scenarios.find((entry) => entry.id === anchor.scenario);
+			if (!scenario || scenario.status === "missing") return { scenario: anchor.scenario, check: anchor.match, status: "missing" };
+			const check = (scenario.checks ?? []).find((entry) => entry.name.includes(anchor.match));
+			if (!check) return { scenario: anchor.scenario, check: anchor.match, status: "missing" };
+			return { scenario: anchor.scenario, check: check.name, status: check.ok ? "passed" : "failed" };
+		});
+		return [ideal, { property: row.property, scenarios: row.scenarios, evidence, passed: evidence.length > 0 && evidence.every((entry) => entry.status === "passed") }];
+	}));
 	const manifest = {
+		allPassed,
 		scenarios,
+		totals: { passed, total, failed },
 		matrix: args.all || args.presentOnly ? { expected: EXPECTED, present: scenarios.filter((scenario) => scenario.status === "present").map((scenario) => scenario.id), missing } : null,
+		coverage: { source: "qa/issues/fixture-data.mjs", rows: coverage },
 		q01,
 		browser: browserRecord,
 		port: ctx ? ctx.port : null,
@@ -349,13 +576,16 @@ try {
 	};
 	if (notes.length) manifest.notes = notes;
 	fs.writeFileSync(path.join(args.outDir, "manifest.json"), JSON.stringify(manifest, null, "\t"));
-	const total = scenarios.reduce((sum, scenario) => sum + (scenario.checks?.length ?? 0), 0);
-	const passed = scenarios.reduce((sum, scenario) => sum + (scenario.passed ?? 0), 0);
-	console.log(`${passed}/${total} checks passed`);
-	const failed = scenarios.reduce((sum, scenario) => sum + (scenario.failed ?? 0), 0);
-	const teardownOk = cleanupOk(cleanup, runTmpReadBack) && cleanupRecorded;
-	if (closeTimedOut && !teardownOk) harnessError ??= "browser close timed out and cleanup did not finish cleanly";
-	const matrixOk = !args.all || missing.length === 0;
-	const ok = failed === 0 && total > 0 && harnessError === null && teardownOk && matrixOk;
-	process.exit(ok ? 0 : 1);
+	console.log(passed + "/" + total + " checks passed");
+	if (!allPassed) {
+		// A run that failed must never end on a line that reads like success: the cleanup detail and
+		// the final RUN FAILED line carry the entry, error and holder PIDs on stdout.
+		for (const issue of cleanupIssues) console.log("cleanup: " + issue);
+		if (cleanup && Array.isArray(cleanup.holders) && cleanup.holders.length) {
+			console.log("cleanup holders: " + cleanup.holders.map((item) => `${item.name || "process"} pid ${item.pid}`).join(", "));
+		}
+		console.log("RUN FAILED: " + failureReasons.join("; "));
+		process.exit(1);
+	}
+	process.exit(0);
 }
