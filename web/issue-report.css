@@ -69,6 +69,11 @@
 
 .issue-report__body {
 	display: grid;
+	/* Auto rows in a height-constrained grid may shrink to their items' minimum (0 for the
+	 * scrollable picker), which collapsed the target picker to 10px once 첨부 확인 made the body
+	 * overflow. Max-content rows keep every control at its intrinsic height; the body scrolls. */
+	grid-auto-rows: max-content;
+	align-content: start;
 	gap: var(--s3, 12px);
 	padding: 0 var(--s4, 16px) var(--s3, 12px);
 	overflow: auto;

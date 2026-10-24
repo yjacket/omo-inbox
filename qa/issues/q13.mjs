@@ -56,9 +56,28 @@ function setupExpression({ denyIndexedDb = false, storeId = null, source = null 
 	return `(async () => {
 		const prev = window.__q13;
 		if (prev && prev.report) { try { prev.report.destroy(); } catch {} }
-		const q = { http: prev ? prev.http : [], mode: 'normal', forceNext: null, deferred: 0, resumed: 0, imageMounted: false };
+		const q = { http: prev ? prev.http : [], mode: 'normal', forceNext: null, deferred: 0, resumed: 0, imageMounted: false, targetsOverride: null };
 		window.__q13 = q;
-		if (!document.querySelector('[data-issue-report]')) {
+		// The page-level reporter shares this origin's draft/outbox database and would replay the
+		// scenario's outbox through its own fetch. The document-start preload keeps indexedDB
+		// undefined for page scripts; this mount receives the native handle explicitly below.
+		// Wave D wires a real reporter into the page. This scenario owns its mount and its
+		// instrumented fetch: wait for that mount (an event, not a sleep), then retire its dialog
+		// and trigger so only this scenario's composer is reachable from its own trigger.
+		if (document.querySelector('[data-issue-report]') && !document.querySelector('#issue-report')) {
+			await new Promise((resolve) => {
+				const observer = new MutationObserver(() => {
+					if (!document.querySelector('#issue-report')) return;
+					observer.disconnect();
+					resolve();
+				});
+				observer.observe(document.body, { childList: true, subtree: true });
+				setTimeout(() => { observer.disconnect(); resolve(); }, 9000);
+			});
+		}
+		for (const stale of Array.from(document.querySelectorAll('#issue-report'))) stale.remove();
+		for (const stale of Array.from(document.querySelectorAll('[data-issue-report]'))) stale.remove();
+		{
 			const anchor = document.createElement('a');
 			anchor.dataset.issueReport = '';
 			anchor.href = '/issues/new';
@@ -88,7 +107,13 @@ function setupExpression({ denyIndexedDb = false, storeId = null, source = null 
 		} catch (error) {
 			q.imageError = String(error && error.message ? error.message : error);
 		}
-		const registry = window.__inboxIssueAdapters && window.__inboxIssueAdapters.__q13 ? window.__inboxIssueAdapters : adaptersMod.createAdapterRegistry({ ownerWindow: window });
+		// An isolated registry: a page adapter registered into the page's own registry can never
+		// become the newest adapter after this scenario registers. createAdapterRegistry publishes
+		// itself on the window, so put the page's registry back for a late page mount.
+		const pageRegistry = window.__inboxIssueAdapters;
+		const registry = adaptersMod.createAdapterRegistry({ ownerWindow: window });
+		if (pageRegistry) window.__inboxIssueAdapters = pageRegistry;
+		else delete window.__inboxIssueAdapters;
 		registry.__q13 = true;
 		const visibleRows = () => Array.from(document.querySelectorAll('.row[data-session]')).filter((row) => {
 			const box = row.getBoundingClientRect();
@@ -116,10 +141,13 @@ function setupExpression({ denyIndexedDb = false, storeId = null, source = null 
 				};
 			},
 			getTargets() {
+				// A QA knob: replace the getter AFTER the reporter opened, to prove the picker keeps
+				// the listTargets() snapshot taken at open instead of reading a later list.
+				if (q.targetsOverride) return q.targetsOverride;
 				const rows = visibleRows();
 				return [
 					{ kind: 'page', key: 'inbox', label: 'Inbox', rect: { x: 0, y: 0, w: innerWidth, h: innerHeight }, framePath: [] },
-					...rows.map((row) => { const box = row.getBoundingClientRect(); return { kind: 'record', key: 'thread:' + row.dataset.session, label: rowLabel(row), rect: { x: box.left, y: box.top, w: box.width, h: box.height }, framePath: [] }; })
+					...rows.map((row) => { const box = row.getBoundingClientRect(); const label = rowLabel(row); return { kind: 'record', key: 'thread:' + row.dataset.session, label, rect: { x: box.left, y: box.top, w: box.width, h: box.height }, framePath: [], excerpt: label }; })
 				];
 			},
 			deferRender() { q.deferred += 1; },
@@ -140,7 +168,7 @@ function setupExpression({ denyIndexedDb = false, storeId = null, source = null 
 		};
 		q.documentId = (prev && prev.documentId ? prev.documentId : 0) + 1;
 		const uuid = () => { if (q.forceNext) { const value = q.forceNext; q.forceNext = null; return value; } return crypto.randomUUID(); };
-		let indexedDbOption;
+		let indexedDbOption = window.__q13NativeIndexedDb;
 		if (${denyIndexedDb ? "true" : "false"}) {
 			indexedDbOption = { open() {
 				const request = { result: null, error: new Error('indexedDB denied'), onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null };
@@ -230,12 +258,36 @@ const ATTACH = `(() => {
 	};
 })()`;
 
-// The draft record as IndexedDB keeps it, read through the page's own drafts module.
+// The expanded dialog's geometry: the grid body must scroll instead of shrinking a row, the
+// picker must keep its intrinsic height and every option center must hit its own option.
+const PICKER_GEOMETRY = `(() => {
+	const picker = document.querySelector('#issue-picker');
+	const body = document.querySelector('.issue-report__body');
+	const attach = document.querySelector('#issue-attach-list');
+	const pick = document.querySelector('#issue-target-pick');
+	const box = (node) => { const rect = node.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, top: rect.top, bottom: rect.bottom }; };
+	const options = Array.from(picker.querySelectorAll('[role="option"]')).map((option) => {
+		const rect = option.getBoundingClientRect();
+		const cx = rect.left + rect.width / 2;
+		const cy = rect.top + rect.height / 2;
+		const hit = document.elementFromPoint(cx, cy);
+		return { index: option.dataset.index, height: rect.height, cx, cy, hitInsideOption: Boolean(hit && (hit === option || option.contains(hit))), hit: hit ? (hit.className || hit.tagName) : null };
+	});
+	return {
+		viewport: { width: innerWidth, height: innerHeight },
+		attachExpanded: attach.hidden === false,
+		body: { clientHeight: body.clientHeight, scrollHeight: body.scrollHeight, overflowY: getComputedStyle(body).overflowY, overflowed: body.scrollHeight > body.clientHeight },
+		picker: { ...box(picker), hidden: picker.hidden, scrollHeight: picker.scrollHeight, clientHeight: picker.clientHeight },
+		pick: box(pick),
+		options
+	};
+})()`;
+
 const STORED_DRAFT = `(async () => {
 	const q = window.__q13;
 	const s = q.report.state();
 	const draftsMod = await import('/web/issue-drafts.js');
-	const db = await draftsMod.openDraftDb({ indexedDB, origin: location.origin, storeId: s.storeId });
+	const db = await draftsMod.openDraftDb({ indexedDB: window.__q13NativeIndexedDb, origin: location.origin, storeId: s.storeId });
 	try {
 		const saved = await draftsMod.readDraft(db, s.draftId);
 		return {
@@ -308,6 +360,17 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 	};
 	const issueCount = async (label) => (await nodeRequest(label, () => ctx.get("/api/issues?limit=100"))).items.length;
 	const page = await withDeadline(newQaPage(browser, { width, height, scheme }), DEADLINE_MS, "q13_new_page");
+	// See setupExpression: the scenario owns the origin's draft/outbox database. This runs before
+	// every document script, so the page's own reporter can never resume this scenario's outbox.
+	await withDeadline(page.cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+		source: `(() => {
+			const native = window.indexedDB;
+			window.__q13NativeIndexedDb = native;
+			try {
+				Object.defineProperty(window, "indexedDB", { configurable: true, get() { return undefined; } });
+			} catch {}
+		})()`,
+	}, await page.resolveSessionId()), DEADLINE_MS, "q13_preload_indexeddb");
 	const flushPageHttp = async () => {
 		const entries = await page.evaluate("window.__q13 ? window.__q13.http.splice(0) : []");
 		for (const entry of entries) http.push({ side: "page", ...entry });
@@ -384,15 +447,39 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		check("Q13 removing one item drops only it: the rest, the excerpt text and the description stay", attachAfter.hidden === false && !attachAfter.items.some((item) => item.key === "visibleIds") && attachAfter.items.some((item) => item.key === "excerpt" && item.value === s.context.excerpt) && s.context.visibleIds === 0 && s.context.source && s.context.source.threadId === visibleThread && s.text === DESCRIPTION && sameJson(s.removed, ["visibleIds"]), JSON.stringify({ items: attachAfter.items, after: s.context, removed: s.removed }));
 
 		// ---- keyboard target picker ----
+		// Change the getter's list now: the picker must still offer the open-time snapshot.
+		await withDeadline(page.evaluate(`(() => { window.__q13.targetsOverride = [{ kind: 'page', key: 'late-list', label: 'Late', rect: { x: 0, y: 0, w: 1, h: 1 }, framePath: [] }]; })()`), DEADLINE_MS, "q13_late_target_list");
 		await withDeadline(page.click("#issue-target-pick"), DEADLINE_MS, "q13_open_picker");
-		const picker = await withDeadline(page.evaluate(`(() => { const options = Array.from(document.querySelectorAll('#issue-picker [role="option"]')); return { count: options.length, active: document.activeElement.getAttribute('data-index'), kinds: options.map((o) => o.querySelector('.issue-report__option-kind').textContent) }; })()`), DEADLINE_MS, "q13_picker_state");
+		const picker = await withDeadline(page.evaluate(`(() => { const options = Array.from(document.querySelectorAll('#issue-picker [role="option"]')); return { count: options.length, active: document.activeElement.getAttribute('data-index'), kinds: options.map((o) => o.querySelector('.issue-report__option-kind').textContent), options: options.map((o) => ({ key: o.__target.key, label: o.__target.label, excerpt: o.__target.excerpt === undefined ? null : o.__target.excerpt })) }; })()`), DEADLINE_MS, "q13_picker_state");
+		const geometry = await withDeadline(page.evaluate(PICKER_GEOMETRY), DEADLINE_MS, "q13_picker_geometry");
+		record.steps.pickerGeometry = geometry;
+		const pickerShot = await withDeadline(page.screenshot({ type: "png" }), DEADLINE_MS, "q13_picker_screenshot");
+		evidence("Q13-picker-expanded.png", Buffer.from(pickerShot));
+		check("Q13 with 첨부 확인 expanded the picker keeps its intrinsic height and 44px option hit areas", geometry.attachExpanded === true && geometry.picker.hidden === false && geometry.picker.height >= 88 && geometry.pick.height >= 44 && geometry.options.length >= 2 && geometry.options.every((option) => option.height >= 44 && option.hitInsideOption === true), JSON.stringify(geometry));
+		check("Q13 with 첨부 확인 expanded the dialog body scrolls instead of collapsing a grid row", geometry.body.overflowY === "auto" && (geometry.body.overflowed === false || geometry.body.scrollHeight > geometry.body.clientHeight), JSON.stringify(geometry.body));
+		const generationBefore = s.generation;
+		const sourceBeforePick = s.context.source;
+		const chosen = picker.options[2];
+		await pressKey(page, sessionId, "ArrowDown");
 		await pressKey(page, sessionId, "ArrowDown");
 		await pressKey(page, sessionId, "Enter");
-		act("keyboard", "ArrowDown, Enter in #issue-picker", "CDP key events dispatched");
-		const generationBefore = s.generation;
+		act("keyboard", "ArrowDown, ArrowDown, Enter in #issue-picker", "CDP key events dispatched");
 		s = await state("q13_state_target");
-		record.steps.target = { picker, target: s.target, chip: s.chip, generation: s.generation };
-		check("Q13 the keyboard picker selects an adapter-approved record target and starts a new generation", picker.count >= 2 && picker.active === "0" && s.target && s.target.kind === "record" && s.target.key === `thread:${visibleThread}` && s.chip.includes(s.target.label) && s.pickLabel === TEXT.change && s.pickerHidden === true && s.generation > generationBefore && s.context.target && s.context.target.key === s.target.key, JSON.stringify({ picker, target: s.target, chip: s.chip, pickLabel: s.pickLabel }));
+		const listAfterPick = await withDeadline(page.evaluate("document.querySelector('#issue-attach-list').hidden === false"), DEADLINE_MS, "q13_attach_after_pick");
+		record.steps.target = { picker, chosen, target: s.target, chip: s.chip, generation: s.generation, generationBefore, listExpanded: listAfterPick, sourceBeforePick, sourceAfterPick: s.context.source };
+		check("Q13 the picker offers the open-time listTargets() snapshot, not the getter's later list", picker.count >= 3 && picker.active === "0" && picker.options[0].key === "inbox" && !picker.options.some((option) => option.key === "late-list") && chosen && chosen.key !== `thread:${visibleThread}` && chosen.key.startsWith("thread:"), JSON.stringify({ picker, chosen }));
+		check("Q13 the keyboard picker selects the record target without starting a new capture generation", s.target && s.target.kind === "record" && s.target.key === chosen.key && s.chip.includes(s.target.label) && s.pickLabel === TEXT.change && s.pickerHidden === true && s.generation === generationBefore && s.context.target && s.context.target.key === s.target.key && listAfterPick === true, JSON.stringify({ picker: { count: picker.count, active: picker.active }, chosen, target: s.target, generation: s.generation, generationBefore, pickLabel: s.pickLabel, listExpanded: listAfterPick }));
+		check("Q13 the picked descriptor is the frozen source (including its excerpt) and the observation sequence stays the open-time one", s.context.source && s.context.source.kind === "thread" && s.context.source.threadId === chosen.key.slice("thread:".length) && s.context.source.itemId === null && s.context.source.observedSeq === sourceBeforePick.observedSeq && chosen.excerpt !== null && s.context.excerpt === chosen.excerpt && s.envelope === null, JSON.stringify({ before: sourceBeforePick, after: s.context.source, chosen, excerpt: s.context.excerpt, target: s.target }));
+		// Later edits keep operating on the picked source; they never fall back to A.
+		await withDeadline(page.click("#issue-excerpt"), DEADLINE_MS, "q13_excerpt_off_after_pick");
+		await withDeadline(page.evaluate("window.__q13.report.flush()"), DEADLINE_MS, "q13_flush_excerpt_off");
+		s = await state("q13_state_excerpt_off_after_pick");
+		const excerptOffAfterPick = { source: s.context.source, excerpt: s.context.excerpt, enabled: s.excerptEnabled, target: s.target };
+		await withDeadline(page.click("#issue-excerpt"), DEADLINE_MS, "q13_excerpt_on_after_pick");
+		await withDeadline(page.evaluate("window.__q13.report.flush()"), DEADLINE_MS, "q13_flush_excerpt_on");
+		s = await state("q13_state_excerpt_on_after_pick");
+		record.steps.pickedSourceKept = { excerptOffAfterPick, on: { source: s.context.source, excerpt: s.context.excerpt, enabled: s.excerptEnabled } };
+		check("Q13 toggling the excerpt after a pick edits the picked source and never restores the open-time source", excerptOffAfterPick.source && excerptOffAfterPick.source.threadId === chosen.key.slice("thread:".length) && excerptOffAfterPick.excerpt === null && excerptOffAfterPick.enabled === false && s.context.source && s.context.source.threadId === chosen.key.slice("thread:".length) && s.context.excerpt === chosen.excerpt && s.excerptEnabled === true, JSON.stringify(record.steps.pickedSourceKept));
 
 		// ---- 지우기 on the 위치 row, then pick again: the capture carries what the chip shows ----
 		await withDeadline(page.evaluate("window.__q13.report.flush()"), DEADLINE_MS, "q13_flush_target");
@@ -431,7 +518,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		const firstReceipt = s.receipt;
 		const list1 = await nodeRequest("list-after-first", () => ctx.get("/api/issues?limit=100"));
 		const detail1 = await nodeRequest("detail-first", () => ctx.get(`/api/issues/${firstId}`));
-		check("Q13 exactly one issue exists and its source is the visible thread", list1.items.length === 1 && list1.items[0].id === firstId && detail1.issue.source && detail1.issue.source.kind === "thread" && detail1.issue.source.threadId === visibleThread && detail1.issue.description === DESCRIPTION, JSON.stringify({ count: list1.items.length, source: detail1.issue.source }));
+		check("Q13 exactly one issue exists and its posted source equals the picked descriptor", list1.items.length === 1 && list1.items[0].id === firstId && detail1.issue.source && detail1.issue.source.kind === "thread" && detail1.issue.source.threadId === visibleThread && detail1.issue.source.observedSeq === sourceBeforePick.observedSeq && sameJson(s.envelope.source, s.context.source) && sameJson(detail1.issue.source, s.context.source) && detail1.issue.description === DESCRIPTION, JSON.stringify({ count: list1.items.length, source: detail1.issue.source, envelope: s.envelope.source, context: s.context.source }));
 		const serverReceipt1 = receiptOfCreateEvent(detail1);
 		let pageStatus = null;
 		try {
@@ -602,7 +689,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		const resumeAgain = await withDeadline(page.evaluate("window.__q13.report.resume()"), DEADLINE_MS, "q13_resume_again");
 		const detailHanging = await nodeRequest("detail-hanging", () => ctx.get(`/api/issues/${hangingId}`));
 		const count3 = await issueCount("list-after-resume");
-		record.steps.resumed = { first: setup3.resumed, again: resumeAgain, count: count3 };
+		record.steps.resumed = { first: setup3.resumed, again: resumeAgain, count: count3, outbox: s.outbox, status: s.status, requestId: hangingId, detailDescription: detailHanging.issue.description };
 		check("Q13 failure: reload mid-send resumes the outbox exactly once with the same requestId", s.outbox === "written" && setup3.resumed.length === 1 && setup3.resumed[0].requestId === hangingId && setup3.resumed[0].outcome === "accepted" && setup3.resumed[0].via === "replay" && resumeAgain.length === 0 && count3 === 3 && detailHanging.issue.description === HANGING, JSON.stringify(record.steps.resumed));
 		await withDeadline(page.click("[data-issue-report]"), DEADLINE_MS, "q13_open_after_resume");
 		s = await state("q13_state_after_resume");
