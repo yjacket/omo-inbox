@@ -21,6 +21,7 @@
  * modules that exist, still lists the missing ones, and exits nonzero only on a failed check.
  * --q01 records the separately authored Q01 review receipt path and its sha256, else q01:"absent".
  */
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,10 +33,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXPECTED = ["Q02", "Q03", "Q04", "Q05", "Q06", "Q07", "Q08", "Q09", "Q10", "Q11", "Q12", "Q13", "Q14", "Q15", "Q16", "Q17", "Q18", "Q19", "Q20"];
 
 const DEFAULT_VIEWPORT = { width: 390, height: 844, scheme: "light" };
+// A close that outlives this named deadline is finished through the profile reaper below.
+const BROWSER_CLOSE_TIMEOUT_MS = 30_000;
 
 function usage(message) {
 	if (message) console.error(message);
-	console.error("usage: bun qa/issues-qa.mjs <appDir> <outDir> --scenario QNN [--width 390 --height 844 --scheme light|dark] [--probe-failure] [--q01 <review.md>]");
+	console.error("usage: bun qa/issues-qa.mjs <appDir> <outDir> --scenario QNN [--width 390 --height 844 --scheme light|dark] [--probe-failure] [--probe-close-timeout] [--probe-close-holder] [--q01 <review.md>]");
 	console.error("       bun qa/issues-qa.mjs <appDir> <outDir> --all|--present-only [--width W --height H --scheme light|dark] [--q01 <review.md>]");
 	console.error("       viewport: explicit flag > scenario export > 390x844/light");
 	process.exit(1);
@@ -43,7 +46,7 @@ function usage(message) {
 
 function parseArgs(argv) {
 	const positional = [];
-	const options = { scenario: null, width: DEFAULT_VIEWPORT.width, height: DEFAULT_VIEWPORT.height, scheme: DEFAULT_VIEWPORT.scheme, all: false, presentOnly: false, probeFailure: false, q01: null, explicit: { width: false, height: false, scheme: false } };
+	const options = { scenario: null, width: DEFAULT_VIEWPORT.width, height: DEFAULT_VIEWPORT.height, scheme: DEFAULT_VIEWPORT.scheme, all: false, presentOnly: false, probeFailure: false, probeCloseTimeout: false, probeCloseHolder: false, q01: null, explicit: { width: false, height: false, scheme: false } };
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "--scenario") options.scenario = argv[++index];
@@ -60,6 +63,8 @@ function parseArgs(argv) {
 		else if (arg === "--all") options.all = true;
 		else if (arg === "--present-only") options.presentOnly = true;
 		else if (arg === "--probe-failure") options.probeFailure = true;
+		else if (arg === "--probe-close-timeout") options.probeCloseTimeout = true;
+		else if (arg === "--probe-close-holder") options.probeCloseHolder = true;
 		else if (arg === "--q01") options.q01 = argv[++index];
 		else if (arg.startsWith("--")) usage(`unknown option: ${arg}`);
 		else positional.push(arg);
@@ -68,6 +73,8 @@ function parseArgs(argv) {
 	if (!options.all && !options.presentOnly && !options.scenario) usage("--scenario QNN, --all or --present-only is required");
 	if (options.all && options.presentOnly) usage("--all and --present-only are mutually exclusive");
 	if ((options.all || options.presentOnly) && options.probeFailure) usage("--probe-failure runs one scenario, not a matrix");
+	if ((options.all || options.presentOnly) && (options.probeCloseTimeout || options.probeCloseHolder)) usage("close probes run one scenario, not a matrix");
+	if (options.probeCloseTimeout && options.probeCloseHolder) usage("--probe-close-timeout and --probe-close-holder are mutually exclusive");
 	if (!["light", "dark"].includes(options.scheme)) usage(`--scheme must be light or dark, got ${options.scheme}`);
 	if (!Number.isFinite(options.width) || !Number.isFinite(options.height) || options.width <= 0 || options.height <= 0) usage("width and height must be positive numbers");
 	if (options.q01 && !fs.existsSync(path.resolve(options.q01))) usage(`--q01 receipt not found: ${options.q01}`);
@@ -119,13 +126,70 @@ function q01Record(file) {
 	return { status: "present", path: abs, sha256 };
 }
 
+// A receipt is clean only when the server left, the port is closed, the private profile is gone
+// and no reaper attempt left a browser process behind. A close timeout by itself is not a failure:
+// the reaper finishing the teardown makes the run clean and records closeTimedOut:true.
+function cleanupProblems(cleanup) {
+	if (!cleanup) return ["cleanup receipt is missing"];
+	const problems = [];
+	const reaped = Array.isArray(cleanup.reaped) ? cleanup.reaped : [];
+	const matched = [];
+	for (const attempt of reaped) {
+		if (attempt && attempt.error) problems.push(`browser reaper failed: ${attempt.error}`);
+		const remaining = attempt && Array.isArray(attempt.remaining) ? attempt.remaining : [];
+		if (remaining.length) problems.push(`browser processes remain: ${remaining.join(",")}`);
+		if (attempt && Array.isArray(attempt.matched)) matched.push(...attempt.matched);
+	}
+	const logs = Array.isArray(cleanup.removalLog) ? cleanup.removalLog : [];
+	const profile = logs.find((entry) => entry.entry === "profile");
+	if (profile && profile.removed !== true) {
+		const holders = Array.isArray(cleanup.holders) ? cleanup.holders : [];
+		const reported = holders.length
+			? holders.map((item) => `${item.name || "process"} pid ${item.pid}`).join(", ")
+			: matched.length
+				? matched.map((item) => `${item.name || "process"} pid ${item.pid}`).join(", ")
+				: "no matching browser process";
+		problems.push(`profile was not removed${profile.error ? ` (${profile.error})` : ""}; holder: ${reported}`);
+	}
+	return problems;
+}
+
+// Simulate a close that never settles: the 30 s named deadline is the only way out. With a holder
+// absent the reaper must still finish the run cleanly; with `--probe-close-holder` a detached child
+// process holds the profile open, so the reaper leaves it and the run must report it.
+function armCloseProbe(browser, ctx, args) {
+	const lockFile = path.join(ctx.profileDir, "close-probe-holder.lock");
+	let holder = null;
+	if (args.probeCloseHolder) {
+		// The cwd inside the profile is what Windows refuses to remove; the open file alone can be
+		// deleted (Node opens with FILE_SHARE_DELETE), so the detached holder keeps both.
+		holder = spawn(
+			process.execPath,
+			["-e", "const fs=require('node:fs');const fd=fs.openSync(process.argv[1],'w');fs.writeSync(fd,'held');setInterval(()=>{},1000);", lockFile],
+			{ detached: true, cwd: ctx.profileDir, stdio: "ignore", windowsHide: true },
+		);
+		holder.unref();
+	}
+	const holderName = path.basename(process.execPath);
+	const record = {
+		simulatedStuckClose: true,
+		holder: holder ? { pid: holder.pid, name: holderName, lockFile } : null,
+		expectedExit: args.probeCloseHolder ? 1 : 0,
+	};
+	fs.writeFileSync(path.join(args.outDir, "close-probe.json"), JSON.stringify(record, null, "\t"));
+	browser.close = () => new Promise(() => {});
+	if (holder) console.error(`close probe holder started - ${holderName} pid ${holder.pid} holds ${lockFile} and cwd`);
+	else console.error("close probe - browser close is stalled with no holder");
+}
+
 function cleanupOk(cleanup, runTmpReadBack) {
 	return (
 		Boolean(cleanup) &&
 		cleanup.serverExited === true &&
 		cleanup.portClosed === true &&
 		cleanup.readBack === "ENOENT" &&
-		runTmpReadBack === "ENOENT"
+		runTmpReadBack === "ENOENT" &&
+		cleanupProblems(cleanup).length === 0
 	);
 }
 
@@ -166,6 +230,8 @@ let browser = null;
 let cleanup = null;
 let browserRecord = null;
 let harnessError = null;
+let closeTimedOut = false;
+let closeReap = null;
 
 try {
 	ctx = await createIssueQa({ appDir: args.appDir, runTmp, evidenceDir: args.outDir, port: 0 });
@@ -194,6 +260,7 @@ try {
 		scenarios.push({ ...result, status: "present", viewport: viewport.viewport, viewportSource: viewport.viewportSource });
 	}
 	if (browser.qaRecord) browserRecord = browser.qaRecord;
+	if (args.probeCloseTimeout || args.probeCloseHolder) armCloseProbe(browser, ctx, args);
 } catch (error) {
 	harnessError = error && error.stack ? error.stack : String(error);
 	console.error(`harness error - ${harnessError}`);
@@ -201,24 +268,31 @@ try {
 } finally {
 	if (browser) {
 		try {
-			// Teardown is bounded too: a stalled scenario must never keep the CLI alive.
-			await withDeadline(browser.close(), 10_000, "harness_browser_close");
+			// Under parallel QA load a Chrome close can outlive 10 s. The named 30 s deadline is
+			// the close budget; when it expires the reaper below finishes the teardown by profile
+			// path. Only a leftover process or an unremovable profile fails the run.
+			await withDeadline(browser.close(), BROWSER_CLOSE_TIMEOUT_MS, "harness_browser_close");
 		} catch (error) {
 			const message = error && error.message ? error.message : String(error);
-			console.error(`browser close failed - ${message}`);
-			harnessError ??= `browser close failed: ${message}`;
+			if (error && error.code === "deadline" && error.operation === "harness_browser_close") {
+				closeTimedOut = true;
+				console.error(`browser close exceeded ${BROWSER_CLOSE_TIMEOUT_MS}ms - reaping ${ctx ? ctx.profileDir : "the private profile"}`);
+			} else {
+				console.error(`browser close failed - ${message}`);
+				harnessError ??= `browser close failed: ${message}`;
+			}
 		} finally {
 			// Even if browser.close stalls or rejects, reap the private-profile Chrome processes
 			// before ctx.close so the profile can be removed and the port read-back is honest.
 			if (ctx) {
-				const reaped = await reapQaBrowserProcesses(ctx.profileDir).catch(() => null);
-				if (reaped && reaped.matched.length === 0) await reapQaBrowserProcesses(ctx.profileDir).catch(() => null);
+				closeReap = await reapQaBrowserProcesses(ctx.profileDir).catch((error) => ({ matched: [], killed: [], remaining: [], error: error && error.message ? error.message : String(error) }));
+				if (closeReap && closeReap.matched.length === 0 && closeTimedOut) await reapQaBrowserProcesses(ctx.profileDir).catch(() => null);
 			}
 		}
 	}
 	if (ctx) {
 		try {
-			cleanup = await withDeadline(ctx.close(), 30_000, "harness_ctx_close");
+			cleanup = await withDeadline(ctx.close({ closeTimedOut, closeReap }), 60_000, "harness_ctx_close");
 		} catch (error) {
 			const message = error && error.message ? error.message : String(error);
 			console.error(`server cleanup failed - ${message}`);
@@ -242,6 +316,11 @@ try {
 		} catch {
 			browserRecord = null;
 		}
+	}
+	const cleanupIssues = cleanupProblems(cleanup);
+	if (cleanupIssues.length) console.error(`cleanup not clean - ${cleanupIssues.join("; ")}`);
+	if (closeTimedOut) {
+		console.error(`browser close timed out after ${BROWSER_CLOSE_TIMEOUT_MS}ms; ${cleanupIssues.length ? "reaper cleanup did not finish" : "reaper finished the cleanup"}`);
 	}
 	const rootRemoval = await removeTree(runTmp);
 	if (!rootRemoval.removed) {
@@ -275,6 +354,7 @@ try {
 	console.log(`${passed}/${total} checks passed`);
 	const failed = scenarios.reduce((sum, scenario) => sum + (scenario.failed ?? 0), 0);
 	const teardownOk = cleanupOk(cleanup, runTmpReadBack) && cleanupRecorded;
+	if (closeTimedOut && !teardownOk) harnessError ??= "browser close timed out and cleanup did not finish cleanly";
 	const matrixOk = !args.all || missing.length === 0;
 	const ok = failed === 0 && total > 0 && harnessError === null && teardownOk && matrixOk;
 	process.exit(ok ? 0 : 1);

@@ -27,6 +27,7 @@ const HTTP_TIMEOUT_MS = 10_000;
 const BARRIER_TIMEOUT_MS = 10_000;
 const EXIT_TIMEOUT_MS = 10_000;
 const PORT_CLOSE_TIMEOUT_MS = 3_000;
+const PROFILE_CLEANUP_DEADLINE_MS = 25_000;
 const POST = { "content-type": "application/json", "x-inbox": "1" };
 
 export class IssueQaError extends Error {
@@ -272,12 +273,13 @@ async function removeTreeFallback(target, firstError, attempts, deadlineMs) {
 	}
 }
 
-async function teardown({ child, port, root, home, evidence, error = null }) {
+async function teardown({ child, port, root, home, evidence, error = null, closeTimedOut = false, closeReap = null }) {
 	const serverExited = await stopChild(child);
 	const portClosed = port > 0 ? await tcpClosed(port) : true;
 	const removed = [];
 	const removalLog = [];
 	const reaped = [];
+	if (closeReap) reaped.push({ attempt: "close", ...closeReap });
 	let names = [];
 	try {
 		names = fs.existsSync(root) ? fs.readdirSync(root) : [];
@@ -286,14 +288,22 @@ async function teardown({ child, port, root, home, evidence, error = null }) {
 	}
 	for (const entry of names) {
 		const target = path.join(root, entry);
+		let outcome;
 		if (entry === "profile") {
-			// A browser process that outlived its close keeps the private profile locked. Reap by
-			// this exact profile path first: the reaper resolves only after the killed PIDs are gone.
-			reaped.push({ attempt: "initial", ...(await reapQaBrowserProcesses(target).catch((reapError) => ({ matched: [], killed: [], remaining: [], error: reapError && reapError.message ? reapError.message : String(reapError) }))) });
-		}
-		let outcome = await removeTree(target);
-		if (!outcome.removed && entry === "profile") {
-			reaped.push({ attempt: "retry", ...(await reapQaBrowserProcesses(target).catch((reapError) => ({ matched: [], killed: [], remaining: [], error: reapError && reapError.message ? reapError.message : String(reapError) }))) });
+			// A browser process that outlived its close keeps the private profile locked, and under
+			// parallel load Chrome helpers can still be terminating when the first removal starts.
+			// Reap by this exact profile path and retry the removal until nothing matches or the
+			// named profile deadline expires; the receipt keeps every attempt.
+			const end = Date.now() + PROFILE_CLEANUP_DEADLINE_MS;
+			for (let cycle = 0; ; cycle++) {
+				const reap = await reapQaBrowserProcesses(target).catch((reapError) => ({ matched: [], killed: [], remaining: [], error: reapError && reapError.message ? reapError.message : String(reapError) }));
+				reaped.push({ attempt: cycle === 0 ? "initial" : `retry-${cycle}`, ...reap });
+				outcome = await removeTree(target, { attempts: 50, deadlineMs: 5_000 });
+				if (outcome.removed) break;
+				if (reap.error || Date.now() >= end) break;
+				if (reap.matched.length === 0 && reap.remaining.length === 0) break;
+			}
+		} else {
 			outcome = await removeTree(target);
 		}
 		removalLog.push({
@@ -313,7 +323,11 @@ async function teardown({ child, port, root, home, evidence, error = null }) {
 	} catch (statError) {
 		readBack = statError.code || "ERROR";
 	}
-	const receipt = { serverExited, portClosed, removed, readBack, removalLog, reaped };
+	// The reaper only stops browser helpers; if the profile survived it, name every process that
+	// still holds it (a spawned holder included) so the failure receipt reports the real holder.
+	const profileRemoved = removalLog.some((entry) => entry.entry === "profile" && entry.removed === true);
+	const holders = !profileRemoved && names.includes("profile") ? await profileHolders(path.join(root, "profile")).catch(() => []) : [];
+	const receipt = { closeTimedOut: closeTimedOut === true, serverExited, portClosed, removed, readBack, removalLog, reaped, holders };
 	if (error) receipt.error = error && error.message ? error.message : String(error);
 	try {
 		fs.mkdirSync(evidence, { recursive: true });
@@ -465,9 +479,9 @@ export async function createIssueQa({ appDir, runTmp, evidenceDir, port = 0 } = 
 			},
 			post,
 			get,
-			async close() {
+			async close({ closeTimedOut = false, closeReap = null } = {}) {
 				if (closed) return closed;
-				closed = await teardown({ child, port: actualPort, root, home, evidence });
+				closed = await teardown({ child, port: actualPort, root, home, evidence, closeTimedOut, closeReap });
 				return closed;
 			},
 		};
@@ -507,6 +521,53 @@ function qaSkillRoot() {
 	return process.env.OMO_BROWSER_SKILL_ROOT || DEFAULT_SKILL_ROOT;
 }
 
+/** Processes (browser or not) whose command line carries this harness profile path. */
+export async function profileHolders(profileDir, { timeoutMs = 10_000, selfPid = process.pid } = {}) {
+	if (process.platform !== "win32" || !profileDir) return [];
+	const needle = path.resolve(profileDir).replace(/'/g, "''");
+	const command = [
+		"$ErrorActionPreference = 'SilentlyContinue'",
+		`$selfPid = ${Number(selfPid)}`,
+		"$excluded = @('pwsh.exe', 'powershell.exe', 'cmd.exe', 'conhost.exe')",
+		`$matches = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $selfPid -and $_.Name -notin $excluded -and $_.CommandLine -and $_.CommandLine.Contains('${needle}') } | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name } })`,
+		"$matches | ConvertTo-Json -Depth 4 -Compress",
+	].join("; ");
+	const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+		stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true,
+	});
+	let out = "";
+	child.stdout.on("data", (chunk) => {
+		out += String(chunk);
+	});
+	const exited = new Promise((resolve) => child.once("exit", () => resolve(true)));
+	const timer = timeout(timeoutMs, "profile_holders_timeout", `profile holders did not answer within ${timeoutMs}ms`);
+	try {
+		await Promise.race([exited, timer.promise]);
+	} catch (error) {
+		try {
+			child.kill();
+		} catch {
+			// best effort
+		}
+		throw error;
+	} finally {
+		timer.cancel();
+	}
+	const line = out.trim().split(/\r?\n/).filter((value) => value.trim() !== "").pop();
+	if (!line) return [];
+	let parsed = null;
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return [];
+	}
+	const listed = Array.isArray(parsed) ? parsed : [parsed];
+	return listed
+		.map((item) => ({ pid: Number(item?.pid), name: typeof item?.name === "string" ? item.name : "" }))
+		.filter((item) => Number.isInteger(item.pid) && item.pid > 0);
+}
+
 /**
  * Kill every process whose command line carries this harness's private profile path. On Windows
  * Chrome for Testing keeps <runTmp>/profile locked through helper processes that outlive the
@@ -514,7 +575,7 @@ function qaSkillRoot() {
  * unique mkdtemp path - not an image name - catches those helpers while never touching a process
  * that merely runs another Chrome. The harness and its PowerShell child both carry the path in
  * their own command lines, so they are excluded by name and the harness by PID. Bounded by a
- * named deadline.
+ * named deadline. This intentionally skips node/bun holders; `profileHolders` names them instead.
  */
 export async function reapQaBrowserProcesses(profileDir, { timeoutMs = 10_000, selfPid = process.pid } = {}) {
 	if (process.platform !== "win32" || !profileDir) return { matched: [], killed: [], remaining: [], error: null };
