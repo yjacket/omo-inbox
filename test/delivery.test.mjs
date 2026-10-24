@@ -9,6 +9,8 @@ import { safeSegment } from "../extension/inbox/util.ts";
 
 const SID = "s1";
 const ITEM = "i-1";
+const NOW = Date.parse("2026-10-24T12:00:00.000Z");
+const ISSUED_AT = "2026-10-24T12:00:00.000Z";
 const QUESTION_RAW = {
 	request: {
 		requestId: "r1",
@@ -37,13 +39,13 @@ function ledgerFile(home, sid = SID) {
 	return path.join(home, "ledger", `${safeSegment(sid)}.json`);
 }
 
-function controlFile(home, { deliveryId = "c1", itemId = ITEM, action = "close", sid = SID, ...rest } = {}) {
+function controlFile(home, { deliveryId = "c1", itemId = ITEM, action = "close", sid = SID, issuedAt = ISSUED_AT, ...rest } = {}) {
 	const dir = path.join(home, "control", safeSegment(sid));
 	fs.mkdirSync(dir, { recursive: true });
 	const file = path.join(dir, `${deliveryId}.json`);
 	fs.writeFileSync(
 		file,
-		JSON.stringify({ v: 1, type: "session-control", action, itemId, deliveryId, issuedAt: new Date().toISOString(), ...rest }),
+		JSON.stringify({ v: 1, type: "session-control", action, itemId, deliveryId, issuedAt, ...rest }),
 	);
 	return file;
 }
@@ -125,7 +127,7 @@ function setup(options = {}) {
 			if (typeof options.onControl === "function") return options.onControl(control);
 			trace.push(`control:${control.action}`);
 		},
-		now: options.now,
+		now: options.now ?? (() => NOW),
 	});
 	return {
 		home,
@@ -679,10 +681,9 @@ test("a failed control ack keeps the file without a ledger entry, then applies e
 });
 
 test("a stale control is dropped without applying it", async (t) => {
-	const now = Date.parse("2026-10-24T12:00:00.000Z");
-	const s = setup({ now: () => now });
+	const s = setup();
 	t.after(s.cleanup);
-	const file = controlFile(s.home, { issuedAt: new Date(now - 11 * 60_000).toISOString() });
+	const file = controlFile(s.home, { issuedAt: new Date(NOW - 11 * 60_000).toISOString() });
 
 	await s.delivery.drain();
 
@@ -690,6 +691,42 @@ test("a stale control is dropped without applying it", async (t) => {
 	assert.deepEqual(s.posts, [{ url: `/api/items/${ITEM}/delivered`, body: { deliveryId: "c1", how: "dropped", detail: "stale" } }]);
 	assert.equal(s.exists(file), false);
 	assert.deepEqual(s.ids(), []);
+});
+
+test("a control with an unparsable issuedAt is acked as dropped stale", async (t) => {
+	const s = setup();
+	t.after(s.cleanup);
+	const file = controlFile(s.home, { issuedAt: "nope" });
+
+	await s.delivery.drain();
+
+	assert.deepEqual(s.controls, []);
+	assert.deepEqual(s.posts, [{ url: `/api/items/${ITEM}/delivered`, body: { deliveryId: "c1", how: "dropped", detail: "stale" } }]);
+	assert.equal(s.exists(file), false);
+	assert.deepEqual(s.ids(), []);
+});
+
+test("controls missing type, itemId or deliveryId are noted and removed without applying", async (t) => {
+	const cases = [
+		["type", { v: 1, deliveryId: "c1", itemId: ITEM, action: "close", issuedAt: ISSUED_AT }],
+		["itemId", { v: 1, type: "session-control", deliveryId: "c1", action: "close", issuedAt: ISSUED_AT }],
+		["deliveryId", { v: 1, type: "session-control", itemId: ITEM, action: "close", issuedAt: ISSUED_AT }],
+	];
+	for (const [missing, payload] of cases) {
+		const s = setup();
+		t.after(s.cleanup);
+		const dir = path.join(s.home, "control", safeSegment(SID));
+		fs.mkdirSync(dir, { recursive: true });
+		const file = path.join(dir, `bad-${missing}.json`);
+		fs.writeFileSync(file, JSON.stringify(payload));
+
+		await s.delivery.drain();
+
+		assert.equal(s.exists(file), false, `${missing} control removed`);
+		assert.deepEqual(s.controls, [], `${missing} control not applied`);
+		assert.deepEqual(s.posts, [], `${missing} control not acked`);
+		assert.ok(s.logs.some((line) => line.includes("bad session-control")), `${missing} control noted`);
+	}
 });
 
 test("a control for a closed item is dropped as item closed", async (t) => {
