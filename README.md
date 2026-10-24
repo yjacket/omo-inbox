@@ -11,9 +11,9 @@ Every root interactive session (`ctx.mode === "tui"`) becomes a thread. Print, j
 | --- | --- | --- |
 | `question` | the question tool (`ask-user:asked`) | pick options, write text, or comment |
 | `permission` | a `Permission required:` dialog | allow once, deny, or deny with feedback |
-| `turn` | a turn that ended and is waiting on you | reply, or tap 계속해 / 승인 / 진행 / 멈춰 |
-| `blocked` | a goal marked blocked | reply |
-| `done` | a goal marked complete | reply |
+| `turn` | a turn that ended and is waiting on you | reply, or tap 계속해 / 승인 / 진행 / 멈춰; or a next action (see Next actions) |
+| `blocked` | a goal marked blocked | reply, or a next action |
+| `done` | a goal marked complete | reply, or a next action |
 | `progress` | each assistant message with text while a work span (episode, see Capture) is open | read; one gray line per message, never pushed, never unread |
 | `board` | a visual board of this inbox (the proposal flow below) | open it |
 | `notice` | another extension through `inbox:notice` or `inbox notify` | read, open |
@@ -26,6 +26,7 @@ Every root interactive session (`ctx.mode === "tui"`) becomes a thread. Print, j
 - Visual boards work exactly as in omo-desk: `inbox submit <boardDir>` validates a board folder, keeps a permanent record and prints a URL; the proposal page lets you mark frames, answer questions, comment, ask for a revision (`재요청`) or approve (`승인`); sessions answer with `inbox reply`, `inbox revise` and `inbox close`.
 - The owner sees the board concept as **Review**: the Inbox button, the Review list, kind chips, link lines, wait labels, error texts and pushes all say Review. Identifiers keep their names (`board.json`, `visual-board`, `/p/<id>`, `/boards`, `/api/proposals`, the CLI verbs, item kind `board`).
 - Whose turn it is. A thread reads 내 차례 when it has an open needs-you item and its session is live. When the session is off, it stays in 내 차례 with a gray `세션 꺼짐` chip only if something still asks: an open question, permission, blocked, notice or board item, a turn or done item whose summary `ask` is non-empty or whose model summary's headline or body still asks a question or names something for you to do (summaries written before `ask` carried to-dos), a turn or done item without a model summary whose final text ends with a question or a to-do, or a stalled-episode final. Otherwise it moves to 끝남. The items stay open, so a session that reconnects puts the thread back in 내 차례 by itself.
+- Next actions. Every final (`turn`, `blocked`, `done`) gets a verdict on what's left: `done` (nothing left), `plan` (a plan waits to run), `ship` (uncommitted or unpushed work, or wrap-up), `ask` (it asks you), `blocked` or `stalled`. The thread page turns it into buttons: `세션 닫기`, `새 세션에서 실행`, `커밋·푸시`, `푸시`, up to two model suggestions and actions other extensions register. See Next actions.
 - Over Tailscale the same pages are served on `https://<machine>.<tailnet>.ts.net:4388`.
 
 ## Install
@@ -179,7 +180,7 @@ See `skill/example/` for a working board.
 ## Inbox pages
 ### Threads list (`/`)
 
-The header has `Inbox`, the `알림 받기` button, a **Review** button and `🙋 N` (threads in 내 차례, hidden ones not counted). The Review button carries a round badge with the number of Reviews waiting on you (`reviews.mine`, report Reviews included); there's no badge at 0, and it refreshes with the 5 s list poll. One row per thread: title, product and branch, status (chip `🙋 내 차례`, or `⛔ 막힘` when the newest item is blocked and `🔔 알림` for a notice, plus a gray `세션 꺼짐` chip when the session is off), the newest item's headline and time, unread count and a 🔥 badge while the prompt cache is warm. Threads that need you come first (oldest waiting first), then working, then ended (newest first). The section of threads that need you is titled `내 차례`. Hidden threads appear only in a last group `숨긴 대화 N`, folded by default; `펼치기` / `접기` toggles it and the open state is kept per browser in `localStorage` key `inbox.hiddenOpen`.
+The header has `Inbox`, the `알림 받기` button, a **Review** button and `🙋 N` (threads in 내 차례, hidden ones not counted). The Review button carries a round badge with the number of Reviews waiting on you (`reviews.mine`, report Reviews included); there's no badge at 0, and it refreshes with the 5 s list poll. One row per thread: title, product and branch, status (chip `🙋 내 차례`, or `⛔ 막힘` when the newest item is blocked and `🔔 알림` for a notice, plus a gray `세션 꺼짐` chip when the session is off), the newest item's headline and time, unread count and a 🔥 badge while the prompt cache is warm. Threads that need you come first (oldest waiting first), then working, then ended (newest first). The section of threads that need you is titled `내 차례`. Hidden threads appear only in a last group `숨긴 대화 N`, folded by default; `펼치기` / `접기` toggles it and the open state is kept per browser in `localStorage` key `inbox.hiddenOpen`. A 내 차례 row with a next verdict gets a gray chip right after the status chip: `할 일 없음` (done), `실행 대기` (plan) or `마무리 남음` (ship). An ended row whose session quit with a plan or ship verdict gets the same chip. Ask, blocked and stalled rows get none.
 
 A thread's title is the session name when it is Korean, else a model-written Korean title of your first request (omo names sessions in English, so this is the usual case), else `요청: <first request>` clipped to 24 characters. Notices without a session go to the `알림` thread.
 
@@ -191,10 +192,18 @@ Split view. A window at least 720 CSS px wide (`min-width: 720px`) is wide; anyt
 - Agent bubbles (left, white): kind chip (질문 / 승인 요청 / 권한 요청 / 보고 / 막힘 / 끝남 / 진행 / 알림 / Review), bold headline, gray `하던 일 · <context>`, the body, the ask, option buttons (★권장 first with its reason; multi-select questions use checkboxes plus 보내기; each question has a 직접 쓰기 field), a gray `답이 없으면 · ...` line, and a footer with 듣기, 원문 보기 (the raw text rendered as Markdown: headings, lists, quotes, tables, code, bold, italic and https links; HTML in it stays literal text), 더 쉽게 (asks for a simpler summary) and the time.
 - Your bubbles (right, yellow): what you sent and its state: `보내는 중`, `전달됨 ✓`, `늦게 전달됨`, or `세션이 꺼져 있어 다시 열면 전달됩니다`. An answer still unconfirmed after 60 s offers 다시 보내기.
 - System lines (center, gray): `터미널에서 답함`, `다음 작업으로 넘어감`, `시간 초과`, `Review · 열기`. Each progress item is one gray line `<headline>` without a background, shown whatever its status, so the lines of an episode stay above its final message.
+- More system lines: a close as `closed-by-owner` reads `닫음`, as `handed-off` reads `새 세션으로 넘어감`. After a new-session launch the thread shows `새 세션을 여는 중`, and once the new session connects, `새 세션에서 이어감 · 열기` linking `/s/<new sid>`.
 - The header toggle `과정 보기` (default on, kept in `localStorage` key `inbox.progressLines`) hides or shows the progress lines.
 - While the session waits, the newest line gets ` · 기다리는 중: <label>` (백그라운드 작업, 모니터, 분리 실행 작업, 하위 작업, 작업 흐름, Review 답, 질문 답, 권한 답, 목표 이어가기, 다시 불러온 뒤 확인; a hold `hold:<source>` reads as its source; any other reason reads 다음 신호) and, for each desk board it waits on, `<title> · 열기` opening the board in a new tab.
 - 원문 보기 of an episode final fetches the episode and lists every message of the span in order, each with its time and rendered as Markdown; a failed fetch shows `다시 시도`. Items without `meta.episode` show their own raw text as before.
 - Composer at the bottom: quick chips 계속해 / 승인 / 진행 / 멈춰 (when the newest open item is a turn, blocked or done item, or the thread is working), a `답장` box and 보내기. It answers the newest open item that needs you (a question gets a comment, a turn gets a reply), or sends a free message when none is open.
+- Next line: the bubble of the newest open final whose next state is done, plan, ship, blocked or stalled shows `다음 · <reason>` after the ask line. Ask finals get no next line.
+- Next actions bar: for done, plan and ship the four chips are hidden and the next actions take their place, the primary one in the accent color. For ask, blocked and stalled the chips stay, followed by the provider actions and a ghost (outline) `세션 닫기` set apart by a gap. A tap locks every next button until the reply. Buttons are at least 44 CSS px.
+- A continue action (`커밋·푸시`, `푸시`, model and provider prompts) is sent like a reply, so the session's next run supersedes the final and the composer returns to the working chips. On an off session it opens the reopen sheet first.
+- Close sheet: a close with warnings, or a server answer `confirm_required`, opens `세션을 닫을까요?` listing each warning, with `닫기` and `취소`. Without warnings close posts at once. Status `세션을 닫는 중입니다.` (live session) or `세션을 닫았습니다.` (session off).
+- New-session sheet: always asks `새 세션에서 실행할까요?` with `폴더 · <dir>`, `첫 메시지 · /skill:ulw-execute <slug>`, `실행` and `취소`. Status `새 세션을 여는 중입니다.`, then `새 세션을 열었습니다.` with `열기` to the new thread.
+- Action errors: `계획 파일을 찾지 못했습니다.` (plan_missing), `상황이 바뀌었습니다. 다시 확인해 주세요.` (stale, the page refreshes at once), and the reopen texts `세션 폴더가 없어 열지 못했습니다.`, `터미널을 찾지 못했습니다.`, `세션을 열지 못했습니다.`, `이 기기에서는 열 수 없습니다.`. An action bubble still unconfirmed after 60 s reads `세션이 응답하지 않습니다` instead of offering 다시 보내기.
+- A session that quit (the actionable closed final, see Next actions) keeps its plan and continue actions in the composer area until a handoff exists; continue goes through the reopen sheet.
 - Terms: each summary term that appears in the headline, `하던 일`, body or ask is a dotted-underlined button. A tap opens a popover with its meaning just under the term, inside the bubble. Another tap, a tap outside or Escape closes it and focus returns to the term. Only one is open at a time, and it stays open across the poll re-render. There is no `용어 ·` line.
 - 듣기 comes first in every agent bubble footer. A tap reads the headline, `하던 일` with its context, the body, the ask and the choices the bubble shows (each question's text, then number, label, 추천 and why; permission buttons by name) in Korean (ko-KR); the button reads 멈추기 while it speaks and 듣기 again at the end. Starting another message stops the first, so only one plays. Nothing plays without a tap, and the button is hidden when the browser has no speech.
 - Reopen sheet: sending anything to a thread whose session is off (composer, quick chips, option picks, permission buttons, feedback or reply, 다시 보내기) first opens a sheet titled `세션이 꺼져 있습니다` with the line `다시 열면 이 답을 바로 전달합니다.` and two buttons, `다시 열고 보내기` and `나중에 전달`. Escape or a tap on the dim area closes it without sending and keeps the typed text. `나중에 전달` stores the reply as before. `다시 열고 보내기` stores it the same way and, only when that worked, asks the PC to reopen the session (see Session wake and capture). The composer status then reads `세션을 여는 중입니다.` and then one of: `세션을 열었습니다. 연결되면 전달됩니다.`, `세션 폴더가 없어 열지 못했습니다. 답은 다음에 열 때 전달됩니다.`, `열 세션을 찾지 못했습니다. 답은 다음에 열 때 전달됩니다.`, `터미널을 찾지 못했습니다. 답은 다음에 열 때 전달됩니다.`, `세션을 열지 못했습니다. 답은 다음에 열 때 전달됩니다.` or `이 기기에서는 열 수 없습니다. 답은 다음에 열 때 전달됩니다.`; it is empty when the session turned out to be live. 더 쉽게 is not gated. A failed hide shows `숨기지 못했습니다.` there.
@@ -247,7 +256,7 @@ The Review list lives at `/boards` (title and heading `Review`, tab title `(N) R
     crops/<seq6>-<n>.png
   data/threads/<sid>/  one folder per session thread
     thread.json        { v: 1, session, cwd, product, feature, worktree, branch, title, titleSource, firstRequest, created, ended, sessionFile, hidden }
-    events/<seq6>-<type>.json   item, summary, answer, delivered, bridge, state, pushed, closed, activity, cache, read
+    events/<seq6>-<type>.json   item, summary, answer, delivered, bridge, state, pushed, closed, activity, cache, read, next, actions, handoff
   data/issues/         independent issue store (the server is its only writer)
     store.json         { v, storeId }
     records/<issueId>/created.json
@@ -257,6 +266,7 @@ The Review list lives at `/boards` (title and heading `Review`, tab title `(N) R
   data/live.json       session -> last /api/here time (epoch ms), restores liveness after a server restart
   mailbox/<session>/<file>.json   answers and board feedback waiting for the extension, deleted after delivery
   ledger/<session>.json   delivery ids the extension already handled
+  control/<session>/<deliveryId>.json   session-control files (close, run) waiting for the extension
   takeover.json        written by takeover, renamed by handback
   push/vapid.json      the server's VAPID key pair, created once
   push/subscriptions.json   browsers that turned notifications on
@@ -271,8 +281,10 @@ Threads:
 - An `activity` event stores `cause` (`owner` or `system`; missing reads as `owner`).
 - Item status: `closed` when closed; else `answered` when an answer has no matching `delivered`; else `delivered`; else `open`. Questions and permissions still open after 24 h read as closed `expired`.
 - `thread.json` keys `sessionFile` (string or null, default null; the session file the extension reported, used by reopen) and `hidden` (boolean, default false). An older thread.json without them reads as null and false.
+- `thread.json` key `executes` (string or null, default null): the plan slug this session runs itself, seen in its raw first input. A `next` event `{itemId, next}` stores a final's verdict, an `actions` event `{producer, actions}` a provider's list, and a `handoff` event `{itemId, to, via, status, slug}` a new-session launch (`via` `orca`, `wt` or `sink`; `status` `launching` or `connected`).
+- Close reasons add `closed-by-owner` (`닫음`) and `handed-off` (`새 세션으로 넘어감`) to `session-closed` (`세션 닫힘`).
 - Thread status. A session is live when it called `/api/here` within 90 s, or sent a plain bye (`/reload`) within 90 s. `needs-you` when an open needs-you item exists and the session is live, or when the session is off and an open item still asks (see What it does); else `working` when live; else `ended`. Rows and the thread view carry `live`, `off` (needs-you while not live, never for `_notices`) and `hidden`.
-- `delivered.how` is `bridge`, `message`, `late-message`, `dropped` (the terminal answered first) or `refused`.
+- `delivered.how` is `bridge`, `message`, `late-message`, `dropped` (the terminal answered first), `refused` or `control` (a session-control file was applied).
 - Mailbox files are `{v:1, type, ...}`: `item-answer` (itemId, kind, deliveryId, payload, text), `explain` (itemId), or `board-feedback` (desk's payload; a file without `type` is board feedback).
 
 Proposals:
@@ -290,7 +302,7 @@ Proposals:
 
 `data/issues` is kept by `uninstall` exactly like the rest of `data`; a tombstone retains no description, context or images.
 
-`config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 } }`. `server.json` is written only by the server: `{ "v", "name", "port", "pid", "started", "version" }`. Install doesn't write it.
+`config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 } }`. `server.json` is written only by the server: `{ "v", "name", "port", "pid", "started", "version" }`. Install doesn't write it. `next.closeTab` (default true) lets a close also close the Orca tab; `false` leaves the tab open.
 
 ## HTTP API
 Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and `x-inbox: 1` (else 403). Body limit 30 MiB (else 413); `/api/issues*` instead reads at most 12 MiB, enforced while reading before JSON parsing, and the old endpoints keep 30 MiB. `/api/*` responses are `cache-control: no-store`; revision files are `public, max-age=31536000, immutable`.
@@ -336,15 +348,19 @@ Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and 
 | POST | `/api/items/<itemId>/answer` | feedback | `{answers?, text?, comment?, choice?, feedbackText?}` -> `{ok, deliveryId}`; 409 `{error: "closed", reason}`; 400 `question_incomplete` / `invalid_answer` |
 | POST | `/api/threads/<sid>/message` | feedback | `{text}`; a free message, on a new `turn` item when none is open |
 | POST | `/api/items/<itemId>/explain` | feedback | `{ok}`; 409 when the session is not live |
-| POST | `/api/items/<itemId>/delivered` | session | `{deliveryId, how, detail}` |
+| POST | `/api/items/<itemId>/delivered` | session | `{deliveryId, how, detail}`; how `control` acks a session-control file, `dropped` with detail `item closed` or `stale` |
 | POST | `/api/threads/<sid>/read` | feedback | `{seq}` |
 | POST | `/api/notices` | session | a v1 notice (see Notices for other extensions); 400 with `details` |
 | GET | `/api/threads?status=` | read | `{items: rows, counts: {needsYou, working, ended, hidden}, reviews: {mine}}`; rows carry `live`, `off`, `hidden` and include hidden threads with `hidden: true` (so does `inbox threads --json`); `needsYou` leaves hidden threads out |
 | POST | `/api/threads/<sid>/hide` | feedback | `{hidden: boolean}` -> `{ok, hidden}`; 400 `bad_input`; 404 `not_found` |
 | POST | `/api/threads/<sid>/reopen` | reopen | `{}` -> `{ok, via: "orca"\|"wt"\|"sink", already?}`; 409 `{error: "live"\|"cwd_missing"\|"no_session"}`; 503 `no_launcher`; 502 `launch_failed`; 404 `not_found`; 400 for the `_notices` thread |
+| POST | `/api/items/<itemId>/action` | reopen | `{action, confirm?}` -> `{ok, via: "message"\|"session"\|"offline"\|"orca"\|"wt"\|"sink", deliveryId?, off?, session?}`; 404 `not_found`; 400 `bad_input` (no such action id); 409 `{error: "closed", reason}`, `off`, `confirm_required` `{warnings}`, `stale` `{next}`, `plan_missing`, `cwd_missing`; 503 `no_launcher`; 502 `launch_failed`; 403 `forbidden` |
+| POST | `/api/threads/<sid>/actions` | session | `{producer, actions}` -> `{ok}`; 400 `bad_input` with `details` |
 | GET | `/api/threads/<sid>?since=` | read | `{thread, items: [item + status + summary + answers], events}`; progress items come without `raw.text` |
 | GET | `/api/threads/<sid>/episodes/<key>` | read | `{request, lines: [{id, at, text, headline}], final: {id, at, text} \| null}` in order; a last line equal to the final is not repeated |
 | GET | `/api/items/<itemId>` | read | the item with its status and delivered deliveryIds |
+
+Items and their views carry `next` (the contract shape, or null). 내 차례 rows and ended rows with an actionable closed final carry `next: {state, label}` or null. The thread view adds `handoff` (`{to, via, status, slug, at}` or null) and `actions` (the provider actions). `/api/here` takes `watch=<n>`, the session's live count of standing monitors.
 
 Issue create is `{v:1,storeId,requestId,description,evidence}` and a command is `{v:1,storeId,requestId,expectedSeq,command}`. A mutation returns `{ok:true,id,storeId,receipt:{requestId,seq,acceptedAt},currentSeq,state,evidenceManifest}`; a create receipt starts at seq 1 and an exact replay returns the original receipt and current projection, not a new acceptance time. Detail is `{issue:{id,storeId,title,description,createdAt,source},state,currentSeq,events,evidence,nextAfter,capabilities}`; list is `{items:[{id,title,state,category,severity,createdAt,updatedAt}],counts,nextCursor}` sorted by createdAt descending then id descending. Issue errors are `{error:code,fields?:string[],currentSeq?:integer,state?:string}`: `bad_input` 400, `forbidden` 403, `not_found` 404, `too_long` 413, `key_reused` 409, `version_conflict` 409, `store_changed` 409, `invalid_transition` 409, `corrupt_record` for missing or corrupt committed events/blobs, and 410 for a purged issue. A requestId replay is compared by canonical fingerprint before current-sequence/state checks; a different body is `key_reused`, a stale `expectedSeq` is `version_conflict`.
 
@@ -434,6 +450,36 @@ Session ids come from `INBOX_SESSION` or `PI_SESSION_ID`. The extension isn't ch
 
 Two paths differ. The inbox follow-up is automatic: it starts a turn in the owning session. The pending notice (`inbox pending`, `/api/here`) is passive: it only tells a session that feedback is waiting, so an ownerless board is seen but never delivered as a turn.
 
+## Next actions
+The server computes a verdict for every needs-you final (`turn`, `done`, `blocked`, stall finals included) when it arrives, when its model summary arrives, when a provider list changes, and on a thread open when the stored one is older than 30 s. At server start it backfills finals stored before this update. Progress items get none.
+
+- Shape: `{v: 1, state, reason, actions, warnings, facts: {git, plan, watch}, source: "heuristic"|"model", at}`.
+- Precedence: `blocked` (kind blocked) -> `stalled` (a stall final) -> `ask` (the final asks something that isn't a wrap-up or plan question) -> `plan` (an open plan was found) -> `ship` (dirty or unpushed git, a wrap-up marker in the text, a wrap-up ask, or a model `ship` hint) -> `done`.
+- Reasons: done `남은 일이 없습니다`; plan `계획 <slug> 실행 대기`; ship `커밋 안 된 변경 N개 · 푸시 안 된 커밋 N개` (only the parts that apply) or `마무리 작업이 남았습니다`; ask `답을 기다립니다`; blocked `막힌 목표를 풀어야 합니다`; stalled `멈춘 작업을 이어가야 합니다`.
+- Detectors read the last 1500 characters of the final: a plan slug (`/skill:ulw-execute`, `/ulw-execute` or `$ulw-execute` followed by the slug), a nothing-left line (`Next: 없음`, `남은 작업 없음`, `할 일이 없습니다`), and wrap-up markers (not committed, not pushed, not installed, `/reload` needed).
+- Git facts: `git status --porcelain=v1 --branch` in the worktree, else the cwd (`git -C <dir>`), no shell, 3 s timeout. A folder that isn't a repository gives `git: null`; any other failure or the timeout gives `{unknown: true}` with the warning `git 상태를 확인하지 못했습니다` and no git action.
+- Plan detection: the slug from the final's tail is looked up as `.omo/plans/<slug>.md` in the worktree, then the cwd, then the main checkout; `root` is the folder holding `.omo/plans`. The plan is open when it still has an unchecked `- [ ]` row. A session that executes that plan itself (its `executes`, or the slug it was handed off with) never gets a plan offer.
+- Model hint: a model summary may carry `next` (see Summaries); it's used only when the summary came from the model.
+- Warnings, in order: `커밋 안 된 변경 N개`, `푸시 안 된 커밋 N개`, `상시 감시 N개가 함께 꺼집니다`, `git 상태를 확인하지 못했습니다`.
+- Actions (at most 5, at most one primary, primary first):
+
+| id | kind | label | prompt | when |
+| --- | --- | --- | --- | --- |
+| `close` | close | `세션 닫기` | - | every state; primary for done |
+| `new-session` | new-session | `새 세션에서 실행` | `/skill:ulw-execute <slug>` | plan, primary |
+| `commit-push` | continue | `커밋·푸시` | `변경을 커밋하고 푸시해` | ship with uncommitted changes, primary |
+| `push` | continue | `푸시` | `커밋을 푸시해` | ship with only unpushed commits, primary |
+| `m1`, `m2` | continue | model label (12 chars) | model prompt (200 chars) | done, ship |
+| `p:<producer>:<key>` | continue or run | provider label | provider prompt | done, ship, ask, blocked, stalled; run only while live |
+
+- A session that quit. The thread's newest needs-you final, closed as `session-closed` with no newer needs-you item and no handoff, is the actionable closed final. Its next is computed with close and run actions left out, so it offers only the plan and continue actions; continue is stored in the mailbox until the session is reopened.
+- Tap-time re-check: before close, commit-push, push and new-session the server probes git and the plan again. A new-session whose plan file is gone answers `plan_missing`; any other action that disappeared answers `stale` with the fresh next; a close whose fresh warnings aren't empty needs `confirm: true`, else `confirm_required` with the warnings.
+- Delivery: continue goes through the mailbox like a reply. Close and run on a live session write `<home>/control/<sid>/<deliveryId>.json` `{v: 1, type: "session-control", action, itemId, deliveryId, issuedAt, producer?, key?}`. The extension reads them after the mailbox, records the delivery id in the ledger, and acks `control`; a control whose item is closed acks `dropped` `item closed`, and one older than 10 minutes `dropped` `stale`. Close calls `ctx.shutdown()` and the bye closes the items as `closed-by-owner`. Close on an off session closes them at once. Run emits `inbox:action` (see Actions for other extensions).
+- Standing monitors: the extension counts persistent, unpaused monitors on each final (`meta.watch`) and sends the live count on every `/api/here?watch=<n>`. Close warnings use the live count.
+- Fresh session: new-session launches `omo --session-id <uuidv7> "/skill:ulw-execute <slug>"` in the plan root, in an Orca tab when Orca lists that folder, else in Windows Terminal, the same way as reopen. When the new session first calls `/api/here`, the handoff turns `connected` and the old session is closed as `handed-off` (a control file when live, at once when off).
+- Orca tab: when the session runs in Orca (`ORCA_TERMINAL_HANDLE` set), close starts `bin/close-tab.mjs`, which waits for omo to exit and then runs `orca terminal close --tab`. `config.json` `next.closeTab: false` turns that off.
+- Rollout: sessions started before this update don't read control files; run `/reload` in them before close works.
+
 ## Summaries
 The server builds the summary request and checks the result; the extension only runs the model.
 
@@ -446,6 +492,7 @@ The server builds the summary request and checks the result; the extension only 
 - Recommendation of a question-tool item: when an option is marked recommended (`권장`, `추천`, `Recommended`) and the summary does not name it, the server puts `권장: <option>` at the start of the body.
 - `더 쉽게` asks for the same summary in simpler words.
 - Lines: a progress line gets a heuristic headline at once (the handoff `Now:` slot, else the first sentence after a routing sentence, else the first line, up to 40 characters; English falls back to `대기: <label>` or `진행 중`), then a Korean model one-liner of 40 characters or fewer replaces it. `progress.modelLines: false` turns the model call off. Line requests never delay a needs-you summary, and only the newest 3 waiting lines get one.
+- Next hint: for turn, done and blocked items the model may add `next: {state: "done"|"ship"|"ask", actions: [{label (12 chars), prompt (200 chars)}]}` or null; actions are only follow-ups the final names itself (install, reload, test server, deploy, check), at most 2.
 - Episode finals: the request holds the span (`이번 작업 구간`: message count, times, close reason, questions, interjections), the opener request, each line's one-liner with its time (newest 30), and the final message (head 3000, tail 1500), 8000 characters at most. The final message's outcome is the conclusion; a waiting line is never a result. Stalled wording appears only for a real stall.
 - Context: the session's folder is labeled `세션 폴더`, not the product; the summary names the product the episode actually worked on.
 - Privacy: everything put into the request goes through `src/redact.mjs` first (tokens, keys and similar secrets are masked). Long text is cut to its first 4000 and last 2000 characters. Summaries stay on this PC.
@@ -460,7 +507,7 @@ Pushes follow the item kind and policy. A push is held for the hold time and can
 | permission | yes | 15 s | open |
 | turn | yes | 30 s | open |
 | blocked | yes | 30 s | open |
-| done | yes | 30 s | open |
+| done | yes | 30 s | `세션 닫기` when the next is done without warnings, then open |
 | progress | no | - | - |
 | board (primary) | yes | 0 | open (new proposal, revise, reply) |
 | notice now / soon | yes | 0 | open |
@@ -532,6 +579,30 @@ pi.events.emit("inbox:notice", {
 node "<home>/app/bin/inbox.mjs" notify --producer keepwarm --key cache-cooling --title "캐시가 곧 식습니다" --urgency soon
 ```
 
+## Actions for other extensions
+Other extensions can add buttons to a session's finals by emitting `inbox:actions` on `pi.events`; the extension validates the list and posts it to `POST /api/threads/<sid>/actions`, and resends it after a reconnect.
+
+Shape (v1): `{v: 1, producer, actions: [{key, label, prompt?, run?}]}`.
+
+- `producer` matches `^[a-z0-9-]{1,40}$`; 0 to 4 actions; `key` matches `^[A-Za-z0-9._:-]{1,40}$`; `label` 1 to 12 characters; exactly one of `prompt` (1 to 300 characters) or `run: true`.
+- The latest list per producer wins; an empty list removes the producer. Actions show as `p:<producer>:<key>` after the built-in ones.
+- A `prompt` action is sent to the session like a reply. A `run` action shows only while the session is live; a tap writes a control file and the extension emits `inbox:action` `{v: 1, producer, key, itemId, session}` in that session.
+
+Example, a preview extension offering to open a preview:
+
+```ts
+pi.events.emit("inbox:actions", {
+	v: 1,
+	producer: "omo-preview",
+	actions: [{ key: "open", label: "미리보기 열기", run: true }],
+});
+
+pi.events.on("inbox:action", (event) => {
+	if (event.producer !== "omo-preview" || event.key !== "open") return;
+	openPreview();
+});
+```
+
 ## Tailnet
 - Port 4388 only: `tailscale serve --bg --https=4388 http://127.0.0.1:4387`.
 - Never Funnel. Funnel requests are rejected by the server too.
@@ -550,6 +621,8 @@ Browser QA for the proposal page (needs Bun 1.4+ and Chrome; not part of `node -
 
 Browser QA for the Inbox turn flow: `bun qa/turn-list-qa.mjs` (port 4395), `bun qa/turn-thread-qa.mjs` (4396) and `bun qa/turn-bubble-qa.mjs` (4397), the same way. `bun qa/reopen-launch-qa.mjs` drives the real launchers: it opens and closes a real Orca terminal and a Windows Terminal window.
 
+Browser QA for next actions: `bun qa/next-qa.mjs` (port 4402), the same way. `bun qa/session-qa.mjs` S25 and S26 cover close and new-session against a real session, and `reopen-launch-qa` also checks that a close shuts the Orca tab.
+
 Every push in tests and QA goes to an `INBOX_PUSH_SINK` file, and every reopen to an `INBOX_REOPEN_SINK` file (except `reopen-launch-qa`). QA never uses ports 4387 or 4388.
 
 ## Limits
@@ -558,6 +631,8 @@ Every push in tests and QA goes to an `INBOX_PUSH_SINK` file, and every reopen t
 - The phone tap inside the Orca mobile app is not machine-verified.
 - Viewer pinch and pan are checked with emulated touch in Chromium, not on a real phone. The comment sheet staying above the on-screen keyboard is not machine-checked.
 - `듣기` uses the browser's speech synthesis, so it can stop when the browser goes to the background or the screen turns off.
+- Windows Terminal tabs stay open after a close; only Orca tabs are closed.
+- Sessions started before the next-actions update need `/reload` before close works.
 - Single user: the tailnet owner check assumes one login.
 - `/api/open` URLs are capped at 30000 chars (Windows command-line limit); longer content is copied instead.
 - iOS shows no notification action buttons; tap the notification and answer on the page.

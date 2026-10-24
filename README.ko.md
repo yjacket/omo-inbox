@@ -11,9 +11,9 @@ omo 에이전트 세션이 나에게 바라는 모든 것을 휴대폰 Inbox 하
 | --- | --- | --- |
 | `question` | 질문 도구(`ask-user:asked`) | 선택지 고르기, 직접 쓰기, 의견 |
 | `permission` | `Permission required:` 대화 상자 | 한 번 허용, 거부, 의견 달아 거부 |
-| `turn` | 끝나고 내 답을 기다리는 턴 | 답장, 또는 계속해 / 승인 / 진행 / 멈춰 |
-| `blocked` | 막힘으로 표시된 goal | 답장 |
-| `done` | 완료로 표시된 goal | 답장 |
+| `turn` | 끝나고 내 답을 기다리는 턴 | 답장, 또는 계속해 / 승인 / 진행 / 멈춰; 또는 다음 행동(다음 행동 참고) |
+| `blocked` | 막힘으로 표시된 goal | 답장; 또는 다음 행동 |
+| `done` | 완료로 표시된 goal | 답장; 또는 다음 행동 |
 | `progress` | 작업 구간(에피소드, 수집 참고)이 열린 동안 글이 있는 어시스턴트 메시지마다 | 읽기. 메시지마다 회색 한 줄, 푸시하지 않고 안 읽음으로 세지 않음 |
 | `board` | 이 inbox의 시각 보드(아래 기획안 흐름) | 열기 |
 | `notice` | 다른 확장의 `inbox:notice` 나 `inbox notify` | 읽기, 열기 |
@@ -26,6 +26,7 @@ omo 에이전트 세션이 나에게 바라는 모든 것을 휴대폰 Inbox 하
 - 시각 보드는 omo-desk와 똑같습니다. `inbox submit <boardDir>` 는 보드 폴더를 검사해 영구 기록으로 남기고 URL을 출력합니다. 기획안 페이지에서 그림에 표시하고, 질문에 답하고, 의견을 쓰고, 수정안을 요청(`재요청`)하거나 승인(`승인`)합니다. 세션은 `inbox reply`, `inbox revise`, `inbox close` 로 답합니다.
 - 보드라는 개념은 사용자에게 **Review** 로 보입니다. Inbox 버튼, Review 목록, 종류 칩, 링크 줄, 기다림 라벨, 오류 문구, 푸시가 모두 Review라고 씁니다. 식별자 이름은 그대로입니다(`board.json`, `visual-board`, `/p/<id>`, `/boards`, `/api/proposals`, CLI 명령, 항목 종류 `board`).
 - 누구 차례인가. 열린 needs-you 항목이 있고 세션이 살아 있으면 대화는 내 차례입니다. 세션이 꺼져 있으면 아직 묻는 것이 있을 때만 회색 `세션 꺼짐` 칩을 달고 내 차례에 남습니다. 묻는 것은 열린 question, permission, blocked, notice, board 항목, 요약의 `ask` 가 비어 있지 않거나 모델 요약의 제목이나 본문이 아직 묻거나 내가 할 일을 말하는 turn이나 done 항목(`ask` 가 할 일을 담기 전의 요약), 모델 요약이 없고 마지막 원문이 물음이나 할 일로 끝나는 turn이나 done 항목, 멈춘 에피소드의 마지막 메시지입니다. 그 밖에는 끝남으로 갑니다. 항목은 열린 채로 남으니, 세션이 다시 붙으면 대화는 저절로 내 차례로 돌아옵니다.
+- 다음 행동. 마지막 메시지(`turn`, `blocked`, `done`)마다 남은 일을 판정합니다: `done`(남은 일 없음), `plan`(실행할 계획이 기다림), `ship`(커밋이나 푸시가 안 된 작업, 또는 마무리), `ask`(나에게 물음), `blocked`, `stalled`. 대화 페이지는 이것을 버튼으로 보여 줍니다: `세션 닫기`, `새 세션에서 실행`, `커밋·푸시`, `푸시`, 모델 제안 최대 2개, 다른 확장이 등록한 행동. 다음 행동 절 참고.
 - Tailscale에서는 같은 페이지가 `https://<machine>.<tailnet>.ts.net:4388` 로 제공됩니다.
 
 ## 설치
@@ -179,7 +180,7 @@ Windows에서는 서버를 `Win32_Process.Create`(PowerShell, 숨김)로 만들�
 ## Inbox 페이지
 ### 대화 목록 (`/`)
 
-머리글에 `Inbox`, `알림 받기` 버튼, **Review** 버튼, `🙋 N`(내 차례인 대화 수, 숨긴 대화는 세지 않음)이 있습니다. Review 버튼에는 나를 기다리는 Review 수(`reviews.mine`, 보고 Review 포함)를 둥근 배지로 답니다. 0이면 배지가 없고, 5초마다 목록을 다시 읽을 때 같이 바뀝니다. 대화마다 한 줄: 제목, 제품과 브랜치, 상태(칩 `🙋 내 차례`, 가장 최근 항목이 막힘이면 `⛔ 막힘`, 알림이면 `🔔 알림`, 세션이 꺼져 있으면 회색 `세션 꺼짐` 칩도), 가장 최근 항목의 제목과 시각, 안 읽은 수, 프롬프트 캐시가 따뜻한 동안의 🔥 표시. 나를 기다리는 대화가 먼저(오래 기다린 순), 그다음 작업 중, 그다음 끝난 대화(최근 순)입니다. 나를 기다리는 대화 묶음의 제목은 `내 차례` 입니다. 숨긴 대화는 맨 끝 묶음 `숨긴 대화 N` 에만 나오고 기본으로 접혀 있습니다. `펼치기` / `접기` 로 바꾸고, 펼친 상태는 브라우저마다 `localStorage` 키 `inbox.hiddenOpen` 에 남습니다.
+머리글에 `Inbox`, `알림 받기` 버튼, **Review** 버튼, `🙋 N`(내 차례인 대화 수, 숨긴 대화는 세지 않음)이 있습니다. Review 버튼에는 나를 기다리는 Review 수(`reviews.mine`, 보고 Review 포함)를 둥근 배지로 답니다. 0이면 배지가 없고, 5초마다 목록을 다시 읽을 때 같이 바뀝니다. 대화마다 한 줄: 제목, 제품과 브랜치, 상태(칩 `🙋 내 차례`, 가장 최근 항목이 막힘이면 `⛔ 막힘`, 알림이면 `🔔 알림`, 세션이 꺼져 있으면 회색 `세션 꺼짐` 칩도), 가장 최근 항목의 제목과 시각, 안 읽은 수, 프롬프트 캐시가 따뜻한 동안의 🔥 표시. 나를 기다리는 대화가 먼저(오래 기다린 순), 그다음 작업 중, 그다음 끝난 대화(최근 순)입니다. 나를 기다리는 대화 묶음의 제목은 `내 차례` 입니다. 숨긴 대화는 맨 끝 묶음 `숨긴 대화 N` 에만 나오고 기본으로 접혀 있습니다. `펼치기` / `접기` 로 바꾸고, 펼친 상태는 브라우저마다 `localStorage` 키 `inbox.hiddenOpen` 에 남습니다. 다음 판정이 있는 내 차례 줄은 상태 칩 바로 뒤에 회색 칩을 답니다: `할 일 없음`(done), `실행 대기`(plan), `마무리 남음`(ship). 세션이 종료됐고 판정이 plan이나 ship인 끝남 줄도 같은 칩을 답니다. ask, blocked, stalled 줄에는 없습니다.
 
 대화 제목은 한국어인 세션 이름, 아니면 모델이 첫 요청으로 지은 한국어 제목(omo는 세션 이름을 영어로 붙이므로 보통 이쪽), 그것도 없으면 24자로 자른 `요청: <첫 요청>` 입니다. 세션 없는 공지는 `알림` 대화로 갑니다.
 
@@ -191,10 +192,18 @@ Windows에서는 서버를 `Win32_Process.Create`(PowerShell, 숨김)로 만들�
 - 에이전트 말풍선(왼쪽, 흰색): 종류 칩(질문 / 승인 요청 / 권한 요청 / 보고 / 막힘 / 끝남 / 진행 / 알림 / Review), 굵은 제목, 회색 `하던 일 · <context>`, 본문, 묻는 것, 선택지 버튼(★권장이 이유와 함께 맨 위, 여러 개 고르는 질문은 체크박스와 보내기, 질문마다 직접 쓰기 칸), 회색 `답이 없으면 · ...` 줄, 그리고 듣기, 원문 보기(원문을 마크다운으로 보여 줌: 제목, 목록, 인용, 표, 코드, 굵게, 기울임, https 링크. 원문 속 HTML은 글자 그대로), 더 쉽게(더 쉬운 요약 요청), 시각이 있는 아래 줄.
 - 내 말풍선(오른쪽, 노란색): 보낸 내용과 상태. `보내는 중`, `전달됨 ✓`, `늦게 전달됨`, `세션이 꺼져 있어 다시 열면 전달됩니다`. 60초가 지나도 전달 확인이 없으면 다시 보내기가 나옵니다.
 - 시스템 줄(가운데, 회색): `터미널에서 답함`, `다음 작업으로 넘어감`, `시간 초과`, `Review · 열기`. 진행 항목은 상태와 상관없이 배경 없는 회색 한 줄 `<headline>` 이라, 에피소드의 줄들이 마지막 메시지 위에 남습니다.
+- 시스템 줄 추가: `closed-by-owner` 로 닫히면 `닫음`, `handed-off` 로 닫히면 `새 세션으로 넘어감`. 새 세션을 띄우면 `새 세션을 여는 중`, 새 세션이 연결되면 `/s/<새 sid>` 로 가는 `새 세션에서 이어감 · 열기` 가 나옵니다.
 - 머리의 `과정 보기` 토글(기본 켬, `localStorage` 키 `inbox.progressLines` 에 저장)이 진행 줄을 숨기거나 보입니다.
 - 세션이 기다리는 동안 가장 최근 줄에 ` · 기다리는 중: <label>`(백그라운드 작업, 모니터, 분리 실행 작업, 하위 작업, 작업 흐름, Review 답, 질문 답, 권한 답, 목표 이어가기, 다시 불러온 뒤 확인. 보류 `hold:<source>`는 그 source의 이름으로, 그 밖의 사유는 다음 신호로 읽힙니다)이 붙고, 기다리는 desk 보드마다 새 탭으로 여는 `<title> · 열기` 가 붙습니다.
 - 에피소드 마지막 메시지의 원문 보기는 에피소드를 불러와 구간의 메시지를 모두 차례대로, 시각과 함께 마크다운으로 보여 줍니다. 불러오기에 실패하면 `다시 시도` 가 나옵니다. `meta.episode` 가 없는 항목은 예전처럼 자기 원문을 보입니다.
 - 아래 입력칸: 빠른 답 칩 계속해 / 승인 / 진행 / 멈춰(가장 최근 열린 항목이 turn, blocked, done이거나 대화가 작업 중일 때), `답장` 칸, 보내기. 나를 기다리는 가장 최근 열린 항목에 답하고(질문은 의견, 턴은 답장), 열린 항목이 없으면 자유 메시지를 보냅니다.
+- 다음 줄: 다음 상태가 done, plan, ship, blocked, stalled인 가장 최근 열린 마지막 메시지의 말풍선은 물음 줄 뒤에 `다음 · <reason>` 을 보입니다. ask인 마지막 메시지에는 다음 줄이 없습니다.
+- 다음 행동 막대: done, plan, ship이면 네 칩을 숨기고 다음 행동이 그 자리에 옵니다. 주 행동은 강조색입니다. ask, blocked, stalled이면 칩은 그대로 두고 그 뒤에 제공자 행동과 간격을 둔 외곽선 버튼 `세션 닫기` 를 둡니다. 누르면 응답이 올 때까지 다음 행동 버튼이 모두 잠깁니다. 버튼은 최소 44 CSS px입니다.
+- 이어가기 행동(`커밋·푸시`, `푸시`, 모델과 제공자 프롬프트)은 답장처럼 보내므로, 세션의 다음 실행이 마지막 메시지를 넘기고 입력칸은 작업 중 칩으로 돌아갑니다. 세션이 꺼져 있으면 먼저 다시 열기 시트를 엽니다.
+- 닫기 시트: 경고가 있는 닫기, 또는 서버의 `confirm_required` 응답은 경고를 하나씩 적은 `세션을 닫을까요?` 시트를 `닫기`, `취소` 와 함께 엽니다. 경고가 없으면 바로 보냅니다. 상태는 `세션을 닫는 중입니다.`(살아 있는 세션) 또는 `세션을 닫았습니다.`(꺼진 세션).
+- 새 세션 시트: 언제나 `새 세션에서 실행할까요?` 를 `폴더 · <dir>`, `첫 메시지 · /skill:ulw-execute <slug>`, `실행`, `취소` 와 함께 묻습니다. 상태는 `새 세션을 여는 중입니다.`, 그 뒤 새 대화로 가는 `열기` 가 붙은 `새 세션을 열었습니다.`.
+- 행동 오류: `계획 파일을 찾지 못했습니다.`(plan_missing), `상황이 바뀌었습니다. 다시 확인해 주세요.`(stale, 페이지는 곧바로 새로 고칩니다), 그리고 다시 열기 문구 `세션 폴더가 없어 열지 못했습니다.`, `터미널을 찾지 못했습니다.`, `세션을 열지 못했습니다.`, `이 기기에서는 열 수 없습니다.`. 60초가 지나도 확인되지 않은 행동 말풍선은 다시 보내기 대신 `세션이 응답하지 않습니다` 를 보입니다.
+- 종료된 세션(행동 가능한 닫힌 마지막 메시지, 다음 행동 절 참고)은 인계가 생길 때까지 입력칸 자리에 계획 행동과 이어가기 행동을 둡니다. 이어가기는 다시 열기 시트를 거칩니다.
 - 용어: 제목, `하던 일`, 본문, 묻는 것에 나오는 요약 용어는 점선 밑줄 버튼입니다. 누르면 말풍선 안, 그 낱말 바로 아래에 뜻을 담은 팝오버가 뜹니다. 다시 누르거나 바깥을 누르거나 Escape를 누르면 닫히고 초점은 낱말로 돌아갑니다. 한 번에 하나만 열리고, 주기적으로 다시 그려도 열린 채로 남습니다. `용어 ·` 줄은 없습니다.
 - 에이전트 말풍선 아래 줄은 듣기로 시작합니다. 누르면 제목, `하던 일` 과 맥락, 본문, 묻는 것, 말풍선에 보이는 선택지(질문 문구, 그다음 번호, 라벨, 추천, 이유. 권한 요청은 버튼 이름)를 한국어(ko-KR)로 읽습니다. 읽는 동안 버튼은 멈추기, 끝나면 다시 듣기입니다. 다른 메시지를 읽기 시작하면 앞의 것은 멈추니 한 번에 하나만 나옵니다. 누르지 않으면 아무것도 읽지 않고, 브라우저에 음성 기능이 없으면 버튼을 숨깁니다.
 - 다시 열기 시트: 세션이 꺼진 대화에 무엇이든 보내면(입력칸, 빠른 답 칩, 선택지, 권한 버튼, 의견이나 답장, 다시 보내기) 먼저 시트가 뜹니다. 제목은 `세션이 꺼져 있습니다`, 설명은 `다시 열면 이 답을 바로 전달합니다.`, 버튼은 `다시 열고 보내기` 와 `나중에 전달` 입니다. Escape나 어두운 바탕을 누르면 보내지 않고 닫히며 쓴 글은 남습니다. `나중에 전달` 은 예전처럼 답을 저장합니다. `다시 열고 보내기` 도 똑같이 저장하고, 저장이 됐을 때만 PC에 세션을 다시 열어 달라고 합니다(세션 깨우기와 수집 참고). 입력칸 상태 줄은 `세션을 여는 중입니다.` 다음에 `세션을 열었습니다. 연결되면 전달됩니다.`, `세션 폴더가 없어 열지 못했습니다. 답은 다음에 열 때 전달됩니다.`, `열 세션을 찾지 못했습니다. 답은 다음에 열 때 전달됩니다.`, `터미널을 찾지 못했습니다. 답은 다음에 열 때 전달됩니다.`, `세션을 열지 못했습니다. 답은 다음에 열 때 전달됩니다.`, `이 기기에서는 열 수 없습니다. 답은 다음에 열 때 전달됩니다.` 중 하나가 되고, 세션이 이미 살아 있었으면 비웁니다. 더 쉽게는 시트를 거치지 않습니다. 숨기기에 실패하면 같은 줄에 `숨기지 못했습니다.` 가 나옵니다.
@@ -247,7 +256,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
     crops/<seq6>-<n>.png
   data/threads/<sid>/  세션 대화마다 폴더 하나
     thread.json        { v: 1, session, cwd, product, feature, worktree, branch, title, titleSource, firstRequest, created, ended, sessionFile, hidden }
-    events/<seq6>-<type>.json   item, summary, answer, delivered, bridge, state, pushed, closed, activity, cache, read
+    events/<seq6>-<type>.json   item, summary, answer, delivered, bridge, state, pushed, closed, activity, cache, read, next, actions, handoff
   data/issues/         독립 제보 저장소 (서버만 씀)
     store.json         { v, storeId }
     records/<issueId>/created.json
@@ -257,6 +266,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
   data/live.json       세션 -> 마지막 /api/here 시각(epoch ms). 서버를 다시 시작해도 살아 있음을 되살림
   mailbox/<session>/<file>.json   확장을 기다리는 답과 보드 의견. 전달 후 지움
   ledger/<session>.json   확장이 이미 처리한 전달 id
+  control/<session>/<deliveryId>.json   확장을 기다리는 세션 제어 파일(close, run)
   takeover.json        takeover가 쓰고 handback이 이름을 바꿈
   push/vapid.json      서버의 VAPID 키 쌍. 한 번만 만듦
   push/subscriptions.json   알림을 켠 브라우저들
@@ -271,8 +281,10 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 - `activity` 이벤트는 `cause`(`owner` 나 `system`, 없으면 `owner`)를 담습니다.
 - 항목 상태: 닫혔으면 `closed`, 아니면 답에 맞는 `delivered` 가 없을 때 `answered`, 아니면 `delivered`, 아니면 `open`. 24시간이 지나도 열린 질문과 권한 요청은 `expired` 로 닫힌 것으로 읽습니다.
 - `thread.json` 키 `sessionFile`(문자열 또는 null, 기본 null. 확장이 알려 준 세션 파일로, 다시 열기에 씀)과 `hidden`(불리언, 기본 false). 이 키가 없는 예전 thread.json은 null과 false로 읽습니다.
+- `thread.json` 키 `executes`(문자열 또는 null, 기본 null): 이 세션이 직접 실행하는 계획 slug로, 첫 입력 원문에서 읽습니다. `next` 이벤트 `{itemId, next}` 는 마지막 메시지의 판정을, `actions` 이벤트 `{producer, actions}` 는 제공자의 목록을, `handoff` 이벤트 `{itemId, to, via, status, slug}` 는 새 세션 띄우기를 저장합니다(`via` 는 `orca`, `wt`, `sink`, `status` 는 `launching`, `connected`).
+- 닫힘 이유에 `session-closed`(`세션 닫힘`) 외에 `closed-by-owner`(`닫음`)와 `handed-off`(`새 세션으로 넘어감`)가 있습니다.
 - 대화 상태. 세션이 90초 안에 `/api/here` 를 불렀거나 90초 안에 그냥 bye(`/reload`)를 보냈으면 살아 있습니다. 열린 needs-you 항목이 있고 세션이 살아 있거나, 세션이 꺼졌는데 열린 항목이 아직 묻고 있으면(하는 일 참고) `needs-you`, 아니면 살아 있을 때 `working`, 아니면 `ended`. 목록 줄과 대화 보기에는 `live`, `off`(살아 있지 않은데 needs-you, `_notices` 는 늘 false), `hidden` 이 붙습니다.
-- `delivered.how` 는 `bridge`, `message`, `late-message`, `dropped`(터미널이 먼저 답함), `refused`.
+- `delivered.how` 는 `bridge`, `message`, `late-message`, `dropped`(터미널이 먼저 답함), `refused`, `control`(세션 제어 파일 적용).
 - 우편함 파일은 `{v:1, type, ...}`: `item-answer`(itemId, kind, deliveryId, payload, text), `explain`(itemId), `board-feedback`(desk의 형식. `type` 없는 파일은 보드 의견).
 
 기획안:
@@ -290,7 +302,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 
 `data/issues` 는 `uninstall` 이 나머지 `data` 와 똑같이 간직합니다. 삭제 표석에는 설명, 문맥, 그림을 남기지 않습니다.
 
-`config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 } }`. `server.json` 은 서버만 씁니다: `{ "v", "name", "port", "pid", "started", "version" }`. 설치는 쓰지 않습니다.
+`config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 } }`. `server.json` 은 서버만 씁니다: `{ "v", "name", "port", "pid", "started", "version" }`. 설치는 쓰지 않습니다. `next.closeTab`(기본 true)은 닫기가 Orca 탭도 닫게 합니다. `false` 면 탭을 남깁니다.
 
 ## HTTP API
 서버는 `127.0.0.1:4387`. 모든 POST는 `content-type: application/json` 과 `x-inbox: 1` 이 필요합니다(없으면 403). 본문 제한 30 MiB(넘으면 413). `/api/issues*` 는 대신 12 MiB까지만 읽고 JSON을 해석하기 전에 적용하며, 예전 경로는 30 MiB를 그대로 씁니다. `/api/*` 응답은 `cache-control: no-store`, 안 파일은 `public, max-age=31536000, immutable`.
@@ -336,15 +348,19 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 | POST | `/api/items/<itemId>/answer` | feedback | `{answers?, text?, comment?, choice?, feedbackText?}` -> `{ok, deliveryId}`; 409 `{error: "closed", reason}`; 400 `question_incomplete` / `invalid_answer` |
 | POST | `/api/threads/<sid>/message` | feedback | `{text}`. 자유 메시지. 열린 항목이 없으면 새 `turn` 항목에 붙음 |
 | POST | `/api/items/<itemId>/explain` | feedback | `{ok}`. 세션이 살아 있지 않으면 409 |
-| POST | `/api/items/<itemId>/delivered` | session | `{deliveryId, how, detail}` |
+| POST | `/api/items/<itemId>/delivered` | session | `{deliveryId, how, detail}`. how `control` 은 세션 제어 파일 확인, `dropped` 는 detail `item closed` 또는 `stale` |
 | POST | `/api/threads/<sid>/read` | feedback | `{seq}` |
 | POST | `/api/notices` | session | v1 공지(다른 확장의 공지 참고). 400은 `details` 포함 |
 | GET | `/api/threads?status=` | read | `{items: rows, counts: {needsYou, working, ended, hidden}, reviews: {mine}}`. 줄에는 `live`, `off`, `hidden` 이 붙고 숨긴 대화도 `hidden: true` 로 들어 있음(`inbox threads --json` 도 같음). `needsYou` 는 숨긴 대화를 세지 않음 |
 | POST | `/api/threads/<sid>/hide` | feedback | `{hidden: boolean}` -> `{ok, hidden}`. 400 `bad_input`, 404 `not_found` |
 | POST | `/api/threads/<sid>/reopen` | reopen | `{}` -> `{ok, via: "orca"\|"wt"\|"sink", already?}`. 409 `{error: "live"\|"cwd_missing"\|"no_session"}`, 503 `no_launcher`, 502 `launch_failed`, 404 `not_found`, `_notices` 대화는 400 |
+| POST | `/api/items/<itemId>/action` | reopen | `{action, confirm?}` -> `{ok, via: "message"\|"session"\|"offline"\|"orca"\|"wt"\|"sink", deliveryId?, off?, session?}`. 404 `not_found`, 400 `bad_input`(없는 행동 id), 409 `{error: "closed", reason}`, `off`, `confirm_required` `{warnings}`, `stale` `{next}`, `plan_missing`, `cwd_missing`, 503 `no_launcher`, 502 `launch_failed`, 403 `forbidden` |
+| POST | `/api/threads/<sid>/actions` | session | `{producer, actions}` -> `{ok}`. 400 `bad_input` 와 `details` |
 | GET | `/api/threads/<sid>?since=` | read | `{thread, items: [item + status + summary + answers], events}`. 진행 항목은 `raw.text` 없이 옴 |
 | GET | `/api/threads/<sid>/episodes/<key>` | read | 차례대로 `{request, lines: [{id, at, text, headline}], final: {id, at, text} \| null}`. 마지막 메시지와 같은 마지막 줄은 다시 넣지 않음 |
 | GET | `/api/items/<itemId>` | read | 상태와 전달된 deliveryId를 담은 항목 |
+
+항목과 그 보기에는 `next`(계약 형태 또는 null)가 붙습니다. 내 차례 줄과 행동 가능한 닫힌 마지막 메시지가 있는 끝남 줄에는 `next: {state, label}` 또는 null이 붙습니다. 대화 보기에는 `handoff`(`{to, via, status, slug, at}` 또는 null)와 `actions`(제공자 행동)가 더해집니다. `/api/here` 는 세션의 상시 감시 수 `watch=<n>` 을 받습니다.
 
 제보 생성은 `{v:1,storeId,requestId,description,evidence}`, 명령은 `{v:1,storeId,requestId,expectedSeq,command}` 입니다. 변경 성공은 `{ok:true,id,storeId,receipt:{requestId,seq,acceptedAt},currentSeq,state,evidenceManifest}` 이고, 생성 receipt는 seq 1부터 시작하며 정확한 재전송은 새 접수 시각을 만들지 않고 원래 receipt와 현재 상태를 돌려줍니다. 상세는 `{issue:{id,storeId,title,description,createdAt,source},state,currentSeq,events,evidence,nextAfter,capabilities}`, 목록은 `{items:[{id,title,state,category,severity,createdAt,updatedAt}],counts,nextCursor}` 이며 createdAt 내림차순, 같으면 id 내림차순입니다. 제보 오류는 `{error:code,fields?:string[],currentSeq?:integer,state?:string}` 입니다: `bad_input` 400, `forbidden` 403, `not_found` 404, `too_long` 413, `key_reused` 409, `version_conflict` 409, `store_changed` 409, `invalid_transition` 409, 커밋된 이벤트/블롭이 없거나 손상되면 `corrupt_record`, 삭제된 제보는 410입니다. 같은 requestId는 현재 순번/상태 검사보다 먼저 정규 지문으로 비교합니다. 다른 본문은 `key_reused`, 오래된 `expectedSeq` 는 `version_conflict` 입니다.
 
@@ -434,6 +450,36 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 
 두 경로는 다릅니다. 우편함 후속 메시지는 자동이라 소유 세션에서 턴을 시작합니다. 대기 알림(`inbox pending`, `/api/here`)은 수동이라 의견이 기다린다고 알리기만 하므로, 소유자 없는 보드는 보이지만 턴으로 전달되지는 않습니다.
 
+## 다음 행동
+서버는 나를 기다리는 마지막 메시지(`turn`, `done`, `blocked`, 멈춤 마지막 메시지 포함)마다 판정을 계산합니다. 메시지가 올 때, 모델 요약이 올 때, 제공자 목록이 바뀔 때, 그리고 저장된 판정이 30초보다 오래된 대화를 열 때 다시 계산합니다. 서버 시작 때는 이 업데이트 전에 저장된 마지막 메시지도 채웁니다. 진행 항목은 판정이 없습니다.
+
+- 형태: `{v: 1, state, reason, actions, warnings, facts: {git, plan, watch}, source: "heuristic"|"model", at}`.
+- 우선순위: `blocked`(종류 blocked) -> `stalled`(멈춤 마지막 메시지) -> `ask`(마무리나 계획 질문이 아닌 물음) -> `plan`(열린 계획을 찾음) -> `ship`(커밋이나 푸시가 안 된 git, 본문의 마무리 표시, 마무리 물음, 모델의 `ship` 힌트) -> `done`.
+- 이유: done `남은 일이 없습니다`, plan `계획 <slug> 실행 대기`, ship `커밋 안 된 변경 N개 · 푸시 안 된 커밋 N개`(해당하는 부분만) 또는 `마무리 작업이 남았습니다`, ask `답을 기다립니다`, blocked `막힌 목표를 풀어야 합니다`, stalled `멈춘 작업을 이어가야 합니다`.
+- 감지는 마지막 메시지의 끝 1500자를 읽습니다: 계획 slug(`/skill:ulw-execute`, `/ulw-execute`, `$ulw-execute` 뒤의 slug), 남은 일 없음 줄(`Next: 없음`, `남은 작업 없음`, `할 일이 없습니다`), 마무리 표시(커밋 안 함, 푸시 안 함, 설치 안 함, `/reload` 필요).
+- git 사실: worktree(없으면 cwd)에서 `git status --porcelain=v1 --branch`(`git -C <dir>`), 셸 없음, 제한 3초. 저장소가 아닌 폴더는 `git: null`, 그 밖의 실패나 시간 초과는 `{unknown: true}` 이고 경고 `git 상태를 확인하지 못했습니다` 가 붙으며 git 행동은 없습니다.
+- 계획 찾기: 마지막 메시지 끝의 slug를 `.omo/plans/<slug>.md` 로 worktree, cwd, 메인 체크아웃 순서로 찾습니다. `root` 는 `.omo/plans` 를 담은 폴더입니다. 체크하지 않은 `- [ ]` 줄이 남아 있으면 열린 계획입니다. 그 계획을 직접 실행하는 세션(`executes`, 또는 인계받은 slug)에는 계획 제안이 없습니다.
+- 모델 힌트: 모델 요약은 `next` 를 담을 수 있습니다(요약 참고). 요약이 모델에서 왔을 때만 씁니다.
+- 경고 순서: `커밋 안 된 변경 N개`, `푸시 안 된 커밋 N개`, `상시 감시 N개가 함께 꺼집니다`, `git 상태를 확인하지 못했습니다`.
+- 행동(최대 5개, 주 행동은 많아야 하나이고 맨 앞):
+
+| id | kind | label | prompt | 언제 |
+| --- | --- | --- | --- | --- |
+| `close` | close | `세션 닫기` | - | 모든 상태, done의 주 행동 |
+| `new-session` | new-session | `새 세션에서 실행` | `/skill:ulw-execute <slug>` | plan, 주 행동 |
+| `commit-push` | continue | `커밋·푸시` | `변경을 커밋하고 푸시해` | 커밋 안 된 변경이 있는 ship, 주 행동 |
+| `push` | continue | `푸시` | `커밋을 푸시해` | 푸시 안 된 커밋만 있는 ship, 주 행동 |
+| `m1`, `m2` | continue | 모델 label(12자) | 모델 prompt(200자) | done, ship |
+| `p:<producer>:<key>` | continue 또는 run | 제공자 label | 제공자 prompt | done, ship, ask, blocked, stalled. run은 살아 있을 때만 |
+
+- 종료된 세션. 대화의 가장 최근 needs-you 마지막 메시지가 `session-closed` 로 닫혔고 더 새 needs-you 항목도 인계도 없으면 행동 가능한 닫힌 마지막 메시지입니다. 그 판정은 close와 run 행동을 빼고 계산하므로 계획 행동과 이어가기 행동만 남습니다. 이어가기는 세션을 다시 열 때까지 우편함에 남습니다.
+- 누를 때 재확인: close, commit-push, push, new-session 전에 서버가 git과 계획을 다시 살핍니다. 계획 파일이 사라진 new-session은 `plan_missing`, 그 밖에 사라진 행동은 새 판정과 함께 `stale`, 새 경고가 있는 close는 `confirm: true` 가 필요하고 없으면 경고와 함께 `confirm_required` 입니다.
+- 전달: 이어가기는 답장처럼 우편함으로 갑니다. 살아 있는 세션의 close와 run은 `<home>/control/<sid>/<deliveryId>.json` `{v: 1, type: "session-control", action, itemId, deliveryId, issuedAt, producer?, key?}` 를 씁니다. 확장은 우편함 다음에 이것을 읽고 delivery id를 장부에 남긴 뒤 `control` 로 확인합니다. 항목이 닫힌 제어는 `dropped` `item closed`, 10분보다 오래된 제어는 `dropped` `stale` 로 확인합니다. close는 `ctx.shutdown()` 을 부르고 bye가 항목을 `closed-by-owner` 로 닫습니다. 꺼진 세션의 close는 바로 닫습니다. run은 `inbox:action` 을 냅니다(다른 확장의 행동 참고).
+- 상시 감시: 확장은 마지막 메시지마다 영구적이고 멈추지 않은 감시 수를 세고(`meta.watch`), `/api/here?watch=<n>` 마다 현재 수를 보냅니다. 닫기 경고는 현재 수를 씁니다.
+- 새 세션: new-session은 계획 root에서 `omo --session-id <uuidv7> "/skill:ulw-execute <slug>"` 를 띄웁니다. Orca가 그 폴더를 알면 Orca 탭, 아니면 Windows Terminal로, 다시 열기와 같은 방식입니다. 새 세션이 처음 `/api/here` 를 부르면 인계가 `connected` 가 되고 옛 세션은 `handed-off` 로 닫힙니다(살아 있으면 제어 파일, 꺼져 있으면 바로).
+- Orca 탭: 세션이 Orca에서 돌면(`ORCA_TERMINAL_HANDLE` 있음) close가 `bin/close-tab.mjs` 를 띄우고, 이것이 omo 종료를 기다린 뒤 `orca terminal close --tab` 을 실행합니다. `config.json` `next.closeTab: false` 면 하지 않습니다.
+- 배포: 이 업데이트 전에 시작한 세션은 제어 파일을 읽지 않습니다. 닫기가 되려면 그 세션에서 `/reload` 를 하세요.
+
 ## 요약
 요약 요청은 서버가 만들고 결과도 서버가 검사합니다. 확장은 모델만 돌립니다.
 
@@ -446,6 +492,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 - 질문 도구 항목의 권장안: 선택지에 권장 표시(`권장`, `추천`, `Recommended`)가 있는데 요약이 그 선택지를 말하지 않으면, 서버가 본문 앞에 `권장: <선택지>` 를 붙입니다.
 - `더 쉽게` 는 같은 요약을 더 쉬운 말로 다시 청합니다.
 - 줄: 진행 줄은 바로 휴리스틱 제목을 받고(인계 블록의 `Now:` 칸, 없으면 안내 문장 뒤 첫 문장, 없으면 첫 줄, 40자까지. 영어면 `대기: <label>` 이나 `진행 중`), 그 뒤 40자 이하의 한국어 모델 한 줄이 그 자리를 바꿉니다. `progress.modelLines: false` 면 모델을 부르지 않습니다. 줄 요청은 나를 기다리는 요약을 늦추지 않고, 기다리는 줄 중 가장 최근 3개만 모델을 부릅니다.
+- 다음 힌트: turn, done, blocked 항목에는 모델이 `next: {state: "done"|"ship"|"ask", actions: [{label(12자), prompt(200자)}]}` 또는 null을 더할 수 있습니다. actions는 마지막 메시지가 직접 말한 후속 작업(설치, 리로드, 테스트 서버, 배포, 확인)만, 최대 2개입니다.
 - 에피소드 마지막 메시지: 요청에 구간(`이번 작업 구간`: 메시지 수, 시각, 끝난 이유, 질문, 끼어들기), 여는 요청, 줄마다 시각과 한 줄(최근 30개), 마지막 메시지(앞 3000, 뒤 1500)를 넣고 8000자를 넘지 않습니다. 결론은 마지막 메시지의 결과이고, 기다리는 줄은 결과가 아닙니다. 멈춤 문구는 정말 멈췄을 때만 씁니다.
 - 맥락: 세션 폴더는 제품이 아니라 `세션 폴더` 로 적고, 요약은 에피소드가 실제로 작업한 제품을 말합니다.
 - 개인 정보: 요청에 넣는 글은 모두 먼저 `src/redact.mjs` 를 거칩니다(토큰, 키 같은 비밀을 가림). 긴 글은 앞 4000자와 뒤 2000자로 자릅니다. 요약은 이 PC에 남습니다.
@@ -460,7 +507,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 | permission | 예 | 15초 | 열기 |
 | turn | 예 | 30초 | 열기 |
 | blocked | 예 | 30초 | 열기 |
-| done | 예 | 30초 | 열기 |
+| done | 예 | 30초 | next가 경고 없는 done이면 `세션 닫기`, 그다음 열기 |
 | progress | 아니오 | - | - |
 | board (primary) | 예 | 0 | 열기(새 기획안, 수정안, 답장) |
 | notice now / soon | 예 | 0 | 열기 |
@@ -532,6 +579,30 @@ pi.events.emit("inbox:notice", {
 node "<home>/app/bin/inbox.mjs" notify --producer keepwarm --key cache-cooling --title "캐시가 곧 식습니다" --urgency soon
 ```
 
+## 다른 확장의 행동
+다른 확장은 `pi.events` 에 `inbox:actions` 를 내서 세션의 마지막 메시지에 버튼을 더할 수 있습니다. 확장이 목록을 검사해 `POST /api/threads/<sid>/actions` 로 보내고, 다시 연결되면 또 보냅니다.
+
+형태(v1): `{v: 1, producer, actions: [{key, label, prompt?, run?}]}`.
+
+- `producer` 는 `^[a-z0-9-]{1,40}$`, 행동 0개에서 4개, `key` 는 `^[A-Za-z0-9._:-]{1,40}$`, `label` 1자에서 12자, `prompt`(1자에서 300자)와 `run: true` 중 정확히 하나.
+- producer마다 가장 최근 목록이 이깁니다. 빈 목록은 그 producer를 지웁니다. 행동은 기본 행동 뒤에 `p:<producer>:<key>` 로 나옵니다.
+- `prompt` 행동은 답장처럼 세션에 갑니다. `run` 행동은 세션이 살아 있을 때만 보이고, 누르면 제어 파일을 쓰고 확장이 그 세션에서 `inbox:action` `{v: 1, producer, key, itemId, session}` 을 냅니다.
+
+예: 미리보기를 열어 주는 확장:
+
+```ts
+pi.events.emit("inbox:actions", {
+	v: 1,
+	producer: "omo-preview",
+	actions: [{ key: "open", label: "미리보기 열기", run: true }],
+});
+
+pi.events.on("inbox:action", (event) => {
+	if (event.producer !== "omo-preview" || event.key !== "open") return;
+	openPreview();
+});
+```
+
 ## Tailnet
 - 포트 4388만 씁니다: `tailscale serve --bg --https=4388 http://127.0.0.1:4387`.
 - Funnel은 절대 쓰지 않습니다. 서버도 Funnel 요청을 거부합니다.
@@ -550,6 +621,8 @@ node --test "test/**/*.test.mjs"
 
 Inbox 차례 흐름 브라우저 QA: `bun qa/turn-list-qa.mjs`(포트 4395), `bun qa/turn-thread-qa.mjs`(4396), `bun qa/turn-bubble-qa.mjs`(4397)도 같은 방식입니다. `bun qa/reopen-launch-qa.mjs` 는 실제 실행기를 씁니다. 진짜 Orca 터미널과 Windows Terminal 창을 열었다 닫습니다.
 
+다음 행동 브라우저 QA: `bun qa/next-qa.mjs`(포트 4402)도 같은 방식입니다. `bun qa/session-qa.mjs` 의 S25, S26은 실제 세션으로 닫기와 새 세션을 확인하고, `reopen-launch-qa` 는 닫기가 Orca 탭을 닫는지도 확인합니다.
+
 테스트와 QA의 푸시는 모두 `INBOX_PUSH_SINK` 파일로, 다시 열기는 모두 `INBOX_REOPEN_SINK` 파일로 갑니다(`reopen-launch-qa` 는 제외). QA는 포트 4387, 4388을 쓰지 않습니다.
 
 ## 한계
@@ -558,6 +631,8 @@ Inbox 차례 흐름 브라우저 QA: `bun qa/turn-list-qa.mjs`(포트 4395), `bu
 - Orca 모바일 앱 안에서 휴대폰으로 누르는 동작은 기계로 검증하지 않았습니다.
 - 뷰어의 핀치와 이동은 Chromium의 터치 에뮬레이션으로 확인했고 실제 휴대폰으로는 확인하지 않았습니다. 의견 칸이 화면 키보드 위에 머무는 것은 기계로 확인하지 않았습니다.
 - `듣기` 는 브라우저의 음성 합성을 쓰므로, 브라우저가 뒤로 가거나 화면이 꺼지면 멈출 수 있습니다.
+- 닫기 뒤에도 Windows Terminal 탭은 남습니다. Orca 탭만 닫힙니다.
+- 다음 행동 업데이트 전에 시작한 세션은 `/reload` 를 해야 닫기가 됩니다.
 - 한 사람용입니다. tailnet 소유자 확인은 로그인 하나를 가정합니다.
 - `/api/open` URL은 30000자로 제한됩니다(Windows 명령줄 한도). 더 긴 내용은 복사로 대신합니다.
 - iOS는 알림 버튼을 보이지 않습니다. 알림을 눌러 페이지에서 답하세요.
