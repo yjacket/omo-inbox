@@ -34,6 +34,9 @@
 	.top{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-3);margin-bottom:var(--s-5)}
 	.back{color:var(--muted);text-decoration:none;font-size:var(--fs-md);padding:var(--s-1) 0}
 	.back:hover{color:var(--ink)}
+	/* 제보함/제보: the same quiet links, each at least 44x44px to tap (the link box itself, not its row) and a 확인 요청 count on 제보함 */
+	.back.tool{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px}
+	.back .count{display:inline-flex;align-items:center;height:18px;margin-left:var(--s-1);padding:0 6px;border-radius:var(--r-pill);background:var(--mark);color:#fff;font-size:var(--fs-xs);font-weight:700;font-variant-numeric:tabular-nums}
 	.chips{display:flex;flex-wrap:wrap;gap:var(--s-2);margin-left:auto}
 	.chip{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-pill);padding:3px var(--s-3);font-size:var(--fs-sm);color:var(--ink-2);max-width:100%}
 	.chip i{font-style:normal;color:var(--muted)}
@@ -169,9 +172,10 @@
 	.viewer:focus{outline:none}
 	.vbar{flex:none;display:flex;align-items:center;gap:var(--s-3);padding:var(--s-2) max(var(--s-4),env(safe-area-inset-right)) var(--s-2) max(var(--s-4),env(safe-area-inset-left));padding-top:max(var(--s-2),env(safe-area-inset-top))}
 	.vlabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-md);font-weight:700}
-	.vbar button{flex:none;min-height:44px;padding:0 var(--s-5);border:none;border-radius:var(--r-md);background:rgba(255,255,255,.14);color:#fff;font-size:var(--fs-md);font-weight:700;cursor:pointer}
+	.vbar button,.vbar .vbtn{flex:none;min-height:44px;padding:0 var(--s-5);border:none;border-radius:var(--r-md);background:rgba(255,255,255,.14);color:#fff;font-size:var(--fs-md);font-weight:700;cursor:pointer}
+	.vbar .vbtn{display:inline-flex;align-items:center;justify-content:center;min-width:44px;text-decoration:none}
 	.vbar button[aria-pressed="true"]{background:var(--mark)}
-	.viewer button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+	.viewer button:focus-visible,.viewer .vbtn:focus-visible{outline:2px solid #fff;outline-offset:2px}
 	.vstage{position:relative;flex:1;min-height:0;overflow:hidden;cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;margin:0 max(0px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(0px,env(safe-area-inset-left))}
 	.vstage.drawing{cursor:crosshair}
 	.vstage img{position:absolute;left:0;top:0;max-width:none;transform-origin:0 0;background:#111;pointer-events:none;-webkit-user-drag:none}
@@ -203,6 +207,8 @@
 	<nav class="top">
 		<a class="back" href="/">← Inbox</a>
 		<a class="back" id="threadLink" hidden>‹ 대화</a>
+		<a class="back tool" href="/issues">제보함<span class="count" id="issueBadge" hidden></span></a>
+		<a class="back tool" data-issue-report href="/issues/new">제보</a>
 		<div class="chips" id="chips"></div>
 	</nav>
 	<div class="titlebar"><h1 id="title"></h1><button type="button" class="listen" id="listenBtn" aria-pressed="false" hidden>듣기</button><button type="button" class="listen" id="restartBtn" hidden>처음부터</button></div>
@@ -253,6 +259,7 @@
 	<div class="vbar">
 		<span class="vlabel" id="vLabel"></span>
 		<button type="button" id="vDraw" aria-pressed="false">표시하기</button>
+		<a class="vbtn" id="vReport" data-issue-report href="/issues/new">제보</a>
 		<button type="button" id="vClose">닫기</button>
 	</div>
 	<div class="vstage" id="vStage">
