@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { makeTmpHome } from "./helpers/tmp-home.mjs";
 import { RUN_KEY, RUN_VALUE, doctor, install, uninstall } from "../src/install.mjs";
@@ -8,6 +10,34 @@ import { guard, serveOff, serveOn, status } from "../src/tailscale.mjs";
 
 const DNS = "host.tailnet.ts.net";
 const PROXY = "http://127.0.0.1:4387";
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Every issue-reporting runtime asset: src/issues-*.mjs, web/issue-*.{js,css} and the issues page. */
+function issueRuntimeAssets(root) {
+	const pick = (dir, pattern) =>
+		fs.readdirSync(path.join(root, dir))
+			.filter((name) => pattern.test(name))
+			.sort()
+			.map((name) => `${dir}/${name}`);
+	return [
+		...pick("src", /^issues-.*\.mjs$/),
+		...pick("web", /^(?:issue-.*\.(?:js|css)|issues\.(?:html|js|css))$/),
+	];
+}
+
+function sha256Tree(root) {
+	const out = {};
+	const walk = (dir, rel) => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			const full = path.join(dir, entry.name);
+			const key = rel ? `${rel}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) walk(full, key);
+			else out[key] = crypto.createHash("sha256").update(fs.readFileSync(full)).digest("hex");
+		}
+	};
+	walk(root, "");
+	return out;
+}
 
 /** A fixture repo root with every entry install copies. */
 function makeRepo(root) {
@@ -466,6 +496,72 @@ test("uninstall removes extension, skill, rule and Run value, and keeps data", a
 		assert.equal(fs.existsSync(path.join(s.home, "config.json")), false);
 		assert.equal(fs.existsSync(path.join(s.home, "server.json")), false);
 		assert.deepEqual(fs.readFileSync(path.join(s.home, "data", "keep.json"), "utf8"), "{}\n");
+	} finally {
+		s.tmp.cleanup();
+	}
+});
+
+test("an isolated install copies every issue runtime asset and no runtime file imports QA", async () => {
+	const s = setup();
+	const opts = {
+		...s.opts,
+		repoRoot: REPO_ROOT,
+		noAutostart: true,
+		noTailscale: true,
+		env: { ...s.env, INBOX_NO_TAILSCALE: "1" },
+	};
+	try {
+		const assets = issueRuntimeAssets(REPO_ROOT);
+		assert.ok(assets.length >= 16, `expected every issue runtime asset, found ${assets.length}`);
+		const { ok, lines } = await install(opts);
+		assert.equal(ok, true, lines.join("\n"));
+		assert.equal(lineFor(lines, "app"), "app: written");
+		for (const asset of assets) {
+			assert.ok(
+				fs.readFileSync(path.join(s.home, "app", asset)).equals(fs.readFileSync(path.join(REPO_ROOT, asset))),
+				`${asset} is missing or differs in the isolated copy`,
+			);
+		}
+		const important = ["src/issues-contract.mjs", "src/issues-store.mjs", "src/issues-http.mjs", "web/issue-report.js", "web/issues.html", "web/issues.css"];
+		for (const asset of important) assert.ok(fs.existsSync(path.join(s.home, "app", asset)), asset);
+
+		// A QA path is scaffolding: no runtime module or page script may import one.
+		const importQa = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)["'][^"']*\bqa\//;
+		for (const asset of assets.filter((name) => name.endsWith(".mjs") || name.endsWith(".js"))) {
+			assert.equal(importQa.test(fs.readFileSync(path.join(s.home, "app", asset), "utf8")), false, `${asset} imports a QA path`);
+		}
+		for (const dir of ["src", "web"]) {
+			for (const name of fs.readdirSync(path.join(s.home, "app", dir))) {
+				if (!/\.(?:mjs|js)$/.test(name)) continue;
+				assert.equal(importQa.test(fs.readFileSync(path.join(s.home, "app", dir, name), "utf8")), false, `${dir}/${name} imports a QA path`);
+			}
+		}
+
+		// Records live under <home>/data and must survive a data-preserving uninstall/reinstall.
+		const id = "19191919-1919-4919-8919-191919191919";
+		const records = path.join(s.home, "data", "issues", "records", id, "evidence", "19191919-1919-4919-8919-191919191920");
+		fs.mkdirSync(records, { recursive: true });
+		fs.writeFileSync(path.join(s.home, "data", "issues", "records", id, "record.json"), JSON.stringify({ id, description: "설치 보존 확인" }));
+		fs.writeFileSync(path.join(records, "image.png"), Buffer.from([137, 80, 78, 71, 19, 19]));
+		for (const dir of [path.join("data", "proposals"), path.join("data", "threads"), "mailbox"]) {
+			fs.mkdirSync(path.join(s.home, dir), { recursive: true });
+			fs.writeFileSync(path.join(s.home, dir, "marker.json"), JSON.stringify({ dir }));
+		}
+		const before = sha256Tree(path.join(s.home, "data", "issues"));
+		const isolationBefore = ["data/proposals", "data/threads", "mailbox"].map((dir) => sha256Tree(path.join(s.home, dir)));
+
+		const removed = await uninstall(opts);
+		assert.equal(removed.ok, true, removed.lines.join("\n"));
+		assert.equal(lineFor(removed.lines, "app"), "app: removed");
+		assert.equal(fs.existsSync(path.join(s.home, "app")), false);
+		assert.deepEqual(sha256Tree(path.join(s.home, "data", "issues")), before);
+		assert.deepEqual(["data/proposals", "data/threads", "mailbox"].map((dir) => sha256Tree(path.join(s.home, dir))), isolationBefore);
+
+		const again = await install(opts);
+		assert.equal(again.ok, true, again.lines.join("\n"));
+		for (const asset of assets) assert.ok(fs.existsSync(path.join(s.home, "app", asset)), `${asset} after reinstall`);
+		assert.deepEqual(sha256Tree(path.join(s.home, "data", "issues")), before);
+		assert.deepEqual(["data/proposals", "data/threads", "mailbox"].map((dir) => sha256Tree(path.join(s.home, dir))), isolationBefore);
 	} finally {
 		s.tmp.cleanup();
 	}
