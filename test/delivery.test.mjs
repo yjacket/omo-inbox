@@ -37,6 +37,17 @@ function ledgerFile(home, sid = SID) {
 	return path.join(home, "ledger", `${safeSegment(sid)}.json`);
 }
 
+function controlFile(home, { deliveryId = "c1", itemId = ITEM, action = "close", sid = SID, ...rest } = {}) {
+	const dir = path.join(home, "control", safeSegment(sid));
+	fs.mkdirSync(dir, { recursive: true });
+	const file = path.join(dir, `${deliveryId}.json`);
+	fs.writeFileSync(
+		file,
+		JSON.stringify({ v: 1, type: "session-control", action, itemId, deliveryId, issuedAt: new Date().toISOString(), ...rest }),
+	);
+	return file;
+}
+
 function setup(options = {}) {
 	const { home, cleanup } = makeTmpHome("inbox-delivery-");
 	const trace = [];
@@ -44,6 +55,7 @@ function setup(options = {}) {
 	const posts = [];
 	const logs = [];
 	const owners = [];
+	const controls = [];
 	const items = options.items ?? {};
 	const fsSpy = {
 		...fsp,
@@ -108,6 +120,12 @@ function setup(options = {}) {
 		log: async (text) => {
 			logs.push(text);
 		},
+		onControl: async (control) => {
+			controls.push(control);
+			if (typeof options.onControl === "function") return options.onControl(control);
+			trace.push(`control:${control.action}`);
+		},
+		now: options.now,
 	});
 	return {
 		home,
@@ -118,6 +136,7 @@ function setup(options = {}) {
 		trace,
 		logs,
 		owners,
+		controls,
 		exists: (file) => fs.existsSync(file),
 		ids: () => (fs.existsSync(ledgerFile(home)) ? JSON.parse(fs.readFileSync(ledgerFile(home), "utf8")).ids : []),
 	};
@@ -608,4 +627,120 @@ test("the session id can come from the context instead of deps", async (t) => {
 
 	assert.equal(s.calls[0].what, "question");
 	assert.deepEqual(s.posts[0].body.how, "bridge");
+});
+
+test("a close control is acked as control, applied once and removed", async (t) => {
+	const s = setup({});
+	t.after(s.cleanup);
+	const file = controlFile(s.home);
+
+	const result = await s.delivery.drain();
+
+	assert.equal(result.handled, 1);
+	assert.deepEqual(s.posts, [{ url: `/api/items/${ITEM}/delivered`, body: { deliveryId: "c1", how: "control", detail: "close" } }]);
+	assert.deepEqual(s.controls, [{ action: "close", itemId: ITEM, deliveryId: "c1", producer: undefined, key: undefined }]);
+	assert.equal(s.exists(file), false);
+	assert.deepEqual(s.ids(), ["c1"]);
+});
+
+test("a ledgered control is re-acked with its recorded how and never applied again", async (t) => {
+	const s = setup({});
+	t.after(s.cleanup);
+	fs.mkdirSync(path.join(s.home, "ledger"), { recursive: true });
+	fs.writeFileSync(ledgerFile(s.home), JSON.stringify({ v: 1, ids: ["c1"], how: { c1: "control" } }));
+	const file = controlFile(s.home);
+
+	await s.delivery.drain();
+
+	assert.deepEqual(s.controls, []);
+	assert.deepEqual(s.posts, [{ url: `/api/items/${ITEM}/delivered`, body: { deliveryId: "c1", how: "control", detail: null } }]);
+	assert.equal(s.exists(file), false);
+});
+
+test("a failed control ack keeps the file without a ledger entry, then applies exactly once", async (t) => {
+	const s = setup({ postFails: (posts) => posts.length === 1 });
+	t.after(s.cleanup);
+	const file = controlFile(s.home);
+
+	assert.equal((await s.delivery.drain()).handled, 0);
+	assert.equal(s.exists(file), true);
+	assert.deepEqual(s.ids(), []);
+	assert.deepEqual(s.controls, []);
+	assert.ok(s.logs.some((line) => line.includes("ack failed")));
+
+	assert.equal((await s.delivery.drain()).handled, 1);
+	assert.equal(s.exists(file), false);
+	assert.deepEqual(s.ids(), ["c1"]);
+	assert.equal(s.controls.length, 1);
+	assert.deepEqual(s.posts.map((post) => post.body), [
+		{ deliveryId: "c1", how: "control", detail: "close" },
+		{ deliveryId: "c1", how: "control", detail: "close" },
+	]);
+});
+
+test("a stale control is dropped without applying it", async (t) => {
+	const now = Date.parse("2026-10-24T12:00:00.000Z");
+	const s = setup({ now: () => now });
+	t.after(s.cleanup);
+	const file = controlFile(s.home, { issuedAt: new Date(now - 11 * 60_000).toISOString() });
+
+	await s.delivery.drain();
+
+	assert.deepEqual(s.controls, []);
+	assert.deepEqual(s.posts, [{ url: `/api/items/${ITEM}/delivered`, body: { deliveryId: "c1", how: "dropped", detail: "stale" } }]);
+	assert.equal(s.exists(file), false);
+	assert.deepEqual(s.ids(), []);
+});
+
+test("a control for a closed item is dropped as item closed", async (t) => {
+	const s = setup({ items: { [ITEM]: { itemId: ITEM, kind: "turn", status: "closed" } } });
+	t.after(s.cleanup);
+	const file = controlFile(s.home, { action: "run" });
+
+	await s.delivery.drain();
+
+	assert.deepEqual(s.controls, []);
+	assert.deepEqual(s.posts, [{ url: `/api/items/${ITEM}/delivered`, body: { deliveryId: "c1", how: "dropped", detail: "item closed" } }]);
+	assert.equal(s.exists(file), false);
+});
+
+test("a control with a bad action is removed with a note", async (t) => {
+	const s = setup({});
+	t.after(s.cleanup);
+	const file = controlFile(s.home, { action: "explode" });
+
+	await s.delivery.drain();
+
+	assert.equal(s.exists(file), false);
+	assert.deepEqual(s.controls, []);
+	assert.deepEqual(s.posts, []);
+	assert.ok(s.logs.some((line) => line.includes("bad session-control")));
+});
+
+test("a run control passes producer/key and marks the owner before applying", async (t) => {
+	const s = setup({ items: { [ITEM]: { itemId: ITEM, kind: "turn", status: "open" } } });
+	t.after(s.cleanup);
+	const file = controlFile(s.home, { action: "run", producer: "p1", key: "k1" });
+
+	await s.delivery.drain();
+
+	assert.deepEqual(s.controls, [{ action: "run", itemId: ITEM, deliveryId: "c1", producer: "p1", key: "k1" }]);
+	assert.deepEqual(s.owners, ["phone"]);
+	assert.ok(s.trace.indexOf("owner:phone") < s.trace.indexOf("control:run"), `owner before control: ${JSON.stringify(s.trace)}`);
+	assert.equal(s.exists(file), false);
+});
+
+test("mailbox answers are still delivered alongside controls", async (t) => {
+	const s = setup({ items: { [ITEM]: questionItem() } });
+	t.after(s.cleanup);
+	const answer = answerFile(s.home);
+	const control = controlFile(s.home);
+
+	const result = await s.delivery.drain();
+
+	assert.equal(result.handled, 2);
+	assert.equal(s.exists(answer), false);
+	assert.equal(s.exists(control), false);
+	assert.deepEqual(s.posts.map((post) => post.body.how), ["bridge", "control"]);
+	assert.equal(s.controls.length, 1);
 });

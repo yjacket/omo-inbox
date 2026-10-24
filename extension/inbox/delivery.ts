@@ -93,8 +93,13 @@ function idsFromEntries(entries) {
 }
 
 export function createDelivery(deps = {}) {
-	const { home, getItem, post, bridge, pi, getCtx, explain, boardDeliver, capture, log, sessionId } = deps;
+	const { home, getItem, post, bridge, pi, getCtx, explain, boardDeliver, capture, log, sessionId, onControl } = deps;
 	const fsImpl = deps.fs ?? fsDefault;
+	const nowMs = () => {
+		const value = typeof deps.now === "function" ? deps.now() : deps.now;
+		const ms = value instanceof Date ? value.getTime() : Number(value);
+		return Number.isFinite(ms) ? ms : Date.now();
+	};
 	const note = async (text) => {
 		try {
 			if (typeof log === "function") await log(text);
@@ -127,6 +132,11 @@ export function createDelivery(deps = {}) {
 
 	function mailboxDir(value = resolveSid()) {
 		return value ? path.join(String(home ?? ""), "mailbox", safeSegment(value)) : null;
+	}
+
+	/** Exactly-once session-control files, beside the mailbox. */
+	function controlDir(value = resolveSid()) {
+		return value ? path.join(String(home ?? ""), "control", safeSegment(value)) : null;
 	}
 
 	function ledgerPath(value = resolveSid()) {
@@ -439,6 +449,107 @@ export function createDelivery(deps = {}) {
 		return "handled";
 	}
 
+	/**
+	 * Handle one session-control file. The ledger entry goes in before the ack,
+	 * so a crash after it re-acks instead of running the control twice.
+	 * Returns "handled" | "skipped" | "kept" | "removed".
+	 */
+	async function handleControl(file, payload) {
+		if (
+			!payload ||
+			typeof payload !== "object" ||
+			payload.type !== "session-control" ||
+			!payload.itemId ||
+			!payload.deliveryId ||
+			(payload.action !== "close" && payload.action !== "run")
+		) {
+			await note(`delivery: unparsable ${file}: bad session-control`);
+			await removeQuietly(file);
+			return "removed";
+		}
+		const { itemId, action, deliveryId } = payload;
+		if (delivered.has(deliveryId)) {
+			const how = ledgerHow.get(deliveryId) ?? "control";
+			try {
+				await ack(itemId, how, null, deliveryId);
+			} catch (error) {
+				await note(`delivery: ${itemId} re-ack failed: ${messageOf(error)}`);
+				return "kept";
+			}
+			await removeQuietly(file);
+			return "skipped";
+		}
+		const issued = Date.parse(String(payload.issuedAt ?? ""));
+		if (!Number.isFinite(issued) || nowMs() - issued > 10 * 60_000) {
+			try {
+				await ack(itemId, "dropped", "stale", deliveryId);
+			} catch (error) {
+				await note(`delivery: ${itemId} ack failed: ${messageOf(error)}`);
+				return "kept";
+			}
+			await removeQuietly(file);
+			return "removed";
+		}
+		const item = await itemOf(itemId);
+		if (item?.status === "closed") {
+			try {
+				await ack(itemId, "dropped", "item closed", deliveryId);
+			} catch (error) {
+				await note(`delivery: ${itemId} ack failed: ${messageOf(error)}`);
+				return "kept";
+			}
+			await removeQuietly(file);
+			return "removed";
+		}
+		await ledgerAdd(deliveryId);
+		await ledgerRemember(deliveryId, "control");
+		try {
+			await ack(itemId, "control", action, deliveryId);
+		} catch (error) {
+			await ledgerDrop(deliveryId);
+			await note(`delivery: ${itemId} ack failed: ${messageOf(error)}`);
+			return "kept";
+		}
+		if (action === "run") await markOwner("phone");
+		try {
+			await onControl?.({ action, itemId, deliveryId, producer: payload.producer, key: payload.key });
+		} catch (error) {
+			await note(`delivery: control ${action} failed: ${messageOf(error)}`);
+		}
+		await removeQuietly(file);
+		return "handled";
+	}
+
+	/** Drain `*.json` control files in name order; a missing directory is none. */
+	async function runControls(target) {
+		const dir = controlDir(target);
+		let names;
+		try {
+			names = await fsImpl.readdir(dir);
+		} catch (error) {
+			if (error?.code === "ENOENT") return 0;
+			throw error;
+		}
+		let handled = 0;
+		for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
+			const file = path.join(dir, name);
+			let payload;
+			try {
+				payload = JSON.parse(String(await fsImpl.readFile(file, "utf8")).replace(/^\uFEFF/, ""));
+			} catch (error) {
+				await note(`delivery: unparsable ${file}: ${messageOf(error)}`);
+				await removeQuietly(file);
+				continue;
+			}
+			try {
+				if ((await handleControl(file, payload)) === "handled") handled++;
+			} catch (error) {
+				await note(`delivery: ${file} failed: ${messageOf(error)}`);
+			}
+		}
+		return handled;
+	}
+
 	async function run() {
 		const target = resolveSid();
 		if (!target) return { handled: 0, skipped: "no-session" };
@@ -448,8 +559,8 @@ export function createDelivery(deps = {}) {
 		try {
 			names = await fsImpl.readdir(dir);
 		} catch (error) {
-			if (error?.code === "ENOENT") return { handled: 0, skipped: "no-mailbox" };
-			throw error;
+			if (error?.code === "ENOENT") names = [];
+			else throw error;
 		}
 		let handled = 0;
 		for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
@@ -468,6 +579,7 @@ export function createDelivery(deps = {}) {
 				await note(`delivery: ${file} failed: ${messageOf(error)}`);
 			}
 		}
+		handled += await runControls(target);
 		return { handled };
 	}
 
@@ -488,6 +600,7 @@ export function createDelivery(deps = {}) {
 		drain,
 		reload,
 		mailboxDir,
+		controlDir,
 		ledgerPath,
 		deliveredIds: () => [...delivered],
 	};
