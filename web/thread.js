@@ -15,7 +15,7 @@
 		{ choice: "Deny", label: "거부", style: "ghost" },
 		{ choice: "Deny with feedback", label: "거부하고 이유 쓰기", style: "ghost" },
 	];
-	const CLOSE_LINE = { "answered-terminal": "터미널에서 답함", superseded: "다음 작업으로 넘어감", "timed-out": "시간 초과", cancelled: "취소됨", expired: "만료됨", "session-closed": "세션 닫힘" };
+	const CLOSE_LINE = { "answered-terminal": "터미널에서 답함", superseded: "다음 작업으로 넘어감", "timed-out": "시간 초과", cancelled: "취소됨", expired: "만료됨", "session-closed": "세션 닫힘", "closed-by-owner": "닫음", "handed-off": "새 세션으로 넘어감" };
 	const DELIVERED_LINE = { bridge: "전달됨 ✓", message: "전달됨 ✓", "late-message": "늦게 전달됨", dropped: "터미널 답이 먼저 들어가 이 답은 쓰이지 않음", refused: "전달되지 않음" };
 	const BRIDGE_HINT = { none: "터미널에서 답해 주세요", "terminal-only": "리로드 후에는 터미널에서 답해 주세요" };
 	// Why the session waits (item.state.reasons[0]) as the newest progress line says it; the same map as src/summary.mjs.
@@ -25,6 +25,14 @@
 	const LOAD_FAILED_TEXT = "불러오지 못했습니다";
 	const REC_MARKERS = ["권장", "추천", "(Recommended)", "recommended"];
 	const QUICK_KINDS = new Set(["turn", "blocked", "done"]);
+	// Next actions (README "Next actions"): a final is a needs-you turn/done/blocked item; its next verdict's reason shows as
+	// 다음 · <reason> for these states (an ask final gets no line), and for done/plan/ship the actions take the chips' place.
+	const FINAL_KINDS = new Set(["turn", "done", "blocked"]);
+	const NEXT_LINE_STATES = new Set(["done", "plan", "ship", "blocked", "stalled"]);
+	const NEXT_REPLACES_CHIPS = new Set(["done", "plan", "ship"]);
+	const NO_RESPONSE_TEXT = "세션이 응답하지 않습니다";
+	const STALE_TEXT = "상황이 바뀌었습니다. 다시 확인해 주세요.";
+	const ACTION_ERROR = { plan_missing: "계획 파일을 찾지 못했습니다.", cwd_missing: "세션 폴더가 없어 열지 못했습니다.", no_launcher: "터미널을 찾지 못했습니다.", launch_failed: "세션을 열지 못했습니다.", forbidden: "이 기기에서는 열 수 없습니다." };
 	const TEXT_ANSWER_KINDS = new Set(["turn", "blocked", "done", "notice"]);
 	const SENDING_TEXT = "보내는 중";
 	const OFFLINE_TEXT = "세션이 꺼져 있어 다시 열면 전달됩니다";
@@ -125,6 +133,7 @@
 		chat: document.getElementById("chat"),
 		composer: document.getElementById("composer"),
 		quick: document.getElementById("quick"),
+		nextActions: document.getElementById("nextActions"),
 		compose: document.getElementById("compose"),
 		reply: document.getElementById("reply"),
 		send: document.getElementById("send"),
@@ -162,6 +171,10 @@
 		listening: null,
 		hit: null,
 		composerBusy: false,
+		// One next action in flight locks every next button; nextSig is the rendered bar; handoff is the trailing system line.
+		nextBusy: false,
+		nextSig: null,
+		handoff: null,
 	};
 
 	// ---------- helpers ----------
@@ -391,6 +404,51 @@
 			.filter((board) => board && typeof board === "object" && /^https?:\/\//i.test(String(board.url ?? "")))
 			.map((board) => ({ title: String(board.title ?? ""), url: String(board.url) }));
 		return { label, boards };
+	}
+
+	// The item's next verdict (the contract shape) or null.
+	function nextOf(item) {
+		const next = item && item.next;
+		return next && typeof next === "object" && typeof next.state === "string" ? next : null;
+	}
+
+	function nextActionsOf(next) {
+		return (next && Array.isArray(next.actions) ? next.actions : []).filter((action) => action && typeof action === "object" && typeof action.id === "string" && action.id && action.label);
+	}
+
+	function isFinal(item) {
+		return item.policy === "needs-you" && FINAL_KINDS.has(item.kind);
+	}
+
+	// The actionable closed final (the same rule as src/threads.mjs actionableFinal): the newest final when it closed as
+	// session-closed, no newer needs-you item exists and the thread has no handoff. The session quit; its next still offers
+	// the plan and continue actions.
+	function actionableFinal() {
+		const thread = state.thread || {};
+		if (thread.handoff) return null;
+		let index = -1;
+		for (let i = state.items.length - 1; i >= 0; i--) {
+			if (isFinal(state.items[i])) {
+				index = i;
+				break;
+			}
+		}
+		if (index < 0) return null;
+		const final = state.items[index];
+		if (final.status !== "closed" || final.closedReason !== "session-closed") return null;
+		for (let i = index + 1; i < state.items.length; i++) {
+			if (state.items[i].policy === "needs-you") return null;
+		}
+		return final;
+	}
+
+	// The item whose next line and actions the page shows: the newest open item when it carries a next, else the
+	// actionable closed final when its next still has actions.
+	function nextItem() {
+		const open = newestOpen();
+		if (open) return nextOf(open) ? open : null;
+		const final = actionableFinal();
+		return final && nextActionsOf(nextOf(final)).length ? final : null;
 	}
 
 	function headlineOf(item) {
@@ -632,10 +690,13 @@
 		);
 	}
 
-	function agentBubble(item) {
+	// isNext: this item is nextItem(), so its verdict shows as 다음 · <reason>.
+	function agentBubble(item, isNext) {
 		const itemId = idOf(item);
 		const summary = summaryOf(item);
 		const live = item.status === "open";
+		const next = isNext ? nextOf(item) : null;
+		const nextLine = next && NEXT_LINE_STATES.has(next.state) && next.reason ? `다음 · ${String(next.reason)}` : "";
 		const headline = headlineOf(item);
 		// What the bubble already shows verbatim (question lines, the dialog title and its choices); a heuristic body that only repeats it is dropped.
 		const dialog = item.raw && item.raw.dialog && typeof item.raw.dialog === "object" ? item.raw.dialog : null;
@@ -699,6 +760,7 @@
 			summary && summary.context ? termField(summary.context, "context", "하던 일 · ") : null,
 			showBody ? termField(body, "body") : null,
 			ask ? termField(ask, "ask") : null,
+			nextLine ? h("p", { class: "next" }, nextLine) : null,
 			popover ? h("div", { class: "term-pop", id: popId }, h("b", null, String(popover.term)), h("span", null, String(popover.meaning || ""))) : null,
 			...(item.kind === "question" ? questionBlock(item, live) : []),
 			...(item.kind === "permission" ? permissionBlock(item, live) : []),
@@ -744,7 +806,14 @@
 		return String(payload.text ?? payload.comment ?? "");
 	}
 
+	// The next action a bubble answers with (close, run, new-session), from the server's answer payload; null for a reply.
+	function actionOf(answer) {
+		const payload = answer.payload && typeof answer.payload === "object" ? answer.payload : {};
+		return typeof payload.action === "string" && payload.action ? payload.action : null;
+	}
+
 	function deliveryState(item, answer) {
+		const action = actionOf(answer);
 		const record = state.deliveredHow.get(`${idOf(item)}:${answer.deliveryId}`);
 		const how = record ? record.how : Array.isArray(item.deliveredIds) && item.deliveredIds.includes(answer.deliveryId) ? "message" : null;
 		if (how) {
@@ -752,7 +821,8 @@
 			if (how === "refused" && record && record.detail) text += ` · ${record.detail === "dialog closed" ? "대화창이 닫힘" : String(record.detail)}`;
 			return { text, warn: how === "refused" || how === "dropped", resend: false };
 		}
-		if (answer.deliveryUnconfirmed) return { text: OFFLINE_TEXT, warn: false, resend: true };
+		// A control the session never acked within 60 s cannot be resent; the session is not answering.
+		if (answer.deliveryUnconfirmed) return action ? { text: NO_RESPONSE_TEXT, warn: true, resend: false } : { text: OFFLINE_TEXT, warn: false, resend: true };
 		return { text: SENDING_TEXT, warn: false, resend: false };
 	}
 
@@ -763,12 +833,14 @@
 			"article",
 			{ class: "msg user", "data-answer": answer.answerId || answer.deliveryId },
 			h("div", { class: "bubble" }, answerText(item, answer)),
-			h(
-				"div",
-				{ class: `state${delivery.warn ? " warn" : ""}` },
-				h("span", null, delivery.text),
-				delivery.resend ? h("button", { type: "button", "data-action": "resend", "data-delivery": answer.deliveryId, disabled: busy || null }, "다시 보내기") : null,
-			),
+			delivery
+				? h(
+					"div",
+					{ class: `state${delivery.warn ? " warn" : ""}` },
+					h("span", null, delivery.text),
+					delivery.resend ? h("button", { type: "button", "data-action": "resend", "data-delivery": answer.deliveryId, disabled: busy || null }, "다시 보내기") : null,
+				)
+				: null,
 		);
 	}
 
@@ -831,9 +903,31 @@
 		return value.startsWith("/") && !value.startsWith("//") ? value : value.startsWith("https://") ? value : null;
 	}
 
+	// The handoff after a new-session launch, one centered line after the last item: 새 세션을 여는 중 while it launches,
+	// 새 세션에서 이어감 · 열기 linking the new thread once it connected. Returns true when a line was appended.
+	function renderHandoff() {
+		const thread = state.thread || {};
+		const handoff = thread.handoff && typeof thread.handoff === "object" ? thread.handoff : null;
+		const to = handoff && typeof handoff.to === "string" ? handoff.to : "";
+		const sig = handoff ? JSON.stringify([to, handoff.status]) : null;
+		if (ui.handoff && ui.handoff.sig === sig) {
+			if (els.chat.lastElementChild !== ui.handoff.node) els.chat.append(ui.handoff.node);
+			return false;
+		}
+		if (ui.handoff) ui.handoff.node.remove();
+		ui.handoff = null;
+		if (!handoff) return false;
+		const line = handoff.status === "connected" && to ? linkLine("새 세션에서 이어감", `/s/${encodeURIComponent(to)}`) : sysLine(handoff.status === "connected" ? "새 세션에서 이어감" : "새 세션을 여는 중");
+		const node = h("section", { class: "group", "data-handoff": handoff.status }, line);
+		els.chat.append(node);
+		ui.handoff = { sig, node };
+		return true;
+	}
+
 	// wait: waitOf(item), the suffix and board links of the newest progress line of a working thread.
 	// request: requestsOf(items).get(itemId), the owner's request shown above this progress line.
-	function buildItem(item, wait, request) {
+	// isNext: the item is nextItem(), whose bubble shows the 다음 · line.
+	function buildItem(item, wait, request, isNext) {
 		const nodes = [];
 		const synthetic = item.raw && typeof item.raw === "object" && item.raw.synthetic === true;
 		if (item.kind === "progress") {
@@ -842,7 +936,7 @@
 			nodes.push(sysLine(`${headlineOf(item)}${suffix}`, "progress"));
 			for (const board of wait ? wait.boards : []) nodes.push(linkLine(board.title || "Review", board.url, true));
 		} else if (!synthetic) {
-			nodes.push(agentBubble(item));
+			nodes.push(agentBubble(item, isNext));
 		}
 		for (const answer of Array.isArray(item.answers) ? item.answers : []) nodes.push(userBubble(item, answer));
 		if (item.kind === "board") {
@@ -859,12 +953,12 @@
 		return nodes;
 	}
 
-	function signatureOf(item, request) {
+	function signatureOf(item, request, isNext) {
 		const itemId = idOf(item);
 		const hows = (Array.isArray(item.answers) ? item.answers : []).map((answer) => state.deliveredHow.get(`${itemId}:${answer.deliveryId}`) || null);
 		const episode = ui.episodes.get(itemId);
 		const termOpen = ui.termOpen && ui.termOpen.itemId === itemId ? ui.termOpen.n : null;
-		const view = [ui.busy.has(itemId), ui.error.get(itemId) || null, ui.explain.has(itemId), ui.feedbackOpen.has(itemId), ui.hit === itemId, waitOf(item), episode ? episode.status : null, request || null, ui.requestOpen.has(itemId), termOpen, ui.listening === itemId];
+		const view = [ui.busy.has(itemId), ui.error.get(itemId) || null, ui.explain.has(itemId), ui.feedbackOpen.has(itemId), ui.hit === itemId, waitOf(item), episode ? episode.status : null, request || null, ui.requestOpen.has(itemId), termOpen, ui.listening === itemId, isNext];
 		return JSON.stringify([item, hows, view]);
 	}
 
@@ -896,6 +990,7 @@
 		els.chat.setAttribute("aria-busy", "false");
 		if (!state.items.length) {
 			ui.nodes.clear();
+			ui.handoff = null;
 			els.chat.replaceChildren(h("p", { class: "empty" }, EMPTY_TEXT));
 			return;
 		}
@@ -904,16 +999,18 @@
 		const stick = state.loaded && nearBottom();
 		const focus = focusKey();
 		const requests = requestsOf(state.items);
+		const target = nextItem();
 		let appended = false;
 		for (const item of state.items) {
 			const itemId = idOf(item);
 			if (!itemId) continue;
 			const request = requests.get(itemId) || null;
-			const sig = signatureOf(item, request);
+			const isNext = item === target;
+			const sig = signatureOf(item, request, isNext);
 			const existing = ui.nodes.get(itemId);
 			if (existing && existing.sig === sig) continue;
 			const wait = waitOf(item);
-			const node = h("section", { class: "group", "data-item": itemId, "data-kind": item.kind, "data-boards": wait && wait.boards.length ? true : null, "data-request": request ? true : null }, ...buildItem(item, wait, request));
+			const node = h("section", { class: "group", "data-item": itemId, "data-kind": item.kind, "data-boards": wait && wait.boards.length ? true : null, "data-request": request ? true : null }, ...buildItem(item, wait, request, isNext));
 			if (existing) {
 				existing.node.replaceWith(node);
 				if (focus && focus.itemId === itemId) restoreFocus(focus, node);
@@ -925,6 +1022,7 @@
 			ui.nodes.set(itemId, { sig, node });
 			if (ui.termOpen && ui.termOpen.itemId === itemId) positionTermPopover(itemId, ui.termOpen.n);
 		}
+		if (renderHandoff()) appended = true;
 		if (appended && stick) scrollToBottom();
 	}
 
@@ -983,10 +1081,45 @@
 		return { item: null, mode: "message" };
 	}
 
+	// The chips and the next actions bar. For a done/plan/ship verdict the actions take the chips' place; for ask, blocked
+	// and stalled the chips stay (the existing rule) and the actions follow them, close as a ghost button set apart by a gap.
 	function renderComposer() {
 		const open = newestOpen();
 		const thread = state.thread || {};
-		els.quick.hidden = !((open && QUICK_KINDS.has(open.kind)) || thread.status === "working");
+		const target = nextItem();
+		const next = target ? nextOf(target) : null;
+		const replaces = next !== null && NEXT_REPLACES_CHIPS.has(next.state);
+		els.quick.hidden = replaces || !((open && QUICK_KINDS.has(open.kind)) || thread.status === "working");
+		renderNextActions(target, next);
+	}
+
+	// [{action, ghost}] in display order: primary first as the server sends them; after the chips, close moves last as the ghost.
+	function nextButtons(next) {
+		const actions = nextActionsOf(next);
+		if (NEXT_REPLACES_CHIPS.has(next.state)) return actions.map((action) => ({ action, ghost: false }));
+		return [...actions.filter((action) => action.kind !== "close"), ...actions.filter((action) => action.kind === "close")].map((action) => ({ action, ghost: action.kind === "close" }));
+	}
+
+	function renderNextActions(target, next) {
+		const entries = target && next ? nextButtons(next) : [];
+		const sig = JSON.stringify([target ? idOf(target) : null, entries]);
+		if (ui.nextSig === sig) return;
+		ui.nextSig = sig;
+		const active = document.activeElement;
+		const focused = active && els.nextActions.contains(active) ? active.getAttribute("data-next") : null;
+		els.nextActions.replaceChildren(
+			...entries.map(({ action, ghost }) =>
+				h("button", { type: "button", class: `next-btn${action.primary === true ? " primary" : ""}${ghost ? " ghost" : ""}`, "data-next": action.id, disabled: ui.nextBusy || null }, String(action.label)),
+			),
+		);
+		els.nextActions.hidden = entries.length === 0;
+		if (focused) els.nextActions.querySelector(`[data-next="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+	}
+
+	// A tap locks every next button until the response.
+	function setNextBusy(busy) {
+		ui.nextBusy = busy;
+		for (const button of els.nextActions.querySelectorAll("button")) button.disabled = busy;
 	}
 
 	function setComposeStatus(text, error) {
@@ -1010,11 +1143,40 @@
 		else return send();
 	}
 
-	function closeReopenSheet(dim, sheet, onKey, returnFocus) {
+	function closeSheet(dim, sheet, onKey, returnFocus) {
 		document.removeEventListener("keydown", onKey);
 		dim.remove();
 		sheet.remove();
 		if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
+	}
+
+	// Every sheet: one dim layer, a dialog with a title, its lines and a button row; Escape or a tap on the dim closes it and
+	// focus returns (to returnFocus when given: the tapped button, which a lock has already blurred). buttons: [{key, label,
+	// primary, onTap}]; a tap closes the sheet, then runs onTap.
+	function openSheet({ title, lines, buttons, returnFocus = document.activeElement }) {
+		const dim = h("div", { class: "sheet-dim", "data-sheet": "dim" });
+		const sheet = h(
+			"div",
+			{ class: "sheet", role: "dialog", "aria-modal": "true", "aria-labelledby": "sheetTitle" },
+			h("h3", { id: "sheetTitle" }, title),
+			...lines,
+			h("div", { class: "sheet-row" }, ...buttons.map((button) => h("button", { type: "button", class: button.primary ? "pri" : null, "data-sheet": button.key }, button.label))),
+		);
+		const onKey = (event) => {
+			if (event.key === "Escape") dismiss();
+		};
+		const dismiss = () => closeSheet(dim, sheet, onKey, returnFocus);
+		dim.addEventListener("click", dismiss);
+		for (const button of buttons) {
+			sheet.querySelector(`[data-sheet="${button.key}"]`).addEventListener("click", (event) => {
+				event.currentTarget.disabled = true;
+				dismiss();
+				void button.onTap();
+			});
+		}
+		document.body.append(dim, sheet);
+		document.addEventListener("keydown", onKey);
+		(sheet.querySelector(".pri") || sheet.querySelector("button")).focus();
 	}
 
 	function reopenSession() {
@@ -1035,35 +1197,125 @@
 	}
 
 	function openReopenSheet(send) {
-		const returnFocus = document.activeElement;
-		const dim = h("div", { class: "sheet-dim", "data-sheet": "dim" });
-		const sheet = h(
-			"div",
-			{ class: "sheet", role: "dialog", "aria-modal": "true", "aria-labelledby": "sheetTitle" },
-			h("h3", { id: "sheetTitle" }, "세션이 꺼져 있습니다"),
-			h("p", null, "다시 열면 이 답을 바로 전달합니다."),
-			h("div", { class: "sheet-row" },
-				h("button", { type: "button", class: "pri", "data-sheet": "reopen" }, "다시 열고 보내기"),
-				h("button", { type: "button", "data-sheet": "later" }, "나중에 전달"),
-			),
-		);
-		const onKey = (event) => {
-			if (event.key === "Escape") closeReopenSheet(dim, sheet, onKey, returnFocus);
-		};
-		const dismiss = () => closeReopenSheet(dim, sheet, onKey, returnFocus);
-		dim.addEventListener("click", dismiss);
-		sheet.querySelector('[data-sheet="later"]').addEventListener("click", () => {
-			dismiss();
-			void send();
+		openSheet({
+			title: "세션이 꺼져 있습니다",
+			lines: [h("p", null, "다시 열면 이 답을 바로 전달합니다.")],
+			buttons: [
+				{ key: "reopen", label: "다시 열고 보내기", primary: true, onTap: async () => { if (await send() === true) await reopenSession(); } },
+				{ key: "later", label: "나중에 전달", primary: false, onTap: () => send() },
+			],
 		});
-		sheet.querySelector('[data-sheet="reopen"]').addEventListener("click", async (event) => {
-			event.currentTarget.disabled = true;
-			dismiss();
-			if (await send() === true) await reopenSession();
+	}
+
+	// ---------- next actions ----------
+
+	// warnings: the verdict's warnings, or the ones a 409 confirm_required answered with (then returnFocus is the tapped button).
+	function openCloseSheet(item, action, warnings, returnFocus) {
+		openSheet({
+			title: "세션을 닫을까요?",
+			lines: [h("ul", null, ...warnings.map((warning) => h("li", null, warning)))],
+			buttons: [
+				{ key: "close", label: "닫기", primary: true, onTap: () => postAction(item, action, { confirm: true }) },
+				{ key: "cancel", label: "취소", primary: false, onTap: () => {} },
+			],
+			...(returnFocus ? { returnFocus } : {}),
 		});
-		document.body.append(dim, sheet);
-		document.addEventListener("keydown", onKey);
-		sheet.querySelector('[data-sheet="reopen"]').focus();
+	}
+
+	function openNewSessionSheet(item, next, action) {
+		const plan = next.facts && next.facts.plan && typeof next.facts.plan === "object" ? next.facts.plan : null;
+		openSheet({
+			title: "새 세션에서 실행할까요?",
+			lines: [h("div", { class: "facts" }, h("p", null, `폴더 · ${plan ? String(plan.root ?? "") : ""}`), h("p", null, `첫 메시지 · ${String(action.prompt ?? "")}`))],
+			buttons: [
+				{
+					key: "launch",
+					label: "실행",
+					primary: true,
+					onTap: () => {
+						setComposeStatus("새 세션을 여는 중입니다.", false);
+						return postAction(item, action, {});
+					},
+				},
+				{ key: "cancel", label: "취소", primary: false, onTap: () => {} },
+			],
+		});
+	}
+
+	function actionFailText(res, body) {
+		const error = body && typeof body === "object" ? body.error : null;
+		if (ACTION_ERROR[error]) return ACTION_ERROR[error];
+		if (res.status === 503) return ACTION_ERROR.no_launcher;
+		if (res.status === 502) return ACTION_ERROR.launch_failed;
+		if (res.status === 403) return ACTION_ERROR.forbidden;
+		return failText(res, body);
+	}
+
+	// POST /api/items/<id>/action {action, confirm?}; true when the server took it. A confirm_required answer opens the
+	// close sheet with the server's warnings; stale shows its line and refreshes at once.
+	async function postAction(item, action, extra) {
+		if (ui.nextBusy) return false;
+		const tapped = document.activeElement;
+		setNextBusy(true);
+		try {
+			const res = await postJson(`/api/items/${encodeURIComponent(idOf(item))}/action`, { action: action.id, ...extra });
+			const body = await readJson(res);
+			if (res.ok) {
+				const via = body && typeof body === "object" ? body.via : null;
+				if (action.kind === "close") setComposeStatus(via === "offline" ? "세션을 닫았습니다." : "세션을 닫는 중입니다.", false);
+				else if (action.kind === "new-session") {
+					const session = body && typeof body.session === "string" ? body.session : "";
+					els.composeStatus.classList.remove("error");
+					els.composeStatus.replaceChildren("새 세션을 열었습니다. ", session ? h("a", { href: `/s/${encodeURIComponent(session)}` }, "열기") : null);
+				} else setComposeStatus("", false);
+				await load();
+				return true;
+			}
+			const error = body && typeof body === "object" ? body.error : null;
+			if (res.status === 409 && error === "confirm_required") {
+				const warnings = (Array.isArray(body.warnings) ? body.warnings : []).map((warning) => String(warning)).filter(Boolean);
+				setComposeStatus("", false);
+				setNextBusy(false);
+				openCloseSheet(item, action, warnings, tapped && els.nextActions.contains(tapped) ? tapped : null);
+				return false;
+			}
+			if (res.status === 409 && error === "stale") {
+				setComposeStatus(STALE_TEXT, false);
+				await load();
+				return false;
+			}
+			setComposeStatus(actionFailText(res, body), true);
+			return false;
+		} catch (error) {
+			console.error("thread: action failed", error);
+			setComposeStatus(FAILED_TEXT, true);
+			return false;
+		} finally {
+			setNextBusy(false);
+		}
+	}
+
+	// continue goes like a reply (the reopen sheet first when the session is off); close asks when the verdict carries
+	// warnings; new-session always asks; run posts at once.
+	function runNext(item, next, action) {
+		if (action.kind === "continue") return gateSend(() => postAction(item, action, {}));
+		if (action.kind === "close") {
+			const warnings = (Array.isArray(next.warnings) ? next.warnings : []).map((warning) => String(warning)).filter(Boolean);
+			if (warnings.length) return openCloseSheet(item, action, warnings);
+			return postAction(item, action, {});
+		}
+		if (action.kind === "new-session") return openNewSessionSheet(item, next, action);
+		return postAction(item, action, {});
+	}
+
+	function onNextClick(event) {
+		const button = event.target.closest("[data-next]");
+		if (!button || button.disabled || ui.nextBusy) return;
+		const target = nextItem();
+		const next = target ? nextOf(target) : null;
+		const id = button.getAttribute("data-next");
+		const action = nextActionsOf(next).find((entry) => entry.id === id);
+		if (target && action) void runNext(target, next, action);
 	}
 
 	async function sendComposer(text, fromQuick, bypassGate = false) {
@@ -1507,6 +1759,7 @@
 		const button = event.target.closest("[data-quick]");
 		if (button && !button.disabled) sendComposer(button.getAttribute("data-quick"), true);
 	});
+	els.nextActions.addEventListener("click", onNextClick);
 	window.addEventListener("hashchange", () => {
 		ui.hit = null;
 		applyHash();

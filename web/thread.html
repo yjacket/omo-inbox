@@ -198,6 +198,10 @@
 		.sheet-row { display: flex; gap: 8px; }
 		.sheet-row button { flex: 1; min-height: 44px; border-radius: var(--r-ctl); border: 1px solid var(--line); background: var(--wash-1); color: var(--ink); font: inherit; }
 		.sheet-row .pri { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+		/* the close sheet's warnings and the new-session sheet's 폴더 · / 첫 메시지 · facts, spaced like the sheet's paragraph */
+		.sheet ul { margin: 0 0 14px; padding-left: var(--s5); color: var(--ink-2); }
+		.sheet .facts { display: grid; gap: var(--s1); margin: 0 0 14px; color: var(--ink-2); overflow-wrap: anywhere; }
+		.sheet .facts p { margin: 0; }
 		.chip {
 			display: inline-flex;
 			align-items: center;
@@ -353,6 +357,8 @@
 		.noanswer, .hint { color: var(--ink-3); }
 		.body { margin: var(--s2) 0 0; white-space: pre-wrap; }
 		.ask { margin: var(--s2) 0 0; font-weight: 600; }
+		/* 다음 · <reason>: the verdict on a final, under the ask */
+		.next { margin: var(--s2) 0 0; font-size: var(--fs-cap); font-weight: 600; color: var(--ink-2); }
 		.term {
 			font: inherit;
 			color: inherit;
@@ -544,6 +550,31 @@
 		.quick button:hover:not(:disabled) { background: var(--wash-2); }
 		.quick button:disabled { color: var(--ink-3); cursor: default; }
 		.quick button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+		/* next actions: the primary in the accent, the others as outlined controls, a ghost 세션 닫기 pushed apart by a gap */
+		.next-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
+		.next-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			min-height: var(--tap);
+			padding: 0 var(--s4);
+			font-size: var(--fs-cap);
+			font-weight: 600;
+			color: var(--ink);
+			background: var(--bg);
+			border: 1px solid var(--line);
+			border-radius: var(--r-ctl);
+			white-space: nowrap;
+			cursor: pointer;
+			transition: background-color var(--t-micro), filter var(--t-micro);
+		}
+		.next-btn:hover:not(:disabled) { background: var(--wash-2); }
+		.next-btn:disabled { opacity: 0.5; cursor: default; }
+		.next-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+		.next-btn.primary { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 700; }
+		.next-btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.06); }
+		.next-btn.ghost { margin-left: auto; color: var(--ink-2); background: transparent; }
+		.next-btn.ghost:hover:not(:disabled) { color: var(--ink); background: var(--wash-1); }
 		.compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2); align-items: end; }
 		.compose textarea { max-height: 7.5em; }
 		.composer .status { margin: var(--s1) 0 0; }
@@ -590,6 +621,7 @@
 				<button type="button" data-quick="진행">진행</button>
 				<button type="button" data-quick="멈춰">멈춰</button>
 			</div>
+			<div class="next-actions" id="nextActions" hidden></div>
 			<form class="compose" id="compose">
 				<textarea id="reply" rows="1" placeholder="답장" aria-label="답장"></textarea>
 				<button type="submit" class="btn" id="send">보내기</button>
