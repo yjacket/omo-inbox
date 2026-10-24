@@ -4,7 +4,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { layout, readConfig } from "./paths.mjs";
+import { layout, readConfig, safeSegment } from "./paths.mjs";
 import { identityFor, normPath } from "./identity.mjs";
 import { validateBoard } from "./board.mjs";
 import { classify, ALLOW, postGuard } from "./access.mjs";
@@ -17,15 +17,18 @@ import { createStallWatch, stallMsFrom } from "./stall.mjs";
 import { redact } from "./redact.mjs";
 import { buildPushPayload, cacheReminderAt, createScheduler, pushPlan, summaryWaitDeadline, topicFor, CACHE_LEAD_MINUTES } from "./policy.mjs";
 import { isExpired, noticeItemInput, validateNotice } from "./notices.mjs";
-import { createReopener } from "./reopen.mjs";
+import { createReopener, uuidv7 } from "./reopen.mjs";
 import { createIssuesStore } from "./issues-store.mjs";
 import { createIssuesHttp, ISSUE_PAGE, ISSUE_UUID } from "./issues-http.mjs";
+import { computeNext, finalText, planSlugOf, validateProviderActions } from "./next.mjs";
+import { probeFacts } from "./facts.mjs";
 
 const BODY_LIMIT = 30 * 1024 * 1024;
 const URL_LIMIT = 30000;
 const IDENTITY_TTL_MS = 60_000;
 const LIVE_WINDOW_MS = 90_000;
 const PROBE_TIMEOUT_MS = 3000;
+const NEXT_STALE_MS = 30_000;
 const ASIDE_FALLBACK = "C:\\Program Files\\Aside\\Application\\Aside.exe";
 const NAME = "omo-inbox";
 
@@ -55,14 +58,14 @@ const CSP =
 const PAGE_HEADERS = { "content-security-policy": CSP };
 const ITEM_KINDS = new Set(["question", "permission", "turn", "blocked", "done", "progress", "board", "notice"]);
 const POLICIES = new Set(["needs-you", "progress", "quiet", "fyi"]);
-const DELIVERED_HOWS = new Set(["bridge", "message", "late-message", "dropped", "refused"]);
+const DELIVERED_HOWS = new Set(["bridge", "message", "late-message", "dropped", "refused", "control"]);
 const BRIDGE_STATES = new Set(["live", "detached", "terminal-only", "none"]);
 const PERMISSION_CHOICES = ["Allow once", "Deny", "Deny with feedback"];
 const UNCONFIRMED_MS = 60_000;
 const OVERDUE_LIMIT_MS = 60 * 60_000;
 const DEFAULT_SUMMARY = { enabled: true, models: ["anthropic-subscription/claude-sonnet-5", "chatgpt-subscription/gpt-6-luna-fast", "anthropic-subscription/claude-haiku-4-5"] };
 const THREAD_EXTRA_KEYS = ["sessionName", "lastRequest", "model", "sessionFile"];
-const THREAD_META_KEYS = ["cwd", "firstRequest", "ended", "title", "product", "feature", "worktree", "branch", "sessionFile"];
+const THREAD_META_KEYS = ["cwd", "firstRequest", "ended", "title", "product", "feature", "worktree", "branch", "sessionFile", "executes"];
 
 const nonBlank = (value) => typeof value === "string" && value.trim() !== "";
 const HANGUL_RE = /[가-힣]/;
@@ -135,6 +138,10 @@ function lastActivityAt(events) {
 function episodeFinalOf(item) {
 	const episode = item?.meta?.episode;
 	return episode && typeof episode === "object" && typeof episode.closeReason === "string" && episode.closeReason ? episode : null;
+}
+
+function isFinal(item) {
+	return (item?.kind === "turn" || item?.kind === "done" || item?.kind === "blocked") && item?.policy === "needs-you";
 }
 
 // The thread payload stays small: progress lines and episode finals keep their request but lose
@@ -334,6 +341,7 @@ export function createServer({
 	clearTimer = clearTimeout,
 	onIdle = () => {},
 	reopener = null,
+	onNextComputed = () => {},
 } = {}) {
 	if (!home) throw fail("bad_input", "home is required");
 	const cfg = { v: 1, port, publicBase: null, pcTailnetIps: [], owner: null, ...config };
@@ -355,6 +363,7 @@ export function createServer({
 	const aside = asidePath ?? asideExe();
 	const lastSeen = new Map();
 	const byeAt = new Map();
+	const closingReason = new Map();
 	const idleSessions = new Map();
 	const identityCache = new Map();
 	const reopenSessions = reopener ?? createReopener({ env: process.env, log: (line) => appendLog(dir.logs, "reopen: " + line) });
@@ -388,6 +397,7 @@ export function createServer({
 	const pushDeferred = new Set();
 	const firedCache = new Set();
 	const threadExtra = new Map();
+	const liveWatch = new Map();
 
 	const sendJson = (res, status, body) => {
 		const text = JSON.stringify(body);
@@ -868,6 +878,74 @@ export function createServer({
 		if (created?.item?.itemId) summaryAsked.delete(created.item.itemId);
 	}
 
+	function newestOpenFinal(items) {
+		for (let i = items.length - 1; i >= 0; i -= 1) {
+			if (items[i].status === "open" && isFinal(items[i])) return items[i];
+		}
+		return null;
+	}
+
+	function staleNext(item) {
+		const at = Date.parse(item?.next?.at);
+		return !item?.next || !Number.isFinite(at) || nowMs() - at >= NEXT_STALE_MS;
+	}
+
+	// Close waits for in-flight probes so a test's temp cwd is not removed under a git child.
+	const pendingNext = new Set();
+	function trackNext(promise) {
+		pendingNext.add(promise);
+		promise.then(() => pendingNext.delete(promise), () => pendingNext.delete(promise));
+		return promise;
+	}
+
+	// Compute one verdict from the final's own text/summary and the facts of the thread's cwd.
+	// The actionable final of a thread is always the ended verdict, whoever asks for the refresh.
+	async function refreshNext(sid, itemId) {
+		try {
+			const item = threads.getItem(itemId);
+			if (!isFinal(item)) return null;
+			const ended = threads.actionableFinal(sid)?.itemId === itemId;
+			const { thread } = threads.getThread(sid);
+			const facts = await probeFacts({ cwd: thread.cwd, worktree: thread.worktree, slug: planSlugOf(finalText(item)) });
+			const watch = isLive(sid) ? (liveWatch.get(sid) ?? item.meta?.watch ?? 0) : (item.meta?.watch ?? 0);
+			const next = computeNext({
+				item,
+				summary: item.summary,
+				thread: { ...thread, executes: thread.executes ?? threads.handoffFrom(sid)?.slug ?? null },
+				facts: { ...facts, watch },
+				providerActions: threads.providerActions(sid),
+				live: ended ? false : isLive(sid) || isRecent(sid),
+				ended,
+				now: now(),
+			});
+			threads.setNext(itemId, next);
+			try {
+				await onNextComputed(itemId);
+			} catch (error) {
+				appendLog(dir.logs, `next hook failed: ${error && error.stack ? error.stack : error}`);
+			}
+			return next;
+		} catch (error) {
+			appendLog(dir.logs, `next refresh failed: ${error && error.stack ? error.stack : error}`);
+			return null;
+		}
+	}
+
+	// One probe at a time, so a restart with many stored finals does not spawn a git per thread at once.
+	async function refreshStoredNexts() {
+		for (const row of threads.list()) {
+			try {
+				const { items } = threads.getThread(row.session);
+				const open = newestOpenFinal(items);
+				const item = open ?? threads.actionableFinal(row.session);
+				if (!item || item.next) continue;
+				await refreshNext(row.session, item.itemId);
+			} catch (error) {
+				appendLog(dir.logs, `next rebuild failed: ${error && error.stack ? error.stack : error}`);
+			}
+		}
+	}
+
 	// Dedupe, store the heuristic summary at once, arm the hold-off push and say whether the model should summarize.
 	function addItem(sid, input) {
 		const { item, created } = threads.createItem(sid, input);
@@ -886,6 +964,7 @@ export function createServer({
 			summaryRequest = stored.kind === "progress" ? buildLineRequest(stored, info) : buildSummaryRequest(stored, info, episodeOptions(sid, stored));
 		}
 		if (summaryRequest) summaryAsked.set(stored.itemId, nowMs());
+		if (isFinal(stored)) trackNext(refreshNext(sid, stored.itemId));
 		return { item: stored, created, summaryRequest };
 	}
 
@@ -941,6 +1020,15 @@ export function createServer({
 	}
 
 	async function handleThreadPost(res, req, sid, action, body, access) {
+		if (action === "actions") {
+			if (!guard(res, access, "session")) return;
+			const checked = validateProviderActions({ v: 1, producer: body.producer, actions: body.actions });
+			if (!checked.ok) return sendJson(res, 400, { error: "bad_input", details: checked.errors });
+			threads.setActions(sid, checked.value.producer, checked.value.actions);
+			const open = newestOpenFinal(threads.getThread(sid).items);
+			if (open) trackNext(refreshNext(sid, open.itemId));
+			return sendJson(res, 200, { ok: true });
+		}
 		if (action === "message" || action === "read") {
 			if (!guard(res, access, "feedback")) return;
 			const view = threads.getThread(sid);
@@ -1062,6 +1150,98 @@ export function createServer({
 		return sendJson(res, 200, { ok: true, thread: threads.setMeta(sid, meta) });
 	}
 
+	function answerFreeMessage(sid, text) {
+		const view = threads.getThread(sid);
+		let target = [...view.items].reverse().find((item) => item.kind === "turn" && item.status === "open");
+		target ??= threads.createItem(sid, { kind: "turn", policy: "quiet", raw: { text: null, synthetic: true }, meta: { synthetic: true } }).item;
+		const result = threads.answer(target.itemId, { text }, { text });
+		cancelPushes(target.itemId);
+		return { result, target };
+	}
+
+	async function handleItemAction(res, itemId, body, access) {
+		if (!guard(res, access, "reopen")) return;
+		const actionId = typeof body.action === "string" ? body.action : null;
+		if (!actionId) return sendJson(res, 400, { error: "bad_input" });
+		let item;
+		try {
+			item = threads.getItem(itemId);
+		} catch (error) {
+			if (error && error.code === "not_found") return sendJson(res, 404, { error: "not_found" });
+			throw error;
+		}
+		const sid = item.session;
+		const actionable = threads.actionableFinal(sid);
+		const isActionable = actionable !== null && actionable.itemId === itemId;
+		if (item.status !== "open" && !isActionable) return sendJson(res, 409, { error: "closed", reason: item.closedReason ?? item.status });
+		if (isActionable && actionId === "close") return sendJson(res, 409, { error: "closed", reason: item.closedReason ?? item.status });
+		const listed = Array.isArray(item.next?.actions) ? item.next.actions.find((action) => action.id === actionId) : null;
+		if (!listed) return sendJson(res, 400, { error: "bad_input" });
+		const live = isLive(sid) || isRecent(sid);
+
+		if (isActionable && listed.kind === "continue") {
+			const { result } = answerFreeMessage(sid, listed.prompt);
+			return sendJson(res, 200, { ok: true, via: "message", deliveryId: result.deliveryId, off: true });
+		}
+		if (isActionable && listed.kind === "run") return sendJson(res, 409, { error: "off" });
+
+		const needsFresh = listed.id === "close" || listed.id === "commit-push" || listed.id === "push" || listed.id === "new-session";
+		let next = item.next;
+		let chosen = listed;
+		if (needsFresh) {
+			const fresh = await refreshNext(sid, itemId);
+			if (fresh) {
+				next = fresh;
+				chosen = Array.isArray(fresh.actions) ? fresh.actions.find((action) => action.id === listed.id) : null;
+			}
+			if (!chosen) {
+				if (listed.id === "new-session" && !next?.facts?.plan) return sendJson(res, 409, { error: "plan_missing" });
+				return sendJson(res, 409, { error: "stale", next });
+			}
+		}
+
+		if (listed.id === "close") {
+			const warnings = Array.isArray(next?.warnings) ? next.warnings : [];
+			if (warnings.length && body.confirm !== true) return sendJson(res, 409, { error: "confirm_required", warnings });
+			if (live) {
+				closingReason.set(sid, "closed-by-owner");
+				const result = threads.answerControl(itemId, { action: "close", label: chosen.label });
+				return sendJson(res, 200, { ok: true, via: "session", deliveryId: result.deliveryId });
+			}
+			threads.closeOffline(sid);
+			for (const entry of threads.getThread(sid).items) cancelPushes(entry.itemId);
+			return sendJson(res, 200, { ok: true, via: "offline" });
+		}
+
+		if (listed.id === "new-session") {
+			const plan = next?.facts?.plan;
+			const expected = plan ? `/skill:ulw-execute ${plan.slug}` : null;
+			if (!plan || chosen.prompt !== expected || !fs.existsSync(plan.path)) return sendJson(res, 409, { error: "plan_missing" });
+			const newSid = uuidv7();
+			const result = await reopenSessions.launch({ sid: newSid, folder: plan.root, message: chosen.prompt });
+			if (!result || !result.ok) {
+				const error = result?.error ?? "launch_failed";
+				const status = error === "no_launcher" ? 503 : error === "launch_failed" ? 502 : 409;
+				return sendJson(res, status, { error });
+			}
+			threads.answerAction(itemId, { action: "new-session", label: chosen.label, detail: "launched" });
+			threads.addHandoff(sid, { itemId, to: newSid, via: result.via, status: "launching", slug: plan.slug });
+			if (!live) threads.closeOffline(sid, "handed-off");
+			return sendJson(res, 200, { ok: true, via: result.via, session: newSid });
+		}
+
+		if (listed.kind === "run") {
+			if (!live) return sendJson(res, 409, { error: "off" });
+			const result = threads.answerControl(itemId, { action: "run", label: chosen.label, producer: chosen.producer, key: chosen.key });
+			return sendJson(res, 200, { ok: true, via: "session", deliveryId: result.deliveryId });
+		}
+		if (listed.kind === "continue") {
+			const { result } = answerFreeMessage(sid, chosen.prompt);
+			return sendJson(res, 200, { ok: true, via: "message", deliveryId: result.deliveryId, off: !live });
+		}
+		return sendJson(res, 400, { error: "bad_input" });
+	}
+
 	function handleItemPost(res, req, itemId, action, body, access) {
 		if (action === "answer" || action === "explain") {
 			if (!guard(res, access, "feedback")) return;
@@ -1096,9 +1276,10 @@ export function createServer({
 			const summary = finalizeSummary(validated, item, summaryThread(item.session));
 			threads.addSummary(itemId, summary, "model", typeof body.model === "string" ? body.model : null, body.simpler === true);
 			summaryAsked.delete(itemId);
+			const refresh = isFinal(item) ? trackNext(refreshNext(item.session, itemId)) : Promise.resolve();
 			if (pushDeferred.delete(itemId)) {
 				scheduler.cancel(`wait:${itemId}`);
-				fireItem(itemId, { force: true });
+				refresh.finally(() => fireItem(itemId, { force: true }));
 			}
 			// One repair per item and request: a repair post is never linted again.
 			if (body.repair === true) return sendJson(res, 200, { ok: true, summary });
@@ -1231,6 +1412,10 @@ export function createServer({
 				expireNotices(sid);
 				const since = Number.parseInt(query.get("since") || "0", 10) || 0;
 				const data = threads.getThread(sid, since);
+				const openFinal = newestOpenFinal(data.items);
+				const actionable = threads.actionableFinal(sid);
+				if (openFinal && staleNext(openFinal)) trackNext(refreshNext(sid, openFinal.itemId));
+				if (actionable && actionable.itemId !== openFinal?.itemId && staleNext(actionable)) trackNext(refreshNext(sid, actionable.itemId));
 				return sendJson(res, 200, { thread: threadView(data.thread), items: liteRequests(data.items.map((item) => itemView(item, true))), events: data.events.map(eventView) });
 			}
 			if (parts[2] === "threads" && parts.length === 6 && parts[4] === "episodes") {
@@ -1315,6 +1500,21 @@ export function createServer({
 		if (session) {
 			lastSeen.set(session, nowMs());
 			persistLastSeen();
+			const from = threads.handoffFrom(session);
+			if (from && from.status === "launching") {
+				threads.addHandoff(from.sid, { itemId: from.itemId, to: session, via: from.via, status: "connected", slug: from.slug });
+				if (isLive(from.sid)) {
+					closingReason.set(from.sid, "handed-off");
+					threads.writeControl(from.sid, { itemId: from.itemId, action: "close" });
+				} else {
+					threads.closeOffline(from.sid, "handed-off");
+				}
+			}
+			const watch = query.get("watch");
+			if (watch != null && /^\d{1,2}$/.test(watch)) {
+				const value = Number(watch);
+				if (value >= 0 && value <= 99) liveWatch.set(session, value);
+			}
 			const idle = query.get("idle");
 			if (idle === "0" || idle === "1") {
 				const isIdle = idle === "1";
@@ -1393,7 +1593,9 @@ export function createServer({
 			return handleThreadPost(res, req, decodeOnce(parts[3]), parts[4], body, access);
 		}
 		if (parts[1] === "api" && parts[2] === "items" && parts.length === 5) {
-			return handleItemPost(res, req, decodeOnce(parts[3]), parts[4], body, access);
+			const itemId = decodeOnce(parts[3]);
+			if (parts[4] === "action") return handleItemAction(res, itemId, body, access);
+			return handleItemPost(res, req, itemId, parts[4], body, access);
 		}
 		if (parts[1] === "api" && parts[2] === "notices" && parts.length === 3) {
 			if (!guard(res, access, "session")) return;
@@ -1422,6 +1624,8 @@ export function createServer({
 			// A quit or a switch to another session (never a reload) ends the thread: its open items close (끝남)
 			// and its episode watchdogs stop.
 			if (typeof body.session === "string" && body.closed === true) {
+				const reason = closingReason.get(body.session) ?? "session-closed";
+				closingReason.delete(body.session);
 				try {
 					for (const item of threads.getThread(body.session).items) {
 						const key = item.meta?.episode?.key;
@@ -1431,9 +1635,11 @@ export function createServer({
 					// an unknown session has no timers to cancel; anything else is a bug worth a log line
 					if (!error || error.code !== "not_found") appendLog(dir.logs, `bye cleanup failed: ${error && error.stack ? error.stack : error}`);
 				}
-				if (threads.closeSession(body.session) > 0) {
+				if (threads.closeSession(body.session, reason) > 0) {
 					for (const item of threads.getThread(body.session).items) cancelPushes(item.itemId);
 				}
+				const final = threads.actionableFinal(body.session);
+				if (final) trackNext(refreshNext(body.session, final.itemId));
 			}
 			return sendJson(res, 200, { ok: true });
 		}
@@ -1665,12 +1871,18 @@ export function createServer({
 				} catch (error) {
 					appendLog(dir.logs, `stall rebuild failed: ${error && error.stack ? error.stack : error}`);
 				}
+				trackNext(refreshStoredNexts());
 				resolve({ port: actualPort });
 			};
 			httpServer.once("error", onError);
 			httpServer.once("listening", onListening);
 			httpServer.listen(port, host);
 		});
+	}
+
+	// Resolves once every next computation scheduled so far has settled (tests await this instead of sleeping).
+	async function drain() {
+		while (pendingNext.size) await Promise.allSettled([...pendingNext]);
 	}
 
 	function close() {
@@ -1681,15 +1893,16 @@ export function createServer({
 			// a lock already released by a failed startup is not an error at shutdown
 		}
 		return new Promise((resolve) => {
+			const finish = () => Promise.allSettled([...pendingNext]).then(() => resolve());
 			if (!httpServer.listening) {
-				resolve();
+				finish();
 				return;
 			}
-			httpServer.close(() => resolve());
+			httpServer.close(finish);
 		});
 	}
 
-	return { listen, close, store, threads, scheduler, issues, buildInfo };
+	return { listen, close, drain, store, threads, scheduler, issues, buildInfo };
 }
 
 async function probeHealth(port) {

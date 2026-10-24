@@ -446,6 +446,7 @@ test("a full issue lifecycle leaves proposals, threads and mailbox bytes untouch
 	const ctx = await withServer(t);
 	const proposalId = await submitBoard(ctx);
 	await post(ctx, "/api/threads/s1/items", { kind: "turn", policy: "needs-you", dedupeKey: "turn:s1:1", raw: { text: "확인" } });
+	await ctx.server.drain();
 	const storeId = await storeIdOf(ctx);
 	const before = snapshot(ctx.home);
 	const proposalBytes = fs.readFileSync(path.join(ctx.home, "data", "proposals", proposalId, "proposal.json"));

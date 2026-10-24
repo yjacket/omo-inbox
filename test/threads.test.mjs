@@ -831,6 +831,25 @@ test("answerControl answers the item and writes exactly the control contract", (
 	}
 });
 
+test("answerAction bubbles the owner's answer and delivers it without a control file", () => {
+	const { home, cleanup, threads } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "turn", policy: "needs-you" });
+		const sent = threads.answerAction(item.itemId, { action: "new-session", label: "새 세션에서 실행", detail: "launched" });
+		const answered = threads.getItem(item.itemId);
+		assert.equal(answered.status, "delivered");
+		assert.deepEqual(answered.answers.at(-1).payload, { action: "new-session", text: "새 세션에서 실행" });
+		assert.deepEqual(answered.deliveredIds, [sent.deliveryId]);
+		const delivered = threads.getThread(SID).events.filter((event) => event.type === "delivered" && event.deliveryId === sent.deliveryId);
+		assert.equal(delivered.length, 1);
+		assert.equal(delivered[0].how, "control");
+		assert.equal(delivered[0].detail, "launched");
+		assert.equal(fs.existsSync(path.join(home, "control", safeSegment(SID), `${sent.deliveryId}.json`)), false);
+	} finally {
+		cleanup();
+	}
+});
+
 test("writeControl writes the control file without an answer event", () => {
 	const { home, cleanup, threads } = setup();
 	try {
@@ -842,6 +861,23 @@ test("writeControl writes the control file without an answer event", () => {
 		assert.deepEqual(threads.getItem(item.itemId).answers, []);
 		const control = JSON.parse(fs.readFileSync(path.join(home, "control", safeSegment(SID), `${sent.deliveryId}.json`), "utf8"));
 		assert.deepEqual(Object.keys(control).sort(), ["action", "deliveryId", "issuedAt", "itemId", "type", "v"]);
+		assert.equal(control.action, "run");
+	} finally {
+		cleanup();
+	}
+});
+
+test("a control for an unsafe session id lands under its safe segment", () => {
+	const sid = "a/b:c";
+	const { home, cleanup, threads } = setup();
+	try {
+		const sent = threads.writeControl(sid, { itemId: "i-000000-aaaaaa", action: "run" });
+		assert.equal(safeSegment(sid), "a_b_c");
+		const dir = path.join(home, "control", safeSegment(sid));
+		assert.deepEqual(fs.readdirSync(path.join(home, "control")), [safeSegment(sid)]);
+		const file = path.join(dir, `${sent.deliveryId}.json`);
+		const control = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.equal(control.itemId, "i-000000-aaaaaa");
 		assert.equal(control.action, "run");
 	} finally {
 		cleanup();

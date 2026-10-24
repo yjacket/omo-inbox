@@ -630,6 +630,25 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 		return { deliveryId };
 	}
 
+	// A handled action still shows the owner's answer bubble, but no session needs to consume a control file.
+	function answerAction(itemId, { action, label, how = "control", detail = null } = {}) {
+		const ref = requireItem(itemId);
+		const entry = threads.get(ref.sid);
+		const deliveryId = pick(12);
+		writeEvent(entry, {
+			type: "answer",
+			itemId,
+			answerId: `a-${pick(8)}`,
+			deliveryId,
+			payload: { action, text: label },
+			via: null,
+			client: null,
+			ua: null,
+		});
+		writeEvent(entry, { type: "delivered", itemId, deliveryId, how, detail });
+		return { deliveryId };
+	}
+
 	function delivered(itemId, deliveryId, how, detail = null) {
 		const ref = requireItem(itemId);
 		writeEvent(threads.get(ref.sid), { type: "delivered", itemId, deliveryId, how, detail });
@@ -801,6 +820,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 		addHandoff,
 		handoffFrom,
 		answerControl,
+		answerAction,
 		writeControl,
 		actionableFinal,
 		cache,
