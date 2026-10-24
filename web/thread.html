@@ -485,7 +485,24 @@
 			border-radius: var(--r-ctl);
 			cursor: pointer;
 		}
-		.foot [data-action="report"] { min-width: var(--tap); min-height: var(--tap); }
+		.report-entry { display: flex; margin-top: var(--s2); }
+		.report-entry .text {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			min-width: var(--tap);
+			min-height: var(--tap);
+			padding: 0 var(--s2);
+			font-size: var(--fs-cap);
+			font-weight: 600;
+			color: var(--ink-2);
+			background: transparent;
+			border: 0;
+			border-radius: var(--r-ctl);
+			cursor: pointer;
+		}
+		.report-entry .text:hover:not(:disabled) { background: var(--wash-1); color: var(--ink); }
+		.report-entry .text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 		.foot .text:hover:not(:disabled) { background: var(--wash-1); color: var(--ink); }
 		.foot .text:disabled { color: var(--ink-3); cursor: default; }
 		.foot .text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
