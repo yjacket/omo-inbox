@@ -510,7 +510,14 @@
 						at ? h("time", { class: "time", datetime: at, "data-at": at }, relativeTime(at)) : null,
 						unread ? h("span", { class: "dot", role: "img", "aria-label": "안 읽음" }) : null,
 					),
-					h("div", { class: "meta" }, chipOf(row), row.off ? h("span", { class: "chip chip-ended off" }, "세션 꺼짐") : null, where ? h("span", { class: "where" }, where) : null),
+					h(
+						"div",
+						{ class: "meta" },
+						chipOf(row),
+						row.next?.label ? h("span", { class: "chip chip-ended next" }, row.next.label) : null,
+						row.off ? h("span", { class: "chip chip-ended off" }, "세션 꺼짐") : null,
+						where ? h("span", { class: "where" }, where) : null,
+					),
 					fire ? h("span", { class: "fire", "data-until": row.cacheUntil }, fire) : null,
 					line ? h("div", { class: "line" }, line) : null,
 				);
