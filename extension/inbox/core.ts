@@ -24,6 +24,7 @@ import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createActions } from "./actions.ts";
 import { createBridge } from "./bridge.ts";
 import { createCacheTracker } from "./cache.ts";
 import { createCapture } from "./capture.ts";
@@ -77,6 +78,7 @@ export function createInbox(pi, deps = {}) {
 	const timedOut = new Set();
 	let ctx;
 	let sessionId;
+	let closingByOwner = false;
 	let timers = [];
 	let running = false;
 	let staleGeneration = false;
@@ -323,6 +325,7 @@ export function createInbox(pi, deps = {}) {
 		onSummaryRequest: (item, request) => runSummary(item.id, request, false),
 		bridgeState: (requestId) => bridge.bridgeState(requestId),
 	});
+	const actions = createActions({ post: postJson, sessionId: () => sessionId, log });
 	const bridge = createBridge({ log: (text) => void log(text), now, env });
 	bridge.onDialog((dialog) => capture.onPermissionDialog(dialog, ctx));
 	bridge.onDialogClosed((closed) => capture.onPermissionDialog({ id: closed.id, active: false }, ctx));
@@ -390,7 +393,30 @@ export function createInbox(pi, deps = {}) {
 		explain,
 		boardDeliver: deliverBoardFeedback,
 		log,
+		now,
 		sessionId: sessionId ?? null,
+		onControl: async ({ action, itemId, producer, key }) => {
+			if (action === "close") {
+				closingByOwner = true;
+				const handle = env.ORCA_TERMINAL_HANDLE;
+				if (handle) {
+					let closeTab = true;
+					try {
+						const config = JSON.parse(String(await fsImpl.readFile(path.join(home, "config.json"), "utf8")).replace(/^\uFEFF/, ""));
+						closeTab = config?.next?.closeTab !== false;
+					} catch {
+						// missing or broken config: closing the tab stays enabled
+					}
+					if (closeTab) {
+						const child = spawnImpl(await resolveNode(), [path.join(source, "bin", "close-tab.mjs"), "--pid", String(process.pid), "--terminal", handle], { detached: true, stdio: "ignore", windowsHide: true, env });
+						child?.unref?.();
+					}
+				}
+				ctx?.shutdown?.();
+				return;
+			}
+			if (action === "run") pi?.events?.emit?.("inbox:action", { v: 1, producer, key, itemId, session: sessionId });
+		},
 	});
 	let delivery = makeDelivery();
 
@@ -549,7 +575,7 @@ export function createInbox(pi, deps = {}) {
 		} catch {
 			// a broken idle probe reports busy
 		}
-		const url = `${await baseUrl()}/api/here?cwd=${encodeURIComponent(cwd)}&session=${encodeURIComponent(sessionId)}${start ? "&start=1" : ""}&idle=${idle}`;
+		const url = `${await baseUrl()}/api/here?cwd=${encodeURIComponent(cwd)}&session=${encodeURIComponent(sessionId)}${start ? "&start=1" : ""}&idle=${idle}&watch=${capture.watchCount()}`;
 		let response;
 		try {
 			response = await doFetch(url, { headers: { accept: "application/json" }, signal: abortAfter(refreshTimeoutMs) });
@@ -698,6 +724,7 @@ export function createInbox(pi, deps = {}) {
 		// A hook may wait on the network for at most 1.5 s (IS-12): both reads get that
 		// abort and run together, so a hung server cannot stack two 5 s waits here.
 		await Promise.all([status(true, HOOK_TIMEOUT_MS), reportReloadBridgeStates(sessionId, event?.reason === "reload")]);
+		await actions.resend();
 	});
 
 	const onSessionShutdown = safe("session_shutdown", async (event) => {
@@ -712,7 +739,7 @@ export function createInbox(pi, deps = {}) {
 				method: "POST",
 				headers: { "content-type": "application/json", "x-inbox": "1" },
 				// quit / new / resume / fork leave this session; only a reload keeps it.
-				body: JSON.stringify({ session: sessionId, ...(typeof event?.reason === "string" && event.reason !== "reload" ? { closed: true } : {}) }),
+				body: JSON.stringify({ session: sessionId, ...(closingByOwner || (typeof event?.reason === "string" && event.reason !== "reload") ? { closed: true } : {}) }),
 				signal: abortAfter(HOOK_TIMEOUT_MS),
 			});
 		} catch {
@@ -775,7 +802,7 @@ export function createInbox(pi, deps = {}) {
 		const listen = (channel, call) => pi?.events?.on?.(channel, (data) => {
 			if (staleGeneration) return;
 			try {
-				call(data);
+				return call(data);
 			} catch (error) {
 				void log(`${channel}: ${String((error && error.message) || error)}`);
 			}
@@ -791,6 +818,7 @@ export function createInbox(pi, deps = {}) {
 		for (const channel of ["wake_source_state", "continuation_hold_state", "terminal_monitor_state", "goal_continuation_scheduled", "goal_continuation_timer_state"]) listen(channel, (data) => capture.onSignal(channel, data));
 		listen("goal_store_changed", (data) => capture.onGoalStoreChanged(data, ctx));
 		listen("inbox:notice", (data) => capture.onNotice(data, ctx));
+		listen("inbox:actions", (data) => actions.onActions(data));
 		listen("permission_asked", (data) => {
 			const id = data?.id ?? data?.dialogId;
 			if (id) capture.onPermissionDialog({ id: String(id), active: true }, ctx);

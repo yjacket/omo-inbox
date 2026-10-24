@@ -24,6 +24,7 @@ const PAYLOAD = {
 
 function fakePi() {
 	const handlers = new Map();
+	const eventHandlers = new Map();
 	const sent = [];
 	const emitted = [];
 	return {
@@ -36,6 +37,10 @@ function fakePi() {
 				sent.push({ message, opts });
 			},
 			events: {
+				on(channel, handler) {
+					if (!eventHandlers.has(channel)) eventHandlers.set(channel, []);
+					eventHandlers.get(channel).push(handler);
+				},
 				emit(channel, data) {
 					emitted.push({ channel, data });
 				},
@@ -44,8 +49,11 @@ function fakePi() {
 		handlers,
 		sent,
 		emitted,
-		async emit(event, ctx) {
-			for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
+		async emit(event, ctx, data = {}) {
+			for (const handler of handlers.get(event) ?? []) await handler(data, ctx);
+		},
+		async emitEvent(channel, data) {
+			for (const handler of eventHandlers.get(channel) ?? []) await handler(data);
 		},
 	};
 }
@@ -185,7 +193,7 @@ test("session_start registers the 3 s/30 s timers and asks /api/here with start=
 	);
 	const hereReads = () => s.fetchCalls.filter((call) => call.url.includes("/api/here"));
 	assert.equal(hereReads().length, 1);
-	assert.match(hereReads()[0].url, /\/api\/here\?cwd=C%3A%2Fwork%2Fproj&session=s-1&start=1&idle=0$/);
+	assert.match(hereReads()[0].url, /\/api\/here\?cwd=C%3A%2Fwork%2Fproj&session=s-1&start=1&idle=0&watch=0$/);
 	assert.deepEqual(s.statuses.at(-1), ["omo-inbox", "🙋 1"]);
 	await s.tick(30000);
 	assert.equal(hereReads().length, 2);
@@ -199,7 +207,7 @@ test("tool_execution_end refreshes /api/here once after session_start", async ()
 	await s.pi.emit("tool_execution_end", s.ctx);
 	const hereReads = s.fetchCalls.filter((call) => call.url.includes("/api/here"));
 	assert.equal(hereReads.length, 2);
-	assert.match(hereReads[0].url, /start=1&idle=0$/);
+	assert.match(hereReads[0].url, /start=1&idle=0&watch=0$/);
 	assert.doesNotMatch(hereReads[1].url, /start=1/);
 	assert.equal(hereReads[1].opts.signal instanceof AbortSignal, true);
 	s.cleanup();
@@ -273,8 +281,8 @@ test("session_start during a held refresh carries start=1 into the rerun", async
 	assert.equal(hereCalls, 3);
 	// The C8 reload listing (todo 32) is a separate GET; only the /api/here reads are ordered here.
 	const hereReads = s.fetchCalls.filter((call) => call.url.includes("/api/here"));
-	assert.match(hereReads[1].url, /\/api\/here\?.*session=s-1&idle=0$/);
-	assert.match(hereReads[2].url, /\/api\/here\?.*session=s-1&start=1&idle=0$/);
+	assert.match(hereReads[1].url, /\/api\/here\?.*session=s-1&idle=0&watch=0$/);
+	assert.match(hereReads[2].url, /\/api\/here\?.*session=s-1&start=1&idle=0&watch=0$/);
 	s.cleanup();
 });
 
@@ -587,7 +595,7 @@ test("session_start without ctx.cwd falls back to pi.cwd for /api/here", async (
 	await s.pi.emit("session_start", s.ctx);
 	const hereReads = s.fetchCalls.filter((call) => call.url.includes("/api/here"));
 	assert.equal(hereReads.length, 1);
-	assert.match(hereReads[0].url, /\/api\/here\?cwd=C%3A%2Fwork%2Ffrom-pi&session=s-1&start=1&idle=0$/);
+	assert.match(hereReads[0].url, /\/api\/here\?cwd=C%3A%2Fwork%2Ffrom-pi&session=s-1&start=1&idle=0&watch=0$/);
 	assert.deepEqual(s.statuses.at(-1), ["omo-inbox", "🙋 1"]);
 	s.cleanup();
 });
@@ -596,13 +604,13 @@ test("here reports the ctx idle state as idle=1 or idle=0", async () => {
 	const idle = setup();
 	idle.ctx.isIdle = () => true;
 	await idle.pi.emit("session_start", idle.ctx);
-	assert.match(idle.fetchCalls.find((call) => call.url.includes("/api/here")).url, /&idle=1$/);
+	assert.match(idle.fetchCalls.find((call) => call.url.includes("/api/here")).url, /&idle=1&watch=0$/);
 	idle.cleanup();
 
 	const busy = setup();
 	busy.ctx.isIdle = () => false;
 	await busy.pi.emit("session_start", busy.ctx);
-	assert.match(busy.fetchCalls.find((call) => call.url.includes("/api/here")).url, /&idle=0$/);
+	assert.match(busy.fetchCalls.find((call) => call.url.includes("/api/here")).url, /&idle=0&watch=0$/);
 	busy.cleanup();
 });
 
@@ -1607,4 +1615,132 @@ test("with the server unreachable handlers return without awaiting the network a
 	assert.equal(returned, true);
 	assert.equal(h.posts.length, 0, "no post ever reached the server");
 	h.cleanup();
+});
+
+function writeControl(home, payload, name = "control-1.json") {
+	const dir = path.join(home, "control", safeSegment(SESSION));
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(path.join(dir, name), JSON.stringify(payload));
+}
+
+const CONTROL_AT = new Date(1_750_000_000_000).toISOString();
+
+test("a close control shuts the session down once and the reload bye carries closed: true", async () => {
+	const s = setup();
+	let shutdowns = 0;
+	s.ctx.shutdown = () => { shutdowns += 1; };
+	writeControl(s.home, {
+		v: 1,
+		type: "session-control",
+		action: "close",
+		itemId: "i-close",
+		deliveryId: "d-close",
+		issuedAt: CONTROL_AT,
+	});
+	await s.pi.emit("session_start", s.ctx);
+	assert.equal(shutdowns, 0);
+	await s.tick(3000);
+	assert.equal(shutdowns, 1, "the close control shuts the session down");
+	const ack = s.fetchCalls.find((call) => call.url.endsWith("/api/items/i-close/delivered"));
+	assert.ok(ack, "the control is acked");
+	assert.equal(JSON.parse(ack.opts.body).how, "control");
+	await s.pi.emit("session_shutdown", s.ctx, { reason: "reload" });
+	const bye = s.fetchCalls.find((call) => call.url.endsWith("/api/bye"));
+	assert.deepEqual(JSON.parse(bye.opts.body), { session: SESSION, closed: true }, "an owner close overrides a reload reason");
+	s.cleanup();
+});
+
+test("a close control with ORCA_TERMINAL_HANDLE spawns close-tab before shutdown", async () => {
+	const order = [];
+	const s = setup({
+		env: { ORCA_TERMINAL_HANDLE: "term-7" },
+		spawn: (cmd, args, opts) => {
+			order.push("spawn");
+			s.spawned.push({ cmd, args, opts });
+			return { unref() {} };
+		},
+	});
+	s.ctx.shutdown = () => { order.push("shutdown"); };
+	writeControl(s.home, {
+		v: 1,
+		type: "session-control",
+		action: "close",
+		itemId: "i-close",
+		deliveryId: "d-close",
+		issuedAt: CONTROL_AT,
+	});
+	await s.pi.emit("session_start", s.ctx);
+	await s.tick(3000);
+	const close = s.spawned.find((entry) => entry.args?.[0]?.endsWith("close-tab.mjs"));
+	assert.ok(close, "close-tab is spawned");
+	assert.match(close.args[0], /[\\/]bin[\\/]close-tab\.mjs$/);
+	assert.deepEqual(close.args.slice(1), ["--pid", String(process.pid), "--terminal", "term-7"]);
+	assert.deepEqual(close.opts, { detached: true, stdio: "ignore", windowsHide: true, env: { OMO_INBOX_HOME: s.home, ORCA_TERMINAL_HANDLE: "term-7" } });
+	assert.deepEqual(order, ["spawn", "shutdown"], "the tab closes before the session shutdown");
+	s.cleanup();
+});
+
+test("next.closeTab false keeps the tab but still shuts the session down", async () => {
+	const s = setup({ env: { ORCA_TERMINAL_HANDLE: "term-7" } });
+	let shutdowns = 0;
+	s.ctx.shutdown = () => { shutdowns += 1; };
+	writeFileSync(path.join(s.home, "config.json"), JSON.stringify({ next: { closeTab: false } }));
+	writeControl(s.home, {
+		v: 1,
+		type: "session-control",
+		action: "close",
+		itemId: "i-close",
+		deliveryId: "d-close",
+		issuedAt: CONTROL_AT,
+	});
+	await s.pi.emit("session_start", s.ctx);
+	await s.tick(3000);
+	assert.equal(s.spawned.length, 0, "no close-tab spawn");
+	assert.equal(shutdowns, 1);
+	s.cleanup();
+});
+
+test("a run control emits inbox:action with the producer, key and item", async () => {
+	const s = setup();
+	writeControl(s.home, {
+		v: 1,
+		type: "session-control",
+		action: "run",
+		itemId: "i-run",
+		deliveryId: "d-run",
+		issuedAt: CONTROL_AT,
+		producer: "demo",
+		key: "k1",
+	});
+	await s.pi.emit("session_start", s.ctx);
+	await s.tick(3000);
+	const action = s.pi.emitted.find((event) => event.channel === "inbox:action");
+	assert.deepEqual(action, { channel: "inbox:action", data: { v: 1, producer: "demo", key: "k1", itemId: "i-run", session: SESSION } });
+	s.cleanup();
+});
+
+test("inbox:actions posts the provider offer to the thread actions route", async () => {
+	const s = setup();
+	await s.pi.emit("session_start", s.ctx);
+	await s.pi.emitEvent("inbox:actions", {
+		v: 1,
+		producer: "demo",
+		actions: [{ key: "go", label: "실행", prompt: "지금 실행해" }],
+	});
+	const route = "/api/threads/" + SESSION + "/actions";
+	const post = s.fetchCalls.find((call) => call.url.endsWith(route));
+	assert.ok(post, "the provider actions are posted");
+	assert.equal(post.opts.method, "POST");
+	assert.deepEqual(JSON.parse(post.opts.body), { producer: "demo", actions: [{ key: "go", label: "실행", prompt: "지금 실행해" }] });
+	s.cleanup();
+});
+
+test("the status refresh carries the capture watch count after idle", async () => {
+	const s = setup();
+	await s.pi.emit("session_start", s.ctx);
+	await s.pi.emitEvent("terminal_monitor_state", { items: [{ id: "m1", persistent: true, paused: false }] });
+	await s.tick(30000);
+	const latest = s.fetchCalls.filter((call) => call.url.includes("/api/here")).at(-1);
+	assert.match(latest.url, /&idle=0&watch=1$/);
+	s.cleanup();
 });
