@@ -626,14 +626,32 @@ test("new-session through the real sink writes one launch line and leaves the ha
 
 test("new-session on an off thread closes its open items handed-off at once", async (t) => {
 	const calls = [];
-	const ctx = await withServer(t, { reopener: fakeLauncher(calls), config: { summary: { enabled: false } } });
+	let release;
+	let entered;
+	const gate = new Promise((resolve) => { release = resolve; });
+	const started = new Promise((resolve) => { entered = resolve; });
+	const reopener = {
+		async launch(input) {
+			calls.push(input);
+			entered();
+			await gate;
+			return { ok: true, via: "wt" };
+		},
+		async reopen() {
+			return { ok: true, via: "wt" };
+		},
+	};
+	const ctx = await withServer(t, { reopener, config: { summary: { enabled: false } } });
 	const root = planRoot(ctx.home);
 	await postJson(ctx, "/api/threads/s1/meta", { cwd: root });
 	const itemId = await finalOf(ctx, "s1", EXAMPLE_B, "a9");
 	await postJson(ctx, "/api/bye", { session: "s1", closed: true });
 	await ctx.nexts.waitFor(itemId, 2);
+	const pending = postJson(ctx, `/api/items/${itemId}/action`, { action: "new-session" });
+	await started;
 	const extra = await postJson(ctx, "/api/threads/s1/items", { kind: "progress", policy: "quiet", dedupeKey: "progress-late", raw: { text: "late" } });
-	const tap = await postJson(ctx, `/api/items/${itemId}/action`, { action: "new-session" });
+	release();
+	const tap = await pending;
 	assert.equal(tap.status, 200);
 	assert.equal(calls.length, 1);
 	assert.equal((await getJson(ctx, `/api/items/${extra.body.item.itemId}`)).body.closedReason, "handed-off");
@@ -688,6 +706,9 @@ test("a session-closed plan final still launches; a ship final commit-push becom
 	assert.equal(push.body.via, "message");
 	assert.equal(push.body.off, true);
 	assert.deepEqual(mailboxTexts(ctx.home, "ship"), ["변경을 커밋하고 푸시해"]);
+	assert.equal(ctx.server.threads.actionableFinal("ship"), null);
+	assert.deepEqual(await postJson(ctx, `/api/items/${shipId}/action`, { action: "commit-push" }), { status: 409, body: { error: "closed", reason: "session-closed" } });
+	assert.deepEqual(mailboxTexts(ctx.home, "ship"), ["변경을 커밋하고 푸시해"]);
 	assert.equal((await postJson(ctx, `/api/items/${shipId}/action`, { action: "close" })).status, 409);
 });
 
@@ -714,6 +735,69 @@ test("unknown, closed, off-run, tailnet and funnel actions follow the route cont
 
 	await postJson(ctx, `/api/items/${phoneId}/close`, { reason: "superseded" });
 	assert.equal((await postJson(ctx, `/api/items/${phoneId}/action`, { action: "close" })).status, 409);
+});
+
+test("a dropped control ack lets a later ordinary quit close items as session-closed", async (t) => {
+	const ctx = await withServer(t, { config: { summary: { enabled: false } } });
+	await live(ctx, "s1");
+	const itemId = await finalOf(ctx, "s1", EXAMPLE_A, "a20");
+	const tap = await postJson(ctx, `/api/items/${itemId}/action`, { action: "close" });
+	assert.equal(tap.status, 200);
+	assert.equal(tap.body.via, "session");
+	const ack = await postJson(ctx, `/api/items/${itemId}/delivered`, { deliveryId: tap.body.deliveryId, how: "dropped", detail: "stale" });
+	assert.deepEqual(ack, { status: 200, body: { ok: true, status: "delivered" } });
+	await postJson(ctx, "/api/bye", { session: "s1", closed: true });
+	assert.equal((await getJson(ctx, `/api/items/${itemId}`)).body.closedReason, "session-closed");
+});
+
+test("two concurrent new-session taps launch once and the second gets busy", async (t) => {
+	const calls = [];
+	let release;
+	let entered;
+	const gate = new Promise((resolve) => { release = resolve; });
+	const started = new Promise((resolve) => { entered = resolve; });
+	const reopener = {
+		async launch(input) {
+			calls.push(input);
+			entered();
+			await gate;
+			return { ok: true, via: "wt" };
+		},
+		async reopen() {
+			return { ok: true, via: "wt" };
+		},
+	};
+	const ctx = await withServer(t, { reopener, config: { summary: { enabled: false } } });
+	const root = planRoot(ctx.home);
+	await postJson(ctx, "/api/threads/s1/meta", { cwd: root });
+	const itemId = await finalOf(ctx, "s1", EXAMPLE_B, "a21");
+	const first = postJson(ctx, `/api/items/${itemId}/action`, { action: "new-session" });
+	await started;
+	const second = await postJson(ctx, `/api/items/${itemId}/action`, { action: "new-session" });
+	assert.equal(second.status, 409);
+	assert.equal(second.body.error, "busy");
+	release();
+	const launched = await first;
+	assert.equal(launched.status, 200);
+	assert.equal(calls.length, 1);
+});
+
+test("close stops the startup next walk after the in-flight probe", async (t) => {
+	const tmp = makeTmpHome("inbox-next-close-");
+	t.after(() => tmp.cleanup());
+	for (const sid of ["c1", "c2", "c3"]) seedThread(tmp.home, sid, { events: [itemEvent(1, `i-260101-${sid}`, EXAMPLE_A, new Date(START).toISOString())] });
+	let computed = 0;
+	const server = createServer({
+		home: tmp.home,
+		webDir: path.join(tmp.home, "web"),
+		port: 0,
+		config: { v: 1, port: 0, publicBase: null, pcTailnetIps: [], summary: { enabled: false } },
+		now: () => new Date(START),
+		onNextComputed: () => { computed++; },
+	});
+	await server.listen();
+	await server.close();
+	assert.ok(computed < 3, `startup walk computed ${computed} of 3 threads`);
 });
 
 test("here watch reaches the verdict; a non-integer watch is ignored", async (t) => {

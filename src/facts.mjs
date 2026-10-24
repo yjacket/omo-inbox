@@ -29,8 +29,8 @@ export function parseGitStatus(text) {
 function run(command, args, { spawnImpl, timeoutMs, setTimer, clearTimer }) {
 	return new Promise((resolve) => {
 		let child;
-		let stdout = "";
-		let stderr = "";
+		const stdout = [];
+		const stderr = [];
 		let settled = false;
 		let timer;
 		const finish = (value) => {
@@ -41,10 +41,10 @@ function run(command, args, { spawnImpl, timeoutMs, setTimer, clearTimer }) {
 		};
 		try {
 			child = spawnImpl(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-			child.stdout?.on("data", (chunk) => { stdout += chunk; });
-			child.stderr?.on("data", (chunk) => { stderr += chunk; });
+			child.stdout?.on("data", (chunk) => { stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); });
+			child.stderr?.on("data", (chunk) => { stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); });
 			child.on("error", () => finish({ unknown: true }));
-			child.on("close", (code) => finish({ code, stdout, stderr }));
+			child.on("close", (code) => finish({ code, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") }));
 			timer = setTimer(() => {
 				child.kill?.();
 				finish({ unknown: true });

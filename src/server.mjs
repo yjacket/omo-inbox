@@ -364,6 +364,7 @@ export function createServer({
 	const lastSeen = new Map();
 	const byeAt = new Map();
 	const closingReason = new Map();
+	const actionInflight = new Set();
 	const idleSessions = new Map();
 	const identityCache = new Map();
 	const reopenSessions = reopener ?? createReopener({ env: process.env, log: (line) => appendLog(dir.logs, "reopen: " + line) });
@@ -892,6 +893,7 @@ export function createServer({
 
 	// Close waits for in-flight probes so a test's temp cwd is not removed under a git child.
 	const pendingNext = new Set();
+	let closing = false;
 	function trackNext(promise) {
 		pendingNext.add(promise);
 		promise.then(() => pendingNext.delete(promise), () => pendingNext.delete(promise));
@@ -954,6 +956,7 @@ export function createServer({
 	// One probe at a time, so a restart with many stored finals does not spawn a git per thread at once.
 	async function refreshStoredNexts() {
 		for (const row of threads.list()) {
+			if (closing) break;
 			try {
 				const { items } = threads.getThread(row.session);
 				const open = newestOpenFinal(items);
@@ -1180,6 +1183,18 @@ export function createServer({
 	}
 
 	async function handleItemAction(res, itemId, body, access) {
+		const actionId = typeof body.action === "string" ? body.action : null;
+		if (actionId !== "close" && actionId !== "new-session") return handleItemActionBody(res, itemId, body, access);
+		if (actionInflight.has(itemId)) return sendJson(res, 409, { error: "busy" });
+		actionInflight.add(itemId);
+		try {
+			return await handleItemActionBody(res, itemId, body, access);
+		} finally {
+			actionInflight.delete(itemId);
+		}
+	}
+
+	async function handleItemActionBody(res, itemId, body, access) {
 		if (!guard(res, access, "reopen")) return;
 		const actionId = typeof body.action === "string" ? body.action : null;
 		if (!actionId) return sendJson(res, 400, { error: "bad_input" });
@@ -1322,6 +1337,7 @@ export function createServer({
 		if (action === "delivered") {
 			if (!nonBlank(body.deliveryId) || !DELIVERED_HOWS.has(body.how)) return sendJson(res, 400, { error: "bad_input" });
 			const item = threads.delivered(itemId, body.deliveryId, body.how, body.detail ?? null);
+			if (body.how === "dropped") closingReason.delete(item.session);
 			return sendJson(res, 200, { ok: true, status: item.status });
 		}
 		if (action === "state") {
@@ -1906,6 +1922,7 @@ export function createServer({
 	}
 
 	function close() {
+		closing = true;
 		scheduler.cancelPrefix("");
 		try {
 			issues.close();

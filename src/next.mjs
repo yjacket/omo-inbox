@@ -9,7 +9,6 @@ const NOTHING_LEFT_RE = /(Next|다음)\s*[:：]\s*(없음|남은 (작업|일) �
 const SHIP_MARKER_RE = /커밋(은|을)? (하지 않았|안 했)|아직 커밋|커밋하지 않았|(푸시|push)(는|를|은)? (하지 않았|안 했)|푸시하지 않았|설치본에 (들어가지|반영되지) 않|설치(는|를)? (하지 않았|안 했)|재설치가 필요|\/reload(가|를)? (해야|필요)|리로드(를|가)? (해야|필요)/i;
 const SHIP_ASK_RE = /(커밋|푸시|push|설치|배포|릴리스|PR|머지|merge|리로드|reload)/i;
 const PLAN_ASK_RE = /(계획|ulw-execute|새 세션|execute)/i;
-const SLUG_VALID_RE = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const PRODUCER_RE = /^[a-z0-9-]{1,40}$/;
 const KEY_RE = /^[A-Za-z0-9._:-]{1,40}$/;
 const MAX_ACTIONS = 5;
@@ -244,7 +243,6 @@ export function computeNext({ item, summary, thread, facts, providerActions, liv
 	}
 	actions = withPrimary(actions, primaryIds);
 	if (state === "ship" && !actions.some((action) => action.primary)) actions = ensurePrimary(actions);
-	if (state === "done" && ended === true) actions = actions.filter((action) => action.id !== "close" && action.kind !== "run");
 	actions = cap(actions);
 	if (ended === true) actions = ensurePrimary(actions);
 

@@ -779,6 +779,12 @@ test("actionableFinal requires the newest needs-you final closed as session-clos
 		assert.equal(threads.actionableFinal("s3").itemId, handed.itemId);
 		threads.addHandoff("s3", { itemId: handed.itemId, to: "s4", via: "orca", status: "connected", slug: "p1" });
 		assert.equal(threads.actionableFinal("s3"), null);
+
+		const quietFinal = threads.createItem("s5", { kind: "turn", policy: "needs-you" }).item;
+		threads.close(quietFinal.itemId, "session-closed");
+		assert.equal(threads.actionableFinal("s5").itemId, quietFinal.itemId);
+		threads.createItem("s5", { kind: "turn", policy: "quiet", raw: { synthetic: true } });
+		assert.equal(threads.actionableFinal("s5"), null);
 		assert.equal(threads.actionableFinal("missing"), null);
 	} finally {
 		cleanup();

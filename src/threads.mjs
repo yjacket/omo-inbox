@@ -722,12 +722,9 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 				break;
 			}
 		}
-		if (finalIndex < 0) return null;
+		if (finalIndex < 0 || finalIndex !== ids.length - 1) return null;
 		const final = buildItem(sid, ids[finalIndex]);
 		if (final.closedReason !== "session-closed") return null;
-		for (let i = finalIndex + 1; i < ids.length; i++) {
-			if (buildItem(sid, ids[i]).policy === "needs-you") return null;
-		}
 		return final;
 	}
 
