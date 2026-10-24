@@ -900,13 +900,33 @@ export function createServer({
 
 	// Compute one verdict from the final's own text/summary and the facts of the thread's cwd.
 	// The actionable final of a thread is always the ended verdict, whoever asks for the refresh.
+	// The plan a work span hands off: named in the final, else in one of the span's last three lines
+	// (an agent often names the next step and then closes with a short report).
+	function planSlugOfSpan(sid, item) {
+		const own = planSlugOf(finalText(item));
+		if (own) return own;
+		const key = item.meta?.episode?.key;
+		if (!key) return null;
+		let lines = [];
+		try {
+			lines = threads.episodeItems(sid, key).filter((line) => line.kind === "progress").slice(-3);
+		} catch {
+			return null;
+		}
+		for (const line of lines.reverse()) {
+			const slug = planSlugOf(typeof line.raw?.text === "string" ? line.raw.text : "");
+			if (slug) return slug;
+		}
+		return null;
+	}
+
 	async function refreshNext(sid, itemId) {
 		try {
 			const item = threads.getItem(itemId);
 			if (!isFinal(item)) return null;
 			const ended = threads.actionableFinal(sid)?.itemId === itemId;
 			const { thread } = threads.getThread(sid);
-			const facts = await probeFacts({ cwd: thread.cwd, worktree: thread.worktree, slug: planSlugOf(finalText(item)) });
+			const facts = await probeFacts({ cwd: thread.cwd, worktree: thread.worktree, slug: planSlugOfSpan(sid, item) });
 			const watch = isLive(sid) ? (liveWatch.get(sid) ?? item.meta?.watch ?? 0) : (item.meta?.watch ?? 0);
 			const next = computeNext({
 				item,

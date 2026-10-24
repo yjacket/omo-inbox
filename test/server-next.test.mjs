@@ -173,6 +173,35 @@ test("example B with an open plan in the thread cwd gets a plan offer", async (t
 	assert.equal(item.next.facts.plan.slug, PLAN_SLUG);
 });
 
+test("a plan named in an earlier line of the work span, before a short closing final, still gets a plan offer", async (t) => {
+	const ctx = await withServer(t, { config: { summary: { enabled: false } } });
+	const root = planRoot(ctx.home);
+	assert.equal((await postJson(ctx, "/api/threads/s1/meta", { cwd: root })).status, 200);
+	const episode = { key: "e:s1:1", opener: 1, openedAt: 1 };
+	const lineText = `별도 실행은 새 세션에서 /ulw-execute ${PLAN_SLUG} 으로 시작합니다.`;
+	const line = await postJson(ctx, "/api/threads/s1/items", { kind: "progress", policy: "progress", dedupeKey: "line:s1:m1", raw: { text: lineText }, meta: { episode: { ...episode, seq: 1 } } });
+	assert.equal(line.status, 200);
+	const out = await postJson(ctx, "/api/threads/s1/items", { kind: "turn", policy: "needs-you", dedupeKey: "episode:s1:1:needs-you:m2", raw: { final: "완료했습니다. 요청하신 문장을 정확히 출력했습니다." }, meta: { episode: { ...episode, closedAt: 2, closeReason: "needs-you" } } });
+	await ctx.nexts.waitFor(out.body.item.itemId);
+	const item = (await getJson(ctx, `/api/items/${out.body.item.itemId}`)).body;
+	assert.equal(item.next.state, "plan");
+	assert.equal(item.next.facts.plan.slug, PLAN_SLUG);
+	assert.equal(item.next.actions[0].prompt, `/skill:ulw-execute ${PLAN_SLUG}`);
+});
+
+test("a plan named only in a line of another work span gets no plan offer", async (t) => {
+	const ctx = await withServer(t, { config: { summary: { enabled: false } } });
+	const root = planRoot(ctx.home);
+	assert.equal((await postJson(ctx, "/api/threads/s1/meta", { cwd: root })).status, 200);
+	const lineText = `/ulw-execute ${PLAN_SLUG} 로 시작합니다.`;
+	await postJson(ctx, "/api/threads/s1/items", { kind: "progress", policy: "progress", dedupeKey: "line:s1:m1", raw: { text: lineText }, meta: { episode: { key: "e:s1:old", opener: 1, openedAt: 1, seq: 1 } } });
+	const out = await postJson(ctx, "/api/threads/s1/items", { kind: "turn", policy: "needs-you", dedupeKey: "episode:s1:2:needs-you:m3", raw: { final: "완료했습니다." }, meta: { episode: { key: "e:s1:new", opener: 2, openedAt: 2, closedAt: 3, closeReason: "needs-you" } } });
+	await ctx.nexts.waitFor(out.body.item.itemId);
+	const item = (await getJson(ctx, `/api/items/${out.body.item.itemId}`)).body;
+	assert.equal(item.next.state, "done");
+	assert.equal(item.next.facts.plan, null);
+});
+
 test("an untracked file in the thread's git repo gets a ship warning", async (t) => {
 	const ctx = await withServer(t, { config: { summary: { enabled: false } } });
 	const repo = path.join(ctx.home, "repo");

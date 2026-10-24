@@ -456,7 +456,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 - 형태: `{v: 1, state, reason, actions, warnings, facts: {git, plan, watch}, source: "heuristic"|"model", at}`.
 - 우선순위: `blocked`(종류 blocked) -> `stalled`(멈춤 마지막 메시지) -> `ask`(마무리나 계획 질문이 아닌 물음) -> `plan`(열린 계획을 찾음) -> `ship`(커밋이나 푸시가 안 된 git, 본문의 마무리 표시, 마무리 물음, 모델의 `ship` 힌트) -> `done`.
 - 이유: done `남은 일이 없습니다`, plan `계획 <slug> 실행 대기`, ship `커밋 안 된 변경 N개 · 푸시 안 된 커밋 N개`(해당하는 부분만) 또는 `마무리 작업이 남았습니다`, ask `답을 기다립니다`, blocked `막힌 목표를 풀어야 합니다`, stalled `멈춘 작업을 이어가야 합니다`.
-- 감지는 마지막 메시지의 끝 1500자를 읽습니다: 계획 slug(`/skill:ulw-execute`, `/ulw-execute`, `$ulw-execute` 뒤의 slug), 남은 일 없음 줄(`Next: 없음`, `남은 작업 없음`, `할 일이 없습니다`), 마무리 표시(커밋 안 함, 푸시 안 함, 설치 안 함, `/reload` 필요).
+- 감지는 마지막 메시지의 끝 1500자를 읽습니다(마지막 메시지에 계획 slug가 없으면 같은 작업 구간의 마지막 세 줄에서도 찾습니다. 다음 단계를 말한 뒤 짧은 보고로 끝내는 경우가 많기 때문입니다): 계획 slug(`/skill:ulw-execute`, `/ulw-execute`, `$ulw-execute` 뒤의 slug), 남은 일 없음 줄(`Next: 없음`, `남은 작업 없음`, `할 일이 없습니다`), 마무리 표시(커밋 안 함, 푸시 안 함, 설치 안 함, `/reload` 필요).
 - git 사실: worktree(없으면 cwd)에서 `git status --porcelain=v1 --branch`(`git -C <dir>`), 셸 없음, 제한 3초. 저장소가 아닌 폴더는 `git: null`, 그 밖의 실패나 시간 초과는 `{unknown: true}` 이고 경고 `git 상태를 확인하지 못했습니다` 가 붙으며 git 행동은 없습니다.
 - 계획 찾기: 마지막 메시지 끝의 slug를 `.omo/plans/<slug>.md` 로 worktree, cwd, 메인 체크아웃 순서로 찾습니다. `root` 는 `.omo/plans` 를 담은 폴더입니다. 체크하지 않은 `- [ ]` 줄이 남아 있으면 열린 계획입니다. 그 계획을 직접 실행하는 세션(`executes`, 또는 인계받은 slug)에는 계획 제안이 없습니다.
 - 모델 힌트: 모델 요약은 `next` 를 담을 수 있습니다(요약 참고). 요약이 모델에서 왔을 때만 씁니다.
