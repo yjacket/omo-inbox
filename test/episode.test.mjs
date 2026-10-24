@@ -16,6 +16,7 @@ import {
 	observeSignal,
 	onAgentStart,
 	restore,
+	standingCount,
 	verdict,
 	willWake,
 } from "../extension/inbox/episode.ts";
@@ -114,6 +115,26 @@ test("terminal entries count only when started in the episode, not persistent, n
 	assert.equal(willWake(state, { ...NONE, now: T0 + 2000 }).reasons.includes("terminal-monitors"), false);
 	observeSignal(state, "terminal_monitor_state", { activeCount: 4, monitors: [...monitors, { id: "m-live", startedAtMs: T0 + 30, persistent: false, paused: false }] });
 	assert.deepEqual(willWake(state, { ...NONE, now: T0 + 2000 }).reasons, ["terminal-background-sessions", "terminal-monitors"]);
+});
+
+test("standingCount counts persistent unpaused entries across sources and ignores paused or plain ones", () => {
+	const { state } = started();
+	observeSignal(state, "terminal_monitor_state", {
+		activeCount: 4,
+		monitors: [
+			{ id: "m-standing", startedAtMs: T0, persistent: true, paused: false },
+			{ id: "m-stand-no-flag", startedAtMs: T0, persistent: true },
+			{ id: "m-paused", startedAtMs: T0, persistent: true, paused: true },
+			{ id: "m-live", startedAtMs: T0, persistent: false, paused: false },
+		],
+	});
+	observeSignal(state, "wake_source_state", { source: "senpi-task", activeCount: 1 });
+	assert.equal(standingCount(state), 2);
+	// A source without entries has nothing standing to report.
+	observeSignal(state, "wake_source_state", { source: "omo-dag", activeCount: 3 });
+	assert.equal(standingCount(state), 2);
+	observeSignal(state, "terminal_monitor_state", { activeCount: 0 });
+	assert.equal(standingCount(state), 0);
 });
 
 test("a persistent monitor and a background session started before the episode do not keep it open", () => {

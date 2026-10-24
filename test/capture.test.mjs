@@ -207,6 +207,35 @@ test("interactive input re-sends meta after the request appears", async () => {
 	assert.equal(metas[1].body.lastRequest, "입력 뒤 요청");
 });
 
+test("an ulw-execute kickoff posts its plan slug as executes once per session", async () => {
+	const harness = makeCapture();
+	const ctx = fakeCtx();
+	harness.capture.onSessionStart(ctx);
+	await harness.flush();
+
+	harness.capture.onInput({ source: "interactive", text: "/skill:ulw-execute qa-plan" }, ctx);
+	await harness.flush();
+	let metas = harness.only("/meta");
+	assert.equal(metas.length, 2);
+	assert.equal(metas[1].body.executes, "qa-plan");
+
+	harness.capture.onInput({ source: "interactive", text: "/ulw-execute other-plan" }, ctx);
+	harness.capture.onInput({ source: "interactive", text: "$ulw-execute third-plan" }, ctx);
+	await harness.flush();
+	metas = harness.only("/meta");
+	assert.equal(metas.length, 2, "only the first kickoff is reported");
+	assert.equal(metas[1].body.executes, "qa-plan");
+});
+
+test("a plain input posts no executes", async () => {
+	const harness = makeCapture();
+	const ctx = fakeCtx();
+	harness.capture.onSessionStart(ctx);
+	harness.capture.onInput({ source: "interactive", text: "ulw execute qa-plan" }, ctx);
+	await harness.flush();
+	for (const meta of harness.only("/meta")) assert.equal(meta.body.executes, undefined);
+});
+
 test("an empty session id posts nothing and logs once", async () => {
 	const harness = makeCapture();
 	const ctx = fakeCtx({
@@ -555,6 +584,47 @@ test("a stopped active goal is a plain needs-you turn", async () => {
 	assert.equal(harness.items()[0].policy, "needs-you");
 	assert.equal(harness.items()[0].meta.stalled, undefined);
 	assert.equal(harness.items()[0].meta.episode.closeReason, "needs-you");
+});
+
+test("a needs-you final reports its standing monitors and watchCount follows them", async () => {
+	const harness = makeCapture();
+	const ctx = fakeCtx();
+	harness.capture.onSessionStart(ctx);
+	harness.capture.onSignal("terminal_monitor_state", {
+		activeCount: 1,
+		monitors: [{ id: "m-standing", startedAtMs: START_AT, persistent: true, paused: false }],
+	});
+	runTurnAt(harness, ctx);
+	await harness.advance(2500);
+	assert.deepEqual(kinds(harness), ["turn"]);
+	assert.equal(harness.items()[0].meta.watch, 1);
+	assert.equal(harness.capture.watchCount(), 1);
+
+	harness.capture.onSignal("terminal_monitor_state", { activeCount: 0 });
+	assert.equal(harness.capture.watchCount(), 0);
+	harness.capture.onSignal("terminal_monitor_state", {
+		activeCount: 2,
+		monitors: [
+			{ id: "m-a", startedAtMs: START_AT, persistent: true, paused: false },
+			{ id: "m-b", startedAtMs: START_AT, persistent: true, paused: false },
+		],
+	});
+	assert.equal(harness.capture.watchCount(), 2);
+});
+
+test("a paused standing monitor is not reported on the final", async () => {
+	const harness = makeCapture();
+	const ctx = fakeCtx();
+	harness.capture.onSessionStart(ctx);
+	harness.capture.onSignal("terminal_monitor_state", {
+		activeCount: 1,
+		monitors: [{ id: "m-paused", startedAtMs: START_AT, persistent: true, paused: true }],
+	});
+	runTurnAt(harness, ctx);
+	await harness.advance(2500);
+	assert.deepEqual(kinds(harness), ["turn"]);
+	assert.equal(harness.items()[0].meta.watch, undefined);
+	assert.equal(harness.capture.watchCount(), 0);
 });
 
 test("a desk wake is a waiting line in either mode and carries the boards it waits on", async () => {

@@ -20,6 +20,7 @@ import {
 	observeSignal,
 	onAgentStart as startEpisode,
 	restore as restoreState,
+	standingCount,
 	verdict,
 	willWake,
 } from "./episode.ts";
@@ -80,6 +81,8 @@ export function createCapture(deps: CaptureDeps) {
 	let metaSent = false;
 	let metaFirstRequest = "";
 	let metaLastRequest = "";
+	/** The plan slug this session executes was already posted as thread meta (at most once per session). */
+	let executesSent = false;
 	let emptySessionLogged = false;
 	let runId = 0;
 	let runStartedAtMs = 0;
@@ -349,16 +352,18 @@ export function createCapture(deps: CaptureDeps) {
 		void drain();
 	}
 
-	function ensureMeta(target: any, sid?: string | null): void {
+	function ensureMeta(target: any, sid?: string | null, extra?: Record<string, unknown>, force = false): void {
 		const id = sid === undefined ? sessionIdOrNull(target) : sid;
 		if (id === null) return;
 		const first = metaFirstRequest.length > 0 ? metaFirstRequest : firstRequest(target);
 		const last = lastMetaRequest(target) || metaLastRequest;
-		if (metaSent && first === metaFirstRequest && last === metaLastRequest) return;
+		if (!force && metaSent && first === metaFirstRequest && last === metaLastRequest) return;
 		metaSent = true;
 		metaFirstRequest = first;
 		metaLastRequest = last;
-		send(`/api/threads/${id}/meta`, sessionMeta(target, first, last));
+		const body = sessionMeta(target, first, last);
+		if (extra !== undefined) Object.assign(body, extra);
+		send(`/api/threads/${id}/meta`, body);
 	}
 
 	/** `input` may be a builder: it runs when the post reaches the front of the queue (null drops the post). */
@@ -596,6 +601,8 @@ export function createCapture(deps: CaptureDeps) {
 		}
 		const meta: Record<string, unknown> = { episode: closed.meta };
 		if (decision.stalled) meta.stalled = true;
+		const watch = standingCount(ep);
+		if (watch > 0) meta.watch = watch;
 		lastLine = null;
 		lastLineText = "";
 		openerKey = "";
@@ -654,6 +661,7 @@ export function createCapture(deps: CaptureDeps) {
 		metaSent = false;
 		metaFirstRequest = "";
 		metaLastRequest = "";
+		executesSent = false;
 		emptySessionLogged = false;
 		runId = 0;
 		runStartedAtMs = 0;
@@ -901,7 +909,14 @@ export function createCapture(deps: CaptureDeps) {
 			const target = nextCtx ?? ctx;
 			if (!live(target)) return;
 			if (event?.source !== "interactive") return;
-			ensureMeta(target);
+			const text = typeof event.text === "string" ? event.text : "";
+			const kickoff = /^(?:\/skill:ulw-execute|\/ulw-execute|\$ulw-execute)\s+([a-z0-9][a-z0-9-]{0,79})(?![a-z0-9-])/.exec(text);
+			if (kickoff !== null && !executesSent) {
+				executesSent = true;
+				ensureMeta(target, undefined, { executes: kickoff[1].toLowerCase() }, true);
+			} else {
+				ensureMeta(target);
+			}
 			syncEpisodeSession(target);
 			markEpisodeOwner(ep, "terminal", now());
 			postActivity(target, { source: "terminal-input", cause: "owner" });
@@ -997,6 +1012,11 @@ export function createCapture(deps: CaptureDeps) {
 				if (typeof deps.bridgeState === "function" && deps.bridgeState(requestId) === "live") continue;
 				send(`/api/items/${itemId}/bridge`, { state: "terminal-only" });
 			}
+		},
+
+		/** Standing (persistent, unpaused) monitors right now; the server attaches it to /api/here (todo 13). */
+		watchCount(): number {
+			return standingCount(ep);
 		},
 
 		flush(): Promise<void> {

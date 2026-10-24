@@ -144,6 +144,17 @@ function observeCount(state: EpisodeState, source: string, event: any): void {
 	state.sources.set(source, { count, entries });
 }
 
+/** Standing monitors across every source: persistent entries that are not paused. They outlive the episode. */
+export function standingCount(state: EpisodeState): number {
+	let total = 0;
+	for (const source of state.sources.values()) {
+		for (const entry of source.entries ?? []) {
+			if (entry.persistent === true && entry.paused !== true) total += 1;
+		}
+	}
+	return total;
+}
+
 /** Terminal entries count only when started inside this episode and neither standing (persistent) nor paused. */
 function countOf(source: Source, openedAt: number): number {
 	if (source.entries === null) return source.count;
