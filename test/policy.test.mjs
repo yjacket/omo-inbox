@@ -170,6 +170,24 @@ test("a 10 KB headline still fits a payload under 3000 bytes, redacted and clipp
 	assert.ok(Buffer.byteLength(JSON.stringify(longTitle), "utf8") <= MAX_PAYLOAD_BYTES);
 });
 
+test("a done push offers close before open only when the stored next is done without warnings", () => {
+	const thread = threadThread();
+	const done = makeItem("done", {
+		next: { state: "done", warnings: [], actions: [{ id: "close", kind: "close" }] },
+	});
+	assert.deepEqual(buildPushPayload(done, thread, { headline: "끝났습니다" }).actions, [{ action: "close", title: "세션 닫기" }, OPEN]);
+
+	const warned = makeItem("done", {
+		next: { state: "done", warnings: ["커밋 안 된 변경 1개"], actions: [{ id: "close", kind: "close" }] },
+	});
+	assert.deepEqual(buildPushPayload(warned, thread, { headline: "끝났습니다" }).actions, [OPEN]);
+
+	const ask = makeItem("turn", {
+		next: { state: "ask", warnings: [], actions: [{ id: "close", kind: "close" }] },
+	});
+	assert.deepEqual(buildPushPayload(ask, thread, { headline: "질문" }).actions, [OPEN]);
+});
+
 test("a cache reminder names the remaining minutes and keeps the thread title in the body", () => {
 	const payload = buildPushPayload(makeItem("turn"), threadThread(), { headline: "정리 도중" }, { kind: "cache", minutesLeft: 3 });
 	assert.equal(payload.title, "🔥 캐시가 3분 뒤 식습니다");

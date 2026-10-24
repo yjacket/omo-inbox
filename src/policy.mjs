@@ -99,6 +99,20 @@ export function pushPlan(item, thread, mode = "primary", options = {}) {
 	}
 	if (cancelled(item, options)) return { ...NO_PLAN };
 	if (!pushable(item, mode)) return { ...NO_PLAN };
+	const next = item.next;
+	const closeOffer =
+		(item.kind === "turn" || item.kind === "done") &&
+		next?.state === "done" &&
+		(next.warnings ?? []).length === 0 &&
+		Array.isArray(next.actions) &&
+		next.actions.some((action) => action?.id === "close");
+	if (closeOffer) {
+		return {
+			push: true,
+			holdMs: HOLD_BY_KIND[item.kind] ?? HOLD_TURN_MS,
+			actions: [{ action: "close", title: "세션 닫기" }, { ...OPEN_ACTION }],
+		};
+	}
 	const actions = [];
 	if (item.kind === "question" && !isRequired(item)) {
 		const rec = recommendedChoice(item);

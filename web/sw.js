@@ -53,7 +53,8 @@ async function focusOrOpen(target, clients) {
 /**
  * The notificationclick body, pure so a Node test can drive it with stubs.
  * `action` is the clicked action id: `rec` answers the item with its recommended option, anything else -
- * including a body tap, which arrives as "" - opens the thread. A `rec` whose POST fails (409 closed,
+ * including a body tap, which arrives as "" - opens the thread. A `close` POSTs the close action and
+ * opens nothing on a 2xx; any failure falls through to the thread. A `rec` whose POST fails (409 closed,
  * 400 incomplete, offline) also opens the thread, because nothing was delivered from the phone.
  */
 async function handleClick(payload, action, fetchImpl, clientsImpl) {
@@ -62,6 +63,20 @@ async function handleClick(payload, action, fetchImpl, clientsImpl) {
 	const scope = typeof clients.scope === "string" ? clients.scope : "";
 	const url = resolveUrl(data.url || "/", scope);
 	const rec = data.rec;
+	if (action === "close" && data.itemId && typeof fetchImpl === "function") {
+		let closed = false;
+		try {
+			const res = await fetchImpl(`/api/items/${encodeURIComponent(data.itemId)}/action`, {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-inbox": "1" },
+				body: JSON.stringify({ action: "close" }),
+			});
+			closed = Boolean(res && res.ok);
+		} catch {
+			closed = false;
+		}
+		if (closed) return { answered: false, closed: true, opened: false, url };
+	}
 	if (action === "rec" && data.itemId && rec && rec.questionId && rec.label && typeof fetchImpl === "function") {
 		const body = JSON.stringify({ answers: { [rec.questionId]: { selected: [rec.label] } } });
 		let answered = false;
