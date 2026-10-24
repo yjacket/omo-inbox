@@ -88,9 +88,9 @@
 		.page { max-width: var(--measure); margin: 0 auto; padding: var(--s6) var(--s4) var(--s10); }
 
 		/* header: Inbox, 🙋 N, 알림 받기, Review */
-		.top { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s5); }
+		.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s1) var(--s3); margin-bottom: var(--s5); }
 		.heads { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
-		.tools { display: flex; align-items: center; gap: var(--s2); flex: none; }
+		.tools { display: flex; align-items: center; gap: var(--s2); flex: none; margin-left: auto; }
 		.top[hidden], .ctl[hidden], .count[hidden] { display: none; }
 		h1 { margin: 0; font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
 		.ctl {
@@ -115,6 +115,7 @@
 		.ctl:disabled { color: var(--ink-3); background: transparent; cursor: default; }
 		.ctl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 		.ctl.review { position: relative; }
+		.ctl.issue-tool { height: 44px; }
 		.badge {
 			position: absolute;
 			top: -8px;
@@ -287,11 +288,12 @@
 		.sk-bar.w3 { width: 34%; }
 
 		/* WIDE (split view): the list is a 340px column with its own scroll; the selected thread fills the rest in an iframe */
+		.thread { display: none; }
 		@media (min-width: 720px) {
 			body { display: flex; height: 100dvh; overflow: hidden; }
 			.page { flex: none; width: 340px; height: 100%; margin: 0; padding-top: 0; overflow-y: auto; scrollbar-width: thin; border-right: 1px solid var(--line); }
 			.top { position: sticky; top: 0; z-index: 1; padding: var(--s2) 0; background: var(--bg); }
-			.thread { flex: 1; min-width: 0; height: 100%; border: 0; }
+			.thread { display: block; flex: 1; min-width: 0; height: 100%; border: 0; }
 		}
 		@media (max-width: 360px) {
 			.ctl { padding: 0 var(--s2); }
@@ -310,6 +312,8 @@
 			</div>
 			<nav class="tools" aria-label="도구">
 				<button type="button" class="ctl bell" id="bell" hidden>알림 받기</button>
+				<a class="ctl review issue-tool" id="issuesLink" href="/issues">제보함<span class="badge" id="issueBadge" hidden></span></a>
+				<a class="ctl issue-tool" id="reportLink" data-issue-report href="/issues/new">제보</a>
 				<a class="ctl review" id="reviewLink" href="/boards">Review<span class="badge" id="reviewBadge" hidden></span></a>
 			</nav>
 		</header>
@@ -341,6 +345,9 @@
 				retry: document.getElementById("retry"),
 				list: document.getElementById("list"),
 				needsYou: document.getElementById("needsYou"),
+				issuesLink: document.getElementById("issuesLink"),
+				issueBadge: document.getElementById("issueBadge"),
+				reportLink: document.getElementById("reportLink"),
 				reviewLink: document.getElementById("reviewLink"),
 				reviewBadge: document.getElementById("reviewBadge"),
 			};
@@ -351,6 +358,12 @@
 			let requestSeq = 0;
 			let timer = null;
 			let loaded = false;
+			let diagnostics = null;
+			let reportAdapters = null;
+			// The reporter defers this page's list refresh and iframe replacement while it owns the
+			// dialog; the newest payload waits here and is applied once after close.
+			let renderDeferred = false;
+			let pendingPayload = null;
 
 			// split view: WIDE is at least 720px; the selected thread is /?s=<sid> in the URL and an iframe on the right
 			const media = window.matchMedia("(min-width: 720px)");
@@ -608,25 +621,7 @@
 				els.list.replaceChildren(h("div", { class: "rows sk", "aria-hidden": "true" }, bars(), bars(), bars()));
 			}
 
-			async function load() {
-				const seq = ++requestSeq;
-				const skeleton = loaded ? null : setTimeout(renderSkeleton, SKELETON_DELAY_MS);
-				let data;
-				try {
-					const res = await fetch("/api/threads", { headers: { accept: "application/json" }, cache: "no-store" });
-					if (!res.ok) throw new Error(`HTTP ${res.status}`);
-					data = await res.json();
-				} catch (error) {
-					if (skeleton) clearTimeout(skeleton);
-					if (seq !== requestSeq) return;
-					if (!loaded) els.list.replaceChildren();
-					els.list.setAttribute("aria-busy", "false");
-					els.notice.hidden = false;
-					console.error("inbox: load failed", error);
-					return;
-				}
-				if (skeleton) clearTimeout(skeleton);
-				if (seq !== requestSeq) return;
+			function applyPayload(data) {
 				rows = Array.isArray(data.items) ? data.items.filter((row) => row && typeof row === "object" && typeof row.session === "string") : [];
 				needsYou = data.counts && typeof data.counts.needsYou === "number" ? data.counts.needsYou : rows.filter((row) => row.status === "needs-you" && !row.hidden).length;
 				renderReviewBadge(data.reviews?.mine);
@@ -641,6 +636,36 @@
 				}
 				renderCount();
 				loaded = true;
+			}
+
+			async function load() {
+				const seq = ++requestSeq;
+				const skeleton = loaded ? null : setTimeout(renderSkeleton, SKELETON_DELAY_MS);
+				const startedAt = performance.now();
+				let data;
+				try {
+					const res = await fetch("/api/threads", { headers: { accept: "application/json" }, cache: "no-store" });
+					if (diagnostics) diagnostics.recordRequest({ route: "threads_list", status: res.status, durationMs: performance.now() - startedAt, errorCode: res.ok ? null : "other" });
+					if (!res.ok) throw new Error(`HTTP ${res.status}`);
+					data = await res.json();
+				} catch (error) {
+					if (diagnostics) diagnostics.recordRequest({ route: "threads_list", status: 0, durationMs: performance.now() - startedAt, errorCode: "network" });
+					if (skeleton) clearTimeout(skeleton);
+					if (seq !== requestSeq || renderDeferred) return;
+					if (!loaded) els.list.replaceChildren();
+					els.list.setAttribute("aria-busy", "false");
+					els.notice.hidden = false;
+					console.error("inbox: load failed", error);
+					return;
+				}
+				if (skeleton) clearTimeout(skeleton);
+				if (seq !== requestSeq) return;
+				if (renderDeferred) {
+					pendingPayload = data;
+					els.list.dataset.pending = "1";
+					return;
+				}
+				applyPayload(data);
 			}
 
 			function startTimer() {
@@ -681,6 +706,161 @@
 				dropFrame();
 				frame = h("iframe", { class: "thread", title: "대화", src });
 				document.body.append(frame);
+				announceAdapters(frame.contentWindow);
+			}
+
+			// The registry lives on this window; same-origin children read it directly. The event is a
+			// plain same-origin notification for an existing child that is already listening.
+			function announceAdapters(child) {
+				const targets = child ? [child] : Array.from(document.querySelectorAll("iframe")).map((node) => node.contentWindow);
+				for (const target of targets) {
+					if (!target) continue;
+					try {
+						target.dispatchEvent(new Event("inbox-issue-adapters-ready"));
+					} catch {
+						// cross-origin or unloaded child
+					}
+				}
+			}
+
+			function visibleRows() {
+				return Array.from(els.list.querySelectorAll(".row[data-session]")).filter((row) => {
+					const box = row.getBoundingClientRect();
+					return box.width > 0 && box.bottom > 0 && box.top < innerHeight;
+				});
+			}
+
+			function rowLabel(row) {
+				const title = row.querySelector(".title");
+				return ((title ? title.textContent : row.textContent) || "").trim().slice(0, 50) || row.getAttribute("data-session");
+			}
+
+			function rowExcerpt(row) {
+				const line = row.querySelector(".line");
+				return ((line ? line.textContent : "") || "").trim().slice(0, 300);
+			}
+
+			function captureContext() {
+				const visible = visibleRows();
+				const threadId = selected ?? sidFromUrl();
+				return {
+					page: "inbox",
+					source: threadId ? { kind: "thread", threadId, itemId: null, observedSeq: 0 } : null,
+					target: null,
+					view: {
+						width: innerWidth, height: innerHeight, dpr: devicePixelRatio, scale: 1,
+						scrollX, scrollY,
+						theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+						locale: navigator.language || "ko-KR", embedded: false, viewerOpen: false,
+					},
+					excerpt: null,
+					excerptEnabled: false,
+					visibleIds: visible.slice(0, 50).map((row) => row.getAttribute("data-session")),
+					diagnostics: [],
+					clientBuild: null,
+					mode: wide ? "split" : "stacked",
+				};
+			}
+
+			function captureTargets() {
+				const targets = [{ kind: "page", key: "inbox", label: "Inbox", rect: { x: 0, y: 0, w: innerWidth, h: innerHeight }, framePath: [] }];
+				for (const row of visibleRows().slice(0, 50)) {
+					const box = row.getBoundingClientRect();
+					targets.push({
+						kind: "record",
+						key: "thread:" + row.getAttribute("data-session"),
+						label: rowLabel(row),
+						excerpt: rowExcerpt(row),
+						rect: { x: box.left, y: box.top, w: box.width, h: box.height },
+						framePath: [],
+					});
+				}
+				return targets;
+			}
+
+			function resumeRender() {
+				renderDeferred = false;
+				delete els.list.dataset.deferred;
+				delete els.list.dataset.pending;
+				const pending = pendingPayload;
+				pendingPayload = null;
+				if (pending !== null) applyPayload(pending);
+				else renderList();
+				applyMode();
+			}
+
+			function loadIssueBadge(issueBadgeFromCounts) {
+				const startedAt = performance.now();
+				return fetch("/api/issues?limit=1", { headers: { accept: "application/json", "x-inbox": "1" }, cache: "no-store" })
+					.then(async (res) => {
+						if (diagnostics) diagnostics.recordRequest({ route: "other", status: res.status, durationMs: performance.now() - startedAt, errorCode: res.ok ? null : "other" });
+						if (!res.ok) return;
+						const data = await res.json();
+						const badge = issueBadgeFromCounts(data && data.counts);
+						els.issueBadge.hidden = badge.hidden;
+						els.issueBadge.textContent = badge.text;
+						if (badge.hidden) els.issuesLink.removeAttribute("aria-label");
+						else els.issuesLink.setAttribute("aria-label", `제보함, ${badge.label}`);
+					})
+					.catch(() => {
+						if (diagnostics) diagnostics.recordRequest({ route: "other", status: 0, durationMs: performance.now() - startedAt, errorCode: "network" });
+					});
+			}
+
+			async function setupReporting() {
+				try {
+					const [adaptersMod, diagnosticsMod, draftsMod, issuesMod, reportMod] = await Promise.all([
+						import("/web/issue-adapters.js"),
+						import("/web/issue-diagnostics.js"),
+						import("/web/issue-drafts.js"),
+						import("/web/issues.js"),
+						import("/web/issue-report.js"),
+					]);
+					diagnostics = diagnosticsMod.createDiagnostics({ now: () => performance.now() });
+					diagnostics.attachWindowListeners(window);
+					const adapters = reportAdapters ?? window.__inboxIssueAdapters ?? adaptersMod.createAdapterRegistry({ ownerWindow: window });
+					const registerInbox = () => adapters.register({
+						page: "inbox",
+						getContext: captureContext,
+						getTargets: captureTargets,
+						deferRender() {
+							renderDeferred = true;
+							els.list.dataset.deferred = "1";
+						},
+						resumeRender,
+					});
+					registerInbox();
+					// The thread iframe registers its own adapter as the newest one. Re-register this page
+					// before the reporter's trigger handler so the split list, not the frame, owns the report.
+					els.reportLink.addEventListener("click", () => registerInbox());
+					let image = null;
+					try {
+						const imageMod = await import("/web/issue-image.js");
+						image = imageMod.createIssueImage({ document, now: () => performance.now() });
+					} catch {
+						image = null;
+					}
+					const report = reportMod.mountIssueReport({
+						document,
+						window,
+						adapters,
+						drafts: draftsMod,
+						diagnostics,
+						image,
+						fetchImpl: (input, init) => fetch(input, init),
+						now: () => Date.now(),
+						uuid: () => crypto.randomUUID(),
+						buildId: null,
+						pageKey: "inbox",
+					});
+					report.element.addEventListener("close", () => {
+						void loadIssueBadge(issuesMod.issueBadgeFromCounts);
+						void load();
+					});
+					await loadIssueBadge(issuesMod.issueBadgeFromCounts);
+				} catch (error) {
+					console.error("inbox: issue reporting unavailable", error);
+				}
 			}
 
 			function markRows() {
@@ -693,7 +873,7 @@
 			// WIDE: ?s= names the thread (shown even when it is not in the list); without it the first row is selected in
 			// place with replaceState, and an empty list leaves the right pane empty. Runs again after every list render.
 			function syncSplit() {
-				if (!wide) return;
+				if (!wide || renderDeferred) return;
 				let sid = sidFromUrl();
 				let hash = location.hash;
 				if (sid === null) {
@@ -712,6 +892,11 @@
 			// (the window shrank, or the page loaded narrow); false says this page is leaving.
 			function applyMode() {
 				wide = media.matches;
+				if (renderDeferred) {
+					// The reporter owns an unsaved draft: keep this document (and the dialog) alive.
+					// A narrow handoff waits for close; going back to split cancels it.
+					return true;
+				}
 				if (wide) {
 					syncSplit();
 					return true;
@@ -731,6 +916,7 @@
 				event.preventDefault();
 				const sid = row.getAttribute("data-session");
 				if (sid === selected) return;
+				if (diagnostics) diagnostics.recordAction("select_thread");
 				history.pushState(null, "", listUrl(sid));
 				syncSplit();
 			});
@@ -747,10 +933,29 @@
 
 			media.addEventListener("change", applyMode);
 			window.addEventListener("popstate", applyMode);
-			if (!applyMode()) return;
-			load();
-			initBell();
-			if (document.visibilityState === "visible") startTimer();
+
+			// The registry must exist before the first thread iframe gets its src, because the
+			// embedded thread reads window.parent.__inboxIssueAdapters while it boots.
+			const adaptersReady = import("/web/issue-adapters.js").then((mod) => {
+				reportAdapters = window.__inboxIssueAdapters ?? mod.createAdapterRegistry({ ownerWindow: window });
+				announceAdapters();
+				return reportAdapters;
+			});
+
+			async function boot() {
+				try {
+					await adaptersReady;
+				} catch (error) {
+					console.error("inbox: issue adapters unavailable", error);
+				}
+				if (!applyMode()) return;
+				load();
+				initBell();
+				if (document.visibilityState === "visible") startTimer();
+				void setupReporting();
+			}
+
+			void boot();
 		})();
 	</script>
 </body>
