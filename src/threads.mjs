@@ -12,7 +12,9 @@ const SUPERSEDE_KINDS = new Set(["turn", "blocked", "done", "progress", "board"]
 const LIST_STATUSES = new Set(["needs-you", "working", "ended"]);
 const STATUS_RANK = { "needs-you": 0, working: 1, ended: 2 };
 const ASKING_KINDS = new Set(["question", "permission", "blocked", "notice", "board"]);
-const THREAD_KEYS = ["cwd", "product", "feature", "worktree", "branch", "title", "titleSource", "firstRequest", "ended", "sessionFile", "hidden"];
+const THREAD_KEYS = ["cwd", "product", "feature", "worktree", "branch", "title", "titleSource", "firstRequest", "ended", "sessionFile", "hidden", "executes"];
+const ROW_NEXT_LABELS = { done: "할 일 없음", plan: "실행 대기", ship: "마무리 남음" };
+const FINAL_KINDS = new Set(["turn", "done", "blocked"]);
 
 function fail(code, message, extra) {
 	const error = new Error(message);
@@ -107,6 +109,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 	const mailboxRoot = path.join(home, "mailbox");
 	const threads = new Map();
 	const itemIndex = new Map();
+	const handoffIndex = new Map();
 
 	function readEvents(dir) {
 		let names;
@@ -127,6 +130,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 	function rebuild() {
 		threads.clear();
 		itemIndex.clear();
+		handoffIndex.clear();
 		let dirents;
 		try {
 			dirents = fs.readdirSync(threadsDir, { withFileTypes: true });
@@ -140,11 +144,15 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 			if (!thread || typeof thread !== "object" || typeof thread.session !== "string") continue;
 			thread.sessionFile ??= null;
 			thread.hidden ??= false;
+			thread.executes ??= null;
 			const events = readEvents(dir);
 			const nextSeq = events.length ? events[events.length - 1].seq + 1 : 1;
 			threads.set(thread.session, { sid: thread.session, dir, thread, events, nextSeq });
 			for (const event of events) {
 				if (event.type === "item" && typeof event.itemId === "string") itemIndex.set(event.itemId, thread.session);
+				if (event.type === "handoff" && typeof event.to === "string") {
+					handoffIndex.set(event.to, { sid: thread.session, itemId: event.itemId, via: event.via, status: event.status, slug: event.slug });
+				}
 			}
 		}
 	}
@@ -177,6 +185,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 			ended: null,
 			sessionFile: null,
 			hidden: false,
+			executes: null,
 		};
 		fs.mkdirSync(path.join(dir, "events"), { recursive: true });
 		const entry = { sid, dir, thread, events: [], nextSeq: 1 };
@@ -241,6 +250,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 		const bridgeEvent = lastOfType(events, "bridge");
 		const stateEvent = lastOfType(events, "state");
 		const pushedEvent = lastOfType(events, "pushed");
+		const nextEvent = lastOfType(events, "next");
 		const closure = closureOf(entry, itemId);
 		return {
 			itemId,
@@ -257,6 +267,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 			bridge: bridgeEvent ? bridgeEvent.state : null,
 			state: stateEvent ? { state: stateEvent.state, reasons: stateEvent.reasons ?? [], boards: stateEvent.boards ?? [] } : null,
 			pushedAt: pushedEvent ? (pushedEvent.pushedAt ?? pushedEvent.at ?? null) : null,
+			next: nextEvent ? nextEvent.next : null,
 			summary: summaryEvent
 				? { summary: summaryEvent.summary, source: summaryEvent.source, model: summaryEvent.model ?? null, simpler: summaryEvent.simpler ?? false }
 				: null,
@@ -378,6 +389,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 	function threadView(entry) {
 		const waiting = waitingItems(entry);
 		const { status, live } = threadStatus(entry, waiting);
+		const handoffEvent = lastOfType(entry.events, "handoff");
 		return {
 			...entry.thread,
 			title: displayTitle(entry),
@@ -389,7 +401,23 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 			unread: unreadCount(entry),
 			cacheUntil: lastCache(entry),
 			waitingSince: waiting.length ? waiting[0].createdAt : null,
+			handoff: handoffEvent
+				? { to: handoffEvent.to, via: handoffEvent.via, status: handoffEvent.status, slug: handoffEvent.slug, at: handoffEvent.at }
+				: null,
+			actions: providerActions(entry.sid),
 		};
+	}
+
+	function rowNext(entry, status, waiting) {
+		if (status === "needs-you") {
+			const state = waiting.at(-1)?.next?.state;
+			return typeof state === "string" && Object.hasOwn(ROW_NEXT_LABELS, state) ? { state, label: ROW_NEXT_LABELS[state] } : null;
+		}
+		if (status === "ended") {
+			const state = actionableFinal(entry.sid)?.next?.state;
+			return state === "plan" || state === "ship" ? { state, label: ROW_NEXT_LABELS[state] } : null;
+		}
+		return null;
 	}
 
 	function rowOf(entry) {
@@ -408,6 +436,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 			unread: unreadCount(entry),
 			cacheUntil: lastCache(entry),
 			waitingSince: waiting[0]?.createdAt ?? null,
+			next: rowNext(entry, status, waiting),
 		};
 	}
 
@@ -514,6 +543,93 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 		return { ok: true, itemId, deliveryId, seq: event.seq, mailbox: file };
 	}
 
+	function nextComparable(next) {
+		if (!next || typeof next !== "object") return canonicalJson(next);
+		const { at, ...rest } = next;
+		return canonicalJson(rest);
+	}
+
+	function setNext(itemId, next) {
+		const ref = requireItem(itemId);
+		const entry = threads.get(ref.sid);
+		const previous = lastOfType(itemEventsOf(entry, itemId), "next");
+		if (previous && nextComparable(previous.next) === nextComparable(next)) return false;
+		const value = next && typeof next === "object" && next.at != null ? next : { ...next, at: now().toISOString() };
+		writeEvent(entry, { type: "next", itemId, next: value });
+		return true;
+	}
+
+	function setActions(sid, producer, actions) {
+		const entry = ensureThread(sid);
+		writeEvent(entry, { type: "actions", producer, actions: Array.isArray(actions) ? actions : [] });
+		return actions;
+	}
+
+	function providerActions(sid) {
+		const entry = threads.get(sid);
+		if (!entry) return [];
+		const latest = new Map();
+		for (const event of entry.events) {
+			if (event.type !== "actions" || typeof event.producer !== "string") continue;
+			latest.set(event.producer, Array.isArray(event.actions) ? event.actions : []);
+		}
+		const actions = [];
+		for (const [producer, list] of latest) {
+			if (!list.length) continue;
+			for (const action of list) actions.push({ ...action, producer });
+		}
+		return actions;
+	}
+
+	function addHandoff(sid, { itemId, to, via, status, slug } = {}) {
+		const entry = ensureThread(sid);
+		const event = writeEvent(entry, { type: "handoff", itemId, to, via, status, slug });
+		if (typeof to === "string") handoffIndex.set(to, { sid, itemId, via, status, slug });
+		return { to, via, status, slug, at: event.at };
+	}
+
+	function handoffFrom(to) {
+		const found = handoffIndex.get(to);
+		return found ? { ...found } : null;
+	}
+
+	function writeControlFile(sid, { itemId, action, producer, key, deliveryId }) {
+		writeJson(path.join(home, "control", safeSegment(sid), `${deliveryId}.json`), {
+			v: 1,
+			type: "session-control",
+			action,
+			itemId,
+			deliveryId,
+			issuedAt: now().toISOString(),
+			...(producer == null ? {} : { producer }),
+			...(key == null ? {} : { key }),
+		});
+	}
+
+	function writeControl(sid, { itemId, action, producer, key } = {}) {
+		const deliveryId = pick(12);
+		writeControlFile(sid, { itemId, action, producer, key, deliveryId });
+		return { deliveryId };
+	}
+
+	function answerControl(itemId, { action, label, producer, key } = {}) {
+		const ref = requireItem(itemId);
+		const entry = threads.get(ref.sid);
+		const deliveryId = pick(12);
+		writeEvent(entry, {
+			type: "answer",
+			itemId,
+			answerId: `a-${pick(8)}`,
+			deliveryId,
+			payload: { action, text: label },
+			via: null,
+			client: null,
+			ua: null,
+		});
+		writeControlFile(ref.sid, { itemId, action, producer, key, deliveryId });
+		return { deliveryId };
+	}
+
 	function delivered(itemId, deliveryId, how, detail = null) {
 		const ref = requireItem(itemId);
 		writeEvent(threads.get(ref.sid), { type: "delivered", itemId, deliveryId, how, detail });
@@ -559,16 +675,41 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 	}
 
 	/** The session quit or switched away (not a reload): every open item closes as session-closed, so the thread reads 끝남. */
-	function closeSession(sid) {
+	function closeSession(sid, reason = "session-closed") {
+		return closeOffline(sid, reason);
+	}
+
+	function closeOffline(sid, reason = "closed-by-owner") {
 		const entry = threads.get(sid);
 		if (!entry) return 0;
 		let closed = 0;
 		for (const itemId of itemIdsOf(entry)) {
 			if (statusOfItem(itemEventsOf(entry, itemId), now()) === "closed") continue;
-			writeEvent(entry, { type: "closed", itemId, reason: "session-closed", resolvedBy: null });
+			writeEvent(entry, { type: "closed", itemId, reason, resolvedBy: null });
 			closed++;
 		}
 		return closed;
+	}
+
+	function actionableFinal(sid) {
+		const entry = threads.get(sid);
+		if (!entry || entry.events.some((event) => event.type === "handoff")) return null;
+		const ids = itemIdsOf(entry);
+		let finalIndex = -1;
+		for (let i = ids.length - 1; i >= 0; i--) {
+			const item = buildItem(sid, ids[i]);
+			if (item.policy === "needs-you" && FINAL_KINDS.has(item.kind)) {
+				finalIndex = i;
+				break;
+			}
+		}
+		if (finalIndex < 0) return null;
+		const final = buildItem(sid, ids[finalIndex]);
+		if (final.closedReason !== "session-closed") return null;
+		for (let i = finalIndex + 1; i < ids.length; i++) {
+			if (buildItem(sid, ids[i]).policy === "needs-you") return null;
+		}
+		return final;
 	}
 
 	function cache(sid, warmUntil, ttlSec) {
@@ -653,6 +794,15 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 		markPushed,
 		activity,
 		closeSession,
+		closeOffline,
+		setNext,
+		setActions,
+		providerActions,
+		addHandoff,
+		handoffFrom,
+		answerControl,
+		writeControl,
+		actionableFinal,
 		cache,
 		setMeta,
 		markRead,

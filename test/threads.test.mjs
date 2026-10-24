@@ -693,6 +693,226 @@ test("markPushed with suppressed sets pushSuppressed on the item and keeps pushe
 	}
 });
 
+function nextVerdict(overrides = {}) {
+	return {
+		v: 1,
+		state: "plan",
+		reason: "계획 p1 실행 대기",
+		actions: [{ id: "new-session", kind: "new-session", label: "새 세션에서 실행", primary: true, prompt: "/skill:ulw-execute p1" }],
+		warnings: [],
+		facts: { git: null, plan: { slug: "p1", path: "p1.md", root: "C:/x", open: true }, watch: 0 },
+		source: "heuristic",
+		at: "2026-10-04T12:00:00.000Z",
+		...overrides,
+	};
+}
+
+test("setNext dedupes by everything except at and the item view carries the verdict", () => {
+	const { home, cleanup, threads } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "turn", policy: "needs-you" });
+		assert.equal(item.next, null);
+		assert.equal(threads.setNext(item.itemId, nextVerdict()), true);
+		assert.deepEqual(threads.getItem(item.itemId).next, nextVerdict());
+		assert.equal(threads.setNext(item.itemId, nextVerdict({ at: "2026-10-04T13:00:00.000Z" })), false);
+		assert.equal(threads.getItem(item.itemId).next.at, "2026-10-04T12:00:00.000Z");
+		assert.equal(eventFiles(home, SID).filter((name) => name.endsWith("-next.json")).length, 1);
+		assert.equal(threads.setNext(item.itemId, nextVerdict({ state: "ship" })), true);
+		assert.equal(threads.getItem(item.itemId).next.state, "ship");
+		assert.equal(codeOf(() => threads.setNext("i-000000-zzzzzz", nextVerdict())).code, "not_found");
+	} finally {
+		cleanup();
+	}
+});
+
+test("row.next labels done, plan and ship on open needs-you rows and hides ask", () => {
+	const { cleanup, threads } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "question", policy: "needs-you" });
+		assert.equal(threads.list()[0].next, null);
+		threads.setNext(item.itemId, nextVerdict({ state: "done" }));
+		assert.deepEqual(threads.list()[0].next, { state: "done", label: "할 일 없음" });
+		threads.setNext(item.itemId, nextVerdict({ state: "plan" }));
+		assert.deepEqual(threads.list()[0].next, { state: "plan", label: "실행 대기" });
+		threads.setNext(item.itemId, nextVerdict({ state: "ship" }));
+		assert.deepEqual(threads.list()[0].next, { state: "ship", label: "마무리 남음" });
+		threads.setNext(item.itemId, nextVerdict({ state: "ask" }));
+		assert.equal(threads.list()[0].next, null);
+	} finally {
+		cleanup();
+	}
+});
+
+test("an ended row uses only plan or ship from its actionable closed final", () => {
+	const { cleanup, threads } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "turn", policy: "needs-you" });
+		threads.setNext(item.itemId, nextVerdict());
+		threads.closeSession(SID);
+		assert.equal(threads.list()[0].status, "ended");
+		assert.deepEqual(threads.list()[0].next, { state: "plan", label: "실행 대기" });
+		threads.setNext(item.itemId, nextVerdict({ state: "done" }));
+		assert.equal(threads.list()[0].next, null);
+		threads.setNext(item.itemId, nextVerdict({ state: "ship" }));
+		assert.deepEqual(threads.list()[0].next, { state: "ship", label: "마무리 남음" });
+	} finally {
+		cleanup();
+	}
+});
+
+test("actionableFinal requires the newest needs-you final closed as session-closed with no newer item or handoff", () => {
+	const { cleanup, threads } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "turn", policy: "needs-you" });
+		threads.closeSession(SID);
+		assert.equal(threads.actionableFinal(SID).itemId, item.itemId);
+
+		threads.createItem(SID, { kind: "question", policy: "needs-you" });
+		assert.equal(threads.actionableFinal(SID), null);
+
+		const superseded = threads.createItem(SID2, { kind: "turn", policy: "needs-you" }).item;
+		threads.close(superseded.itemId, "superseded");
+		assert.equal(threads.actionableFinal(SID2), null);
+
+		const handed = threads.createItem("s3", { kind: "done", policy: "needs-you" }).item;
+		threads.close(handed.itemId, "session-closed");
+		assert.equal(threads.actionableFinal("s3").itemId, handed.itemId);
+		threads.addHandoff("s3", { itemId: handed.itemId, to: "s4", via: "orca", status: "connected", slug: "p1" });
+		assert.equal(threads.actionableFinal("s3"), null);
+		assert.equal(threads.actionableFinal("missing"), null);
+	} finally {
+		cleanup();
+	}
+});
+
+test("providerActions keeps the latest list per producer, attaches the producer and drops an empty list", () => {
+	const { cleanup, threads } = setup();
+	try {
+		threads.setActions(SID, "alpha", [{ id: "a1", kind: "continue", label: "이어서", primary: false, prompt: "계속해" }]);
+		threads.setActions(SID, "beta", [{ id: "p:b1", kind: "run", label: "실행", primary: false }]);
+		threads.setActions(SID, "alpha", [{ id: "a2", kind: "continue", label: "다시", primary: false, prompt: "다시 해" }]);
+		assert.deepEqual(threads.providerActions(SID), [
+			{ id: "a2", kind: "continue", label: "다시", primary: false, prompt: "다시 해", producer: "alpha" },
+			{ id: "p:b1", kind: "run", label: "실행", primary: false, producer: "beta" },
+		]);
+		assert.deepEqual(threads.getThread(SID).thread.actions, threads.providerActions(SID));
+		threads.setActions(SID, "beta", []);
+		assert.deepEqual(threads.providerActions(SID).map((action) => action.id), ["a2"]);
+		assert.deepEqual(threads.providerActions("missing"), []);
+	} finally {
+		cleanup();
+	}
+});
+
+test("answerControl answers the item and writes exactly the control contract", () => {
+	const { home, cleanup, threads } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "question", policy: "needs-you" });
+		const sent = threads.answerControl(item.itemId, { action: "close", label: "세션 닫기", producer: "p1", key: "k1" });
+		const file = path.join(home, "control", safeSegment(SID), `${sent.deliveryId}.json`);
+		const control = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.deepEqual(control, {
+			v: 1,
+			type: "session-control",
+			action: "close",
+			itemId: item.itemId,
+			deliveryId: sent.deliveryId,
+			issuedAt: control.issuedAt,
+			producer: "p1",
+			key: "k1",
+		});
+		assert.equal(typeof control.issuedAt, "string");
+		assert.ok(!Number.isNaN(Date.parse(control.issuedAt)));
+		const answered = threads.getItem(item.itemId);
+		assert.equal(answered.status, "answered");
+		assert.deepEqual(answered.answers.at(-1).payload, { action: "close", text: "세션 닫기" });
+	} finally {
+		cleanup();
+	}
+});
+
+test("writeControl writes the control file without an answer event", () => {
+	const { home, cleanup, threads } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "turn", policy: "needs-you" });
+		const before = threads.getThread(SID).events.length;
+		const sent = threads.writeControl(SID, { itemId: item.itemId, action: "run" });
+		assert.equal(threads.getThread(SID).events.length, before);
+		assert.equal(threads.getItem(item.itemId).status, "open");
+		assert.deepEqual(threads.getItem(item.itemId).answers, []);
+		const control = JSON.parse(fs.readFileSync(path.join(home, "control", safeSegment(SID), `${sent.deliveryId}.json`), "utf8"));
+		assert.deepEqual(Object.keys(control).sort(), ["action", "deliveryId", "issuedAt", "itemId", "type", "v"]);
+		assert.equal(control.action, "run");
+	} finally {
+		cleanup();
+	}
+});
+
+test("closeSession accepts a custom reason and closeOffline closes by owner without extra writes", () => {
+	const { cleanup, threads } = setup();
+	try {
+		const a = threads.createItem(SID, { kind: "progress", policy: "progress" }).item;
+		const b = threads.createItem(SID, { kind: "question", policy: "needs-you" }).item;
+		assert.equal(threads.closeSession(SID, "handed-off"), 2);
+		assert.equal(threads.getItem(a.itemId).closedReason, "handed-off");
+		assert.equal(threads.getItem(b.itemId).closedReason, "handed-off");
+		assert.equal(threads.closeSession(SID, "handed-off"), 0);
+
+		const c = threads.createItem(SID2, { kind: "turn", policy: "needs-you" }).item;
+		threads.close(c.itemId, "superseded");
+		const before = threads.getThread(SID2).events.length;
+		assert.equal(threads.closeOffline(SID2), 0);
+		assert.equal(threads.getThread(SID2).events.length, before);
+		assert.equal(threads.closeOffline("missing"), 0);
+
+		threads.createItem("s3", { kind: "question", policy: "needs-you" });
+		threads.createItem("s3", { kind: "progress", policy: "progress" });
+		assert.equal(threads.closeOffline("s3"), 2);
+		for (const item of threads.getThread("s3").items) assert.equal(item.closedReason, "closed-by-owner");
+	} finally {
+		cleanup();
+	}
+});
+
+test("handoffFrom returns the latest handoff after a fresh createThreads rebuild", () => {
+	const { cleanup, threads, restart } = setup();
+	try {
+		const { item } = threads.createItem(SID, { kind: "done", policy: "needs-you" });
+		threads.addHandoff(SID, { itemId: item.itemId, to: "target", via: "orca", status: "launching", slug: "p1" });
+		threads.addHandoff(SID, { itemId: item.itemId, to: "target", via: "wt", status: "connected", slug: "p2" });
+		assert.deepEqual(threads.handoffFrom("target"), { sid: SID, itemId: item.itemId, via: "wt", status: "connected", slug: "p2" });
+		assert.equal(threads.handoffFrom("missing"), null);
+		const view = threads.getThread(SID).thread.handoff;
+		assert.deepEqual({ to: view.to, via: view.via, status: view.status, slug: view.slug }, { to: "target", via: "wt", status: "connected", slug: "p2" });
+		assert.equal(typeof view.at, "string");
+
+		const restarted = restart();
+		assert.deepEqual(restarted.handoffFrom("target"), { sid: SID, itemId: item.itemId, via: "wt", status: "connected", slug: "p2" });
+		assert.equal(restarted.getThread(SID).thread.handoff.slug, "p2");
+	} finally {
+		cleanup();
+	}
+});
+
+test("executes persists on a meta post and an older thread.json reads null", () => {
+	const { home, cleanup, threads, restart } = setup();
+	try {
+		threads.createItem(SID, { kind: "turn", policy: "needs-you" });
+		assert.equal(threads.getThread(SID).thread.executes, null);
+		threads.setMeta(SID, { executes: "p1" });
+		assert.equal(threads.getThread(SID).thread.executes, "p1");
+		assert.equal(restart().getThread(SID).thread.executes, "p1");
+
+		const file = path.join(home, "data", "threads", safeSegment(SID), "thread.json");
+		const older = JSON.parse(fs.readFileSync(file, "utf8"));
+		delete older.executes;
+		fs.writeFileSync(file, JSON.stringify(older));
+		assert.equal(restart().getThread(SID).thread.executes, null);
+	} finally {
+		cleanup();
+	}
+});
+
 test("every write is atomic: only parsable json files remain, with no tmp suffix", () => {
 	const { home, cleanup, threads } = setup();
 	try {
