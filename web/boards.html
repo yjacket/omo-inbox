@@ -305,6 +305,9 @@
 		.sk-bar.w2 { width: 28%; }
 		.sk-bar.w3 { width: 34%; }
 
+		@media (max-width: 1023px) {
+			.filters > .field:last-child { flex: 1 1 100%; }
+		}
 		@media (min-width: 768px) {
 			.page { padding: var(--s8) var(--s6) var(--s10); }
 			.filters { position: sticky; top: 0; z-index: 1; padding-top: var(--s2); background: var(--bg); }

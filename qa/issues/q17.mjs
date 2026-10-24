@@ -216,6 +216,21 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		await evalIn(page, "(() => { document.getElementById('retry').click(); return true; })()", "q17_record_list_request");
 		const list = await evalIn(page, listReady(1), "q17_list_ready");
 		const start = await evalIn(page, SNAPSHOT, "q17_start_snapshot");
+		const overflow = await evalIn(page, `(() => {
+			const filters = document.querySelector('.filters').getBoundingClientRect();
+			const seg = document.getElementById('status').getBoundingClientRect();
+			return {
+				width: innerWidth,
+				scrollWidth: document.documentElement.scrollWidth,
+				clientWidth: document.documentElement.clientWidth,
+				filters: { left: filters.left, right: filters.right, width: filters.width },
+				seg: { left: seg.left, right: seg.right, width: seg.width },
+			};
+		})()`, "q17_overflow_measurement");
+		record.overflow = overflow;
+		check(`Q17 /boards fits ${width}px without horizontal overflow`, overflow.scrollWidth <= overflow.width && overflow.clientWidth <= overflow.width, JSON.stringify(overflow));
+		evidence(`Q17-boards-${width}.png`, Buffer.from(await withDeadline(page.screenshot({ type: "png" }), DEADLINE_MS, "q17_overflow_screenshot")));
+		act("measure", `scrollWidth ${overflow.scrollWidth} <= innerWidth ${overflow.width} at ${width}px`, "page.evaluate resolved");
 		const tracker = await evalIn(page, TRACKER, "q17_install_tracker");
 		const hitAreas = await evalIn(page, `(() => ['[data-issue-report]', '.tools a[href="/issues"]'].flatMap((selector) => [...document.querySelectorAll(selector)].map((el) => { const box = el.getBoundingClientRect(); return { selector, label: el.textContent.trim(), width: box.width, height: box.height }; })))()`, "q17_hit_areas");
 		record.hitAreas = { narrow: hitAreas };
@@ -310,7 +325,8 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		await evalIn(page, REPORT_READY, "q17_all_ready");
 		await evalIn(page, TRACKER, "q17_all_tracker");
 		const allList = await evalIn(page, listReady(1), "q17_all_list");
-		await evalIn(page, "(() => { const spacer = document.createElement('div'); spacer.id = 'q17-spacer'; spacer.style.height = '600px'; document.body.append(spacer); scrollTo(0, 120); return true; })()", "q17_spacer");
+		// Tall enough that 120px of scroll room survives the notice appearing and disappearing at 1024x800.
+		await evalIn(page, "(() => { const spacer = document.createElement('div'); spacer.id = 'q17-spacer'; spacer.style.height = '1200px'; document.body.append(spacer); scrollTo(0, 120); return true; })()", "q17_spacer");
 		await evalIn(page, "new Promise((resolve) => requestAnimationFrame(() => resolve(scrollY)))", "q17_scroll_ready");
 		const beforeOpen = await evalIn(page, SNAPSHOT, "q17_before_open");
 		check("Q17 the 전체 filter shows the rows and the page is scrolled", allList.rows >= 2 && beforeOpen.filter === "all" && beforeOpen.scrollY > 0, JSON.stringify({ rows: allList.rows, filter: beforeOpen.filter, scrollY: beforeOpen.scrollY }));
@@ -337,12 +353,20 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		check("Q17 closing applies the queued failure once and keeps the filter, rows and scroll", resumed.dialogOpen === false && resumed.noticeHidden === false && resumed.filter === "all" && resumed.rows.length === beforeOpen.rows.length && resumed.scrollY === beforeOpen.scrollY, JSON.stringify({ open: resumed.dialogOpen, noticeHidden: resumed.noticeHidden, filter: resumed.filter, rows: resumed.rows.length, scrollY: resumed.scrollY }));
 		await evalIn(page, "(() => { window.fetch = window.__q17.realFetch; return true; })()", "q17_restore_fetch");
 		const retryAccepted = evalIn(page, "new Promise((resolve, reject) => { const notice = document.getElementById('notice'); const done = () => notice.hidden === true ? true : null; const now = done(); if (now) { resolve(now); return; } const observer = new MutationObserver(() => { const value = done(); if (value) { observer.disconnect(); clearTimeout(timer); resolve(value); } }); observer.observe(notice, { attributes: true, attributeFilter: ['hidden'] }); const timer = setTimeout(() => { observer.disconnect(); reject(new Error('notice stayed visible')); }, 9000); })", "q17_retry_notice");
-		await withDeadline(page.click("#retry"), DEADLINE_MS, "q17_retry");
+		const probe = `(() => { const row = document.querySelector('#list .row[data-id]'); const notice = document.getElementById('notice'); return { scrollY, active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null, noticeHidden: notice.hidden, noticeTop: notice.getBoundingClientRect().top, rowTop: row.getBoundingClientRect().top, docHeight: document.documentElement.scrollHeight }; })()`;
+		const beforeRetry = await evalIn(page, probe, "q17_before_retry_probe");
+		// Activate through the DOM: a driver click would scroll the sticky-covered button into view and
+		// move the very scroll position this step asserts.
+		await evalIn(page, "(() => { document.getElementById('retry').click(); return true; })()", "q17_retry");
 		act("click", "#retry after restoring fetch", "awaiting notice hidden");
 		await retryAccepted;
+		const afterRetry = await evalIn(page, probe, "q17_after_retry_probe");
+		record.failure.scrollProbe = { beforeRetry, afterRetry };
 		const recovered = await evalIn(page, SNAPSHOT, "q17_recovered");
 		record.failure.recovered = recovered;
-		check("Q17 다시 시도 recovers the list with the filter and scroll kept", recovered.noticeHidden === true && recovered.filter === "all" && recovered.rows.length === beforeOpen.rows.length && recovered.scrollY === beforeOpen.scrollY, JSON.stringify({ noticeHidden: recovered.noticeHidden, rows: recovered.rows.length, filter: recovered.filter, scrollY: recovered.scrollY }));
+		// Hiding the notice shortens the document by its own height. Chrome may anchor the first row in
+		// place by lowering scrollY; either the numeric scroll or the visible row position must persist.
+		check("Q17 다시 시도 recovers the list with the filter and scroll kept", recovered.noticeHidden === true && recovered.filter === "all" && recovered.rows.length === beforeOpen.rows.length && (recovered.scrollY === beforeOpen.scrollY || afterRetry.rowTop === beforeRetry.rowTop), JSON.stringify({ noticeHidden: recovered.noticeHidden, rows: recovered.rows.length, filter: recovered.filter, scrollY: recovered.scrollY, beforeScroll: beforeOpen.scrollY, rowTop: afterRetry.rowTop, rowTopBeforeRetry: beforeRetry.rowTop }));
 		await evalIn(page, "(() => { document.getElementById('q17-spacer')?.remove(); return true; })()", "q17_remove_spacer");
 
 		// ---- lifecycle isolation: proposals bytes, counts and fetch log ----
