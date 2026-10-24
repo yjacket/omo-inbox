@@ -3,8 +3,8 @@
  * The real /boards page (no QA scaffolding: the page's own inline script registers its adapter,
  * diagnostics and reporter) is driven through the browser: the header 제보/제보함 links, a Review
  * row chosen through the reporter's 위치 선택 without leaving /boards, a submitted report whose
- * frozen target names that proposal and whose source stays null, and an issue receipt that is
- * separate from the proposal. The failure track proves an empty closed list still offers the entry,
+ * frozen source is that picked proposal and whose frozen target names it, and an issue receipt
+ * that is separate from the proposal. The failure track proves an empty closed list still offers the entry,
  * and that a failed list refresh while the composer is open keeps the typed text, the 전체 filter
  * and the scroll position until close; the queued failure is applied once after close, and 다시 시도
  * recovers. Before/after the report lifecycle the proposal directory hash, the proposal counts and
@@ -267,7 +267,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		const detail = await request("issue-detail", `/api/issues/${issueId}`);
 		const context = detail.body && detail.body.evidence && detail.body.evidence[0] && detail.body.evidence[0].context;
 		record.reports.detail = { status: detail.status, description: detail.body && detail.body.issue && detail.body.issue.description, source: detail.body && detail.body.issue && detail.body.issue.source, context };
-		check("Q17 the issue is a separate record whose frozen target names the picked proposal and title", detail.status === 200 && detail.body.issue.description === DESCRIPTION && detail.body.issue.source === null && context && context.page === "boards" && context.target && context.target.kind === "record" && context.target.key === `proposal:${row.id}` && context.target.label === row.title && context.source === null, JSON.stringify(record.reports.detail));
+		check("Q17 the issue is a separate record whose frozen source and target name the picked proposal and title", detail.status === 200 && detail.body.issue.description === DESCRIPTION && detail.body.issue.source && detail.body.issue.source.kind === "proposal" && detail.body.issue.source.proposalId === row.id && context && context.page === "boards" && context.target && context.target.kind === "record" && context.target.key === `proposal:${row.id}` && context.target.label === row.title && context.source && context.source.kind === "proposal" && context.source.proposalId === row.id, JSON.stringify(record.reports.detail));
 		check("Q17 the frozen capture lists the visible Review ids and bounded diagnostics", context && context.visibleIds.includes(row.id) && context.visibleIds.length === start.rows.length && Array.isArray(context.diagnostics) && context.diagnostics.some((entry) => entry.type === "action" && entry.name === "open_report") && context.diagnostics.some((entry) => entry.type === "request" && entry.route === "proposals_list"), JSON.stringify({ visibleIds: context && context.visibleIds, diagnostics: context && context.diagnostics }));
 		const sentShot = Buffer.from(await withDeadline(page.screenshot({ type: "png" }), DEADLINE_MS, "q17_boards_screenshot"));
 		evidence("Q17-boards.png", sentShot);
