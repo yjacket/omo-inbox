@@ -222,6 +222,25 @@ test("listTargets returns only bounded, finite descriptors with frame ownership"
 	assert.ok(Object.isFrozen(targets[0].rect));
 });
 
+test("listTargets passes a bounded descriptor excerpt through and omits a missing one", () => {
+	const registry = createAdapterRegistry({ ownerWindow: fakeOwner() });
+	registry.register(
+		adapter({
+			getTargets: () => [
+				{ kind: "record", key: "thread:a", label: "A", rect: { x: 0, y: 0, w: 10, h: 10 }, framePath: [], excerpt: "x".repeat(600) },
+				{ kind: "record", key: "thread:b", label: "B", rect: { x: 0, y: 20, w: 10, h: 10 }, framePath: [] },
+				{ kind: "record", key: "thread:c", label: "C", rect: { x: 0, y: 40, w: 10, h: 10 }, framePath: [], excerpt: "" },
+			],
+		}),
+	);
+	const targets = registry.listTargets();
+	assert.equal(Buffer.byteLength(targets[0].excerpt, "utf8"), 512);
+	assert.ok("x".repeat(600).startsWith(targets[0].excerpt));
+	assert.equal(Object.hasOwn(targets[1], "excerpt"), false);
+	assert.equal(Object.hasOwn(targets[2], "excerpt"), false);
+	assert.equal(Object.hasOwn(registry.listTargets()[0], "threadId"), false, "only the bounded descriptor fields survive");
+});
+
 test("registration, capture and targets accept genuine objects from another realm", () => {
 	const realm = vm.createContext({});
 	const owner = fakeOwner();

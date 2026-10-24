@@ -14,6 +14,7 @@
 const PAGE_VALUES = new Set(["inbox", "thread", "boards", "proposal", "issues", "other"]);
 const TARGET_KINDS = new Set(["page", "record", "control", "frame"]);
 const TOKEN_BYTES = 160;
+const EXCERPT_BYTES = 512;
 const FRAME_ID_BYTES = 200;
 const RECT_ABS_MAX = 1_000_000;
 
@@ -285,7 +286,12 @@ export function createAdapterRegistry({ ownerWindow } = {}) {
 			// Ownership comes only from the iframe element the parent verified at registration. An
 			// adapter-supplied framePath is rejected as authority; it cannot rename its source.
 			const framePath = record.frame ? [...record.framePath] : [];
-			out.push(Object.freeze({ kind: entry.kind, key, label, rect: Object.freeze(rect), framePath: Object.freeze(framePath) }));
+			// The descriptor may carry the visible text it names; it is bounded here so the frozen
+			// capture can take its excerpt from the picked descriptor without a second page read.
+			const excerpt = clipBytes(entry.excerpt, EXCERPT_BYTES);
+			const descriptor = { kind: entry.kind, key, label, rect: Object.freeze(rect), framePath: Object.freeze(framePath) };
+			if (excerpt !== null && excerpt !== "") descriptor.excerpt = excerpt;
+			out.push(Object.freeze(descriptor));
 		}
 		return Object.freeze(out);
 	}

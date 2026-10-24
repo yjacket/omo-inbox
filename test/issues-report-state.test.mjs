@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { validateCreate } from "../src/issues-contract.mjs";
 import { describeUnavailable, freezeCapture } from "../web/issue-context.js";
+import { freezeToOutbox, listPending } from "../web/issue-drafts.js";
 import {
 	REDACTED_VIEW,
 	baselineFromEvidence,
 	buildEnvelope,
 	classifyFailure,
+	clearTargetBaseline,
+	pickTargetBaseline,
 	createReportState,
 	deriveCapture,
 	describeContext,
@@ -18,6 +21,7 @@ import {
 	parseDetailReceipt,
 	pruneBaseline,
 	reduceReport,
+	sourceForTarget,
 	validateDescription,
 	withReporterToken,
 } from "../web/issue-report.js";
@@ -259,8 +263,9 @@ test("parseDetailReceipt reads the create event of the deterministic issue id", 
 
 test("context edits start a new generation and clear any earlier freeze; invalid text never freezes", () => {
 	const state = editing();
-	const retargeted = reduceReport(state, { type: "target", target: { kind: "record", key: "item:a1", label: "항목 A", rect: { x: 1.5, y: 2, w: 3, h: 4 }, framePath: [] } });
-	assert.equal(retargeted.generation, state.generation + 1);
+	// D9 supersedes the older expectation: a pick is not a capture generation.
+	const retargeted = reduceReport(state, { type: "pick", target: { kind: "record", key: "item:a1", label: "항목 A", rect: { x: 1.5, y: 2, w: 3, h: 4 }, framePath: [] } });
+	assert.equal(retargeted.generation, state.generation);
 	assert.equal(retargeted.target.key, "item:a1");
 	const trimmed = reduceReport(retargeted, { type: "context", context: capture({ excerptEnabled: false }), removed: ["excerpt", "bogus"] });
 	assert.deepEqual(trimmed.removed, ["excerpt"]);
@@ -274,6 +279,160 @@ test("context edits start a new generation and clear any earlier freeze; invalid
 	assert.equal(discarded.text, "");
 	assert.equal(discarded.context, state.context);
 	assert.equal(discarded.generation, state.generation + 1);
+});
+
+test("a picked target supplies the frozen source from its descriptor while the open-time sequence stays", () => {
+	const opened = baselineFromEvidence(capture());
+	const target = { kind: "record", key: "thread:qa-issue-b", label: "다른 대화", rect: { x: 0, y: 0, w: 10, h: 10 }, framePath: [] };
+	const pickedSource = sourceForTarget(opened, target);
+	assert.deepEqual(pickedSource, { kind: "thread", threadId: "qa-issue-b", itemId: null, observedSeq: 0 });
+	const picked = deriveCapture(opened, { target, removed: [], excerptEnabled: true, source: pickedSource, uuid: () => OTHER_CAPTURE_ID, now: () => NOW_MS + 60_000 });
+	assert.deepEqual(picked.source, pickedSource);
+	assert.equal(picked.observedAt, opened.observedAt);
+	// The descriptor's own visible text becomes the frozen excerpt; the target itself stays bounded.
+	const withExcerpt = { ...target, excerpt: "다른 대화의 첫 항목" };
+	const pickedExcerpt = deriveCapture(opened, { target: withExcerpt, removed: [], excerptEnabled: true, source: pickedSource, excerpt: withExcerpt.excerpt, uuid: () => OTHER_CAPTURE_ID, now: () => NOW_MS + 60_000 });
+	assert.equal(pickedExcerpt.excerpt, "다른 대화의 첫 항목");
+	assert.equal(Object.hasOwn(pickedExcerpt.target, "excerpt"), false);
+	// Clearing the pick returns to the source captured at open; the descriptor is not asked again.
+	const cleared = deriveCapture(opened, { target: null, removed: [], excerptEnabled: true, uuid: () => THIRD_CAPTURE_ID, now: () => NOW_MS + 120_000 });
+	assert.deepEqual(cleared.source, opened.source);
+	// A conversation item and an explicit adapter id name the same thread; a proposal keeps its revision.
+	assert.deepEqual(sourceForTarget(opened, { key: "thread:qa-issue-a:item-a1" }), { kind: "thread", threadId: "qa-issue-a", itemId: "item-a1", observedSeq: 0 });
+	const proposal = baselineFromEvidence(capture({ source: { kind: "proposal", proposalId: "261024-ycho", revision: 1, observedSeq: 1, recordedContentHash: null, frame: null } }));
+	assert.deepEqual(sourceForTarget(proposal, { kind: "page", key: "proposal:261024-ycho", revision: 2 }), { kind: "proposal", proposalId: "261024-ycho", revision: 1, observedSeq: 1, recordedContentHash: null, frame: null });
+	// A frame or mark names no record: the open-time source stays the source.
+	assert.deepEqual(sourceForTarget(opened, { kind: "frame", key: "frame:제보 버튼" }), opened.source);
+});
+
+test("a source the user removed stays removed when a target is picked again", () => {
+	const opened = baselineFromEvidence(capture());
+	const removedSource = pruneBaseline(opened, ["source"]);
+	assert.equal(removedSource.source, null);
+	const target = { kind: "record", key: "thread:qa-issue-b", label: "다른 대화", rect: { x: 0, y: 0, w: 10, h: 10 }, framePath: [] };
+	const picked = deriveCapture(removedSource, { target, removed: ["source"], excerptEnabled: true, source: sourceForTarget(removedSource, target), uuid: () => OTHER_CAPTURE_ID, now: () => NOW_MS + 60_000 });
+	assert.equal(picked.source, null);
+	assert.equal(picked.target.key, target.key);
+});
+
+test("a picked target stays the source through later edits; clearing restores the open-time source", () => {
+	const opened = baselineFromEvidence(capture());
+	const target = { kind: "record", key: "thread:qa-issue-b", label: "다른 대화", rect: { x: 0, y: 0, w: 10, h: 10 }, framePath: [], excerpt: "다른 대화의 첫 항목" };
+	const picked = pickTargetBaseline(opened, target);
+	assert.deepEqual(picked.source, { kind: "thread", threadId: "qa-issue-b", itemId: null, observedSeq: 0 });
+	assert.equal(picked.excerpt, "다른 대화의 첫 항목");
+	// Removing the visible ids or turning the excerpt off edits the picked source, never A's.
+	const prunedIds = pruneBaseline(picked, ["visibleIds"]);
+	const afterRemoval = deriveCapture(prunedIds, { target, removed: ["visibleIds"], excerptEnabled: true, uuid: () => OTHER_CAPTURE_ID, now: () => NOW_MS + 60_000 });
+	assert.equal(afterRemoval.source.threadId, "qa-issue-b");
+	assert.equal(afterRemoval.excerpt, "다른 대화의 첫 항목");
+	const excerptOff = deriveCapture(prunedIds, { target, removed: ["visibleIds"], excerptEnabled: false, uuid: () => OTHER_CAPTURE_ID, now: () => NOW_MS + 60_000 });
+	assert.equal(excerptOff.source.threadId, "qa-issue-b");
+	assert.equal(excerptOff.excerpt, null, "turning the toggle off drops only the excerpt, never the picked source");
+	// Clearing is the only edit that returns to the open-time source and excerpt.
+	const clearedBaseline = clearTargetBaseline(prunedIds, { source: opened.source, excerpt: opened.excerpt, removed: ["visibleIds"] });
+	const cleared = deriveCapture(clearedBaseline, { target: null, removed: ["visibleIds"], excerptEnabled: true, uuid: () => THIRD_CAPTURE_ID, now: () => NOW_MS + 120_000 });
+	assert.deepEqual(cleared.source, opened.source);
+	assert.equal(cleared.excerpt, opened.excerpt);
+	assert.deepEqual(cleared.visibleIds, []);
+	assert.equal(cleared.observedAt, opened.observedAt);
+});
+
+test("a removed source stays removed through a pick and a clear", () => {
+	const opened = baselineFromEvidence(capture());
+	const target = { kind: "record", key: "thread:qa-issue-b", label: "다른 대화", rect: { x: 0, y: 0, w: 10, h: 10 }, framePath: [], excerpt: "B" };
+	const removed = ["source", "visibleIds"];
+	const picked = pickTargetBaseline(pruneBaseline(opened, removed), target, removed);
+	assert.equal(picked.source, null);
+	assert.equal(picked.excerpt, "B");
+	const cleared = clearTargetBaseline(picked, { source: opened.source, excerpt: opened.excerpt, removed });
+	assert.equal(cleared.source, null);
+	assert.equal(cleared.excerpt, opened.excerpt, "only the removed source stays removed");
+	const withExcerptRemoved = [...removed, "excerpt"];
+	const clearedAll = clearTargetBaseline(picked, { source: opened.source, excerpt: opened.excerpt, removed: withExcerptRemoved });
+	assert.equal(clearedAll.source, null);
+	assert.equal(clearedAll.excerpt, null);
+});
+
+test("a pick keeps the generation of the open-time capture", () => {
+	const opened = reduceReport(createReportState(), { type: "open", context: capture(), target: null, excerptEnabled: true });
+	const target = { kind: "record", key: "thread:qa-issue-b", label: "다른 대화", rect: { x: 0, y: 0, w: 10, h: 10 }, framePath: [] };
+	const picked = reduceReport(opened, { type: "pick", target, context: capture({ target }), removed: [] });
+	assert.equal(picked.generation, opened.generation);
+	assert.equal(picked.observedSeq, opened.observedSeq);
+	const cleared = reduceReport(picked, { type: "pick", target: null, context: capture(), removed: [] });
+	assert.equal(cleared.generation, opened.generation);
+});
+
+function memoryDb() {
+	const stores = { drafts: new Map(), outbox: new Map(), receipts: new Map() };
+	const idb = {
+		transaction(names) {
+			const tx = { oncomplete: null, onabort: null, onerror: null, error: null, aborted: false };
+			const complete = () => queueMicrotask(() => {
+				if (!tx.aborted) tx.oncomplete?.();
+			});
+			tx.objectStore = (name) => {
+				const records = stores[name];
+				if (!records) throw new Error(`missing store ${name}`);
+				return {
+					get(key) {
+						const request = { result: undefined, error: null, onsuccess: null, onerror: null };
+						queueMicrotask(() => {
+							request.result = records.get(key);
+							request.onsuccess?.();
+							complete();
+						});
+						return request;
+					},
+					getAll() {
+						const request = { result: undefined, error: null, onsuccess: null, onerror: null };
+						queueMicrotask(() => {
+							request.result = [...records.values()];
+							request.onsuccess?.();
+							complete();
+						});
+						return request;
+					},
+					put(record) {
+						records.set(record.draftId ?? record.requestId, structuredClone(record));
+						return { error: null, onsuccess: null, onerror: null };
+					},
+				};
+			};
+			tx.abort = () => {
+				tx.aborted = true;
+				tx.error = new DOMException("abort", "AbortError");
+				queueMicrotask(() => tx.onabort?.());
+			};
+			return tx;
+		},
+	};
+	return { db: { _idb: idb, origin: "https://inbox.test", storeId: STORE_ID }, stores };
+}
+
+test("the picked capture persists in the outbox and reads back byte-identically for a replay", async () => {
+	const opened = baselineFromEvidence(capture());
+	const target = { kind: "record", key: "thread:qa-issue-b", label: "다른 대화", rect: { x: 0, y: 0, w: 10, h: 10 }, framePath: [], excerpt: "다른 대화의 첫 항목" };
+	const pickedBase = pickTargetBaseline(opened, target);
+	const context = deriveCapture(pickedBase, { target, removed: [], excerptEnabled: true, uuid: () => OTHER_CAPTURE_ID, now: () => NOW_MS + 60_000 });
+	const state = reduceReport(reduceReport(createReportState(), { type: "open", context, target, excerptEnabled: true }), { type: "edit", text: "다른 대화가 잘못 보입니다", cursor: 0 });
+	const envelope = buildEnvelope({ storeId: STORE_ID, requestId: REQUEST_ID, description: state.text, evidence: state.context, visual: null });
+	const draft = draftRecordFor(state, { draftId: DRAFT_ID, tabId: TAB_ID, revision: 1 });
+	const { db, stores } = memoryDb();
+	const frozen = await freezeToOutbox(db, REQUEST_ID, envelope);
+	assert.equal(frozen.ok, true);
+	assert.equal(stores.outbox.size, 1);
+	const pending = await listPending(db);
+	assert.equal(pending.length, 1);
+	const persisted = pending[0].envelope;
+	const replay = JSON.stringify(JSON.parse(JSON.stringify(persisted)));
+	const wire = JSON.stringify(envelope);
+	assert.equal(JSON.stringify(draft.evidence), JSON.stringify(persisted.evidence));
+	assert.equal(JSON.stringify(persisted.evidence), JSON.stringify(envelope.evidence));
+	assert.equal(wire, replay);
+	assert.deepEqual(persisted.evidence.source, { kind: "thread", threadId: "qa-issue-b", itemId: null, observedSeq: 0 });
+	assert.equal(persisted.evidence.excerpt, "다른 대화의 첫 항목");
 });
 
 test("a restored draft keeps its own observation as the editing baseline; the live page never re-freezes it", () => {

@@ -311,23 +311,83 @@ export function draftRecordFor(state, { draftId, tabId, revision }) {
  * read, so a restored draft keeps its source, excerpt and observedAt whatever the page shows now;
  * a null baseline is the standalone "unavailable" context.
  */
-export function deriveCapture(baseline, { target, removed = [], excerptEnabled = false, uuid, now }) {
+export function deriveCapture(baseline, { target, removed = [], excerptEnabled = false, source, excerpt, uuid, now }) {
 	if (baseline === null || baseline === undefined) return describeUnavailable("no_adapter", { uuid, now });
 	const drop = new Set(removed);
 	return freezeCapture({
 		page: baseline.page,
 		observedAt: typeof baseline.observedAt === "string" ? baseline.observedAt : undefined,
-		source: drop.has("source") ? null : baseline.source ?? null,
+		source: drop.has("source") ? null : source !== undefined ? source : baseline.source ?? null,
 		target: drop.has("target") ? null : target === undefined ? baseline.target ?? null : target,
 		clientBuild: drop.has("clientBuild") ? null : baseline.clientBuild ?? null,
 		view: drop.has("view") ? REDACTED_VIEW : baseline.view ?? REDACTED_VIEW,
-		excerpt: baseline.excerpt ?? null,
+		excerpt: excerpt !== undefined ? excerpt : baseline.excerpt ?? null,
 		excerptEnabled: !drop.has("excerpt") && excerptEnabled === true,
 		visibleIds: drop.has("visibleIds") ? [] : baseline.visibleIds ?? [],
 		diagnostics: drop.has("diagnostics") ? [] : baseline.diagnostics ?? [],
 		uuid,
 		now,
 	});
+}
+
+/**
+ * The source a picked target names: its key (or the ids the adapter carries beside it) supplies the
+ * identity, while the observation counters stay those the page showed when the reporter opened.
+ * A target that names no captureable record (a frame, a mark, an anonymous page) keeps the source.
+ */
+export function sourceForTarget(baseline, target) {
+	const prior = isPlainObject(baseline) && isPlainObject(baseline.source) ? baseline.source : null;
+	if (!isPlainObject(target)) return prior;
+	const observedSeq = prior && Number.isSafeInteger(prior.observedSeq) && prior.observedSeq >= 0 ? prior.observedSeq : 0;
+	const copySource = (value) => (isPlainObject(value) ? JSON.parse(JSON.stringify(value)) : null);
+	const text = (value) => (typeof value === "string" && value !== "" ? value : null);
+	const key = typeof target.key === "string" ? target.key : "";
+	const parts = key.split(":");
+	const threadId = text(target.threadId) ?? text(target.sessionId) ?? (parts[0] === "thread" ? text(parts[1]) : null);
+	if (threadId !== null) {
+		const itemId = text(target.itemId) ?? (parts[0] === "thread" ? text(parts[2]) : null);
+		return { kind: "thread", threadId, itemId, observedSeq };
+	}
+	const proposalId = text(target.proposalId) ?? (parts[0] === "proposal" ? text(parts[1]) : null);
+	if (proposalId !== null) {
+		const carried = prior && prior.kind === "proposal" && prior.proposalId === proposalId ? prior : null;
+		const revision = carried && Number.isSafeInteger(carried.revision) ? carried.revision : Number.isSafeInteger(target.revision) && target.revision > 0 ? target.revision : 1;
+		const hash = carried ? carried.recordedContentHash ?? null : typeof target.recordedContentHash === "string" ? target.recordedContentHash : null;
+		const frame = carried && isPlainObject(carried.frame) ? { ...carried.frame } : isPlainObject(target.frame) ? { ...target.frame } : null;
+		return { kind: "proposal", proposalId, revision, observedSeq, recordedContentHash: hash, frame };
+	}
+	const issueId = text(target.issueId) ?? (parts[0] === "issue" ? text(parts[1]) : null);
+	if (issueId !== null) return { kind: "issue", issueId, observedSeq };
+	return copySource(prior);
+}
+
+/**
+ * The baseline after a pick: the descriptor becomes the source identity for the rest of the
+ * session, including its excerpt, so later removals and excerpt toggles derive from it. A source
+ * the user already removed stays removed.
+ */
+export function pickTargetBaseline(baseline, target, removed = []) {
+	if (!isPlainObject(baseline) || !isPlainObject(target)) return baseline;
+	const drop = new Set(removed);
+	return {
+		...baseline,
+		source: drop.has("source") ? null : sourceForTarget(baseline, target),
+		excerpt: drop.has("excerpt") ? null : typeof target.excerpt === "string" && target.excerpt !== "" ? target.excerpt : null,
+	};
+}
+
+/**
+ * The baseline after clearing a pick: the open-time source and excerpt return, unless the user
+ * removed them while the target was picked. Only an explicit recapture replaces the observation.
+ */
+export function clearTargetBaseline(baseline, { source = null, excerpt = null, removed = [] } = {}) {
+	if (!isPlainObject(baseline)) return baseline;
+	const drop = new Set(removed);
+	return {
+		...baseline,
+		source: drop.has("source") ? null : isPlainObject(source) ? JSON.parse(JSON.stringify(source)) : null,
+		excerpt: drop.has("excerpt") ? null : typeof excerpt === "string" ? excerpt : null,
+	};
 }
 
 // Display rounding only: the envelope keeps the exact offsets and rectangles.
@@ -437,6 +497,21 @@ export function reduceReport(state, event) {
 			next.outbox = "none";
 			next.failure = null;
 			next.status = "editing";
+			return next;
+		}
+		case "pick": {
+			// D9: picking or clearing a target never starts a capture generation; only an explicit
+			// re-capture does. The context is the picked descriptor derived without a page read.
+			if (isLocked(next) || next.status === "sent") return next;
+			next.target = event.target === undefined ? null : event.target;
+			next.context = event.context === undefined ? null : event.context;
+			if (Array.isArray(event.removed)) next.removed = event.removed.filter((item) => CONTEXT_ITEMS.includes(item));
+			if (event.excerptEnabled !== undefined) next.excerptEnabled = event.excerptEnabled === true;
+			next.requestId = null;
+			next.envelope = null;
+			next.outbox = "none";
+			next.failure = null;
+			if (next.status === "idle") next.status = "editing";
 			return next;
 		}
 		case "context": {
@@ -697,6 +772,11 @@ export function mountIssueReport(options = {}) {
 	// the approved items as the user removes them, or the approved capture a restored draft stored.
 	// Only an explicit recapture (first open, 초안 버리기, 새 제보) replaces it.
 	let baseline = null;
+	// D9: the open-time source identity, restored only when the user clears the pick.
+	let openSource = null;
+	let openExcerpt = null;
+	// D9: the picker offers the listTargets() snapshot taken at open/freeze, never a later read.
+	let targetsSnapshot = [];
 	let draftId = null;
 	let draftRevision = 0;
 	let saveChain = Promise.resolve();
@@ -807,8 +887,8 @@ export function mountIssueReport(options = {}) {
 		};
 	}
 
-	function freezeNow({ target, removed, excerptEnabled }) {
-		const frozen = deriveCapture(baseline, { target, removed, excerptEnabled, uuid, now });
+	function freezeNow({ target, removed, excerptEnabled, source, excerpt }) {
+		const frozen = deriveCapture(baseline, { target, removed, excerptEnabled, source, excerpt, uuid, now });
 		// The first freeze of a baseline fixes its observation time; every later derivation keeps it.
 		if (baseline !== null && typeof baseline.observedAt !== "string") baseline.observedAt = frozen.observedAt;
 		return frozen;
@@ -829,9 +909,27 @@ export function mountIssueReport(options = {}) {
 		return snapshot;
 	}
 
+	function rememberOpenSource() {
+		openSource = baseline && isPlainObject(baseline.source) ? JSON.parse(JSON.stringify(baseline.source)) : null;
+		openExcerpt = baseline && typeof baseline.excerpt === "string" ? baseline.excerpt : null;
+	}
+
+	function snapshotTargets() {
+		let list = [];
+		try {
+			list = adapters && typeof adapters.listTargets === "function" ? adapters.listTargets() : [];
+		} catch {
+			list = [];
+		}
+		targetsSnapshot = Array.isArray(list) ? JSON.parse(JSON.stringify(list)) : [];
+		return targetsSnapshot;
+	}
+
 	/** Explicit recapture of the live page: the whole frozen context is replaced at once. */
 	function recapture() {
 		baseline = captureBaseline();
+		rememberOpenSource();
+		snapshotTargets();
 		owner.begin();
 		const excerptEnabled = baseline !== null && baseline.excerptEnabled === true;
 		return { context: freezeNow({ target: null, removed: [], excerptEnabled }), excerptEnabled };
@@ -1368,12 +1466,8 @@ export function mountIssueReport(options = {}) {
 	}
 
 	function openPicker() {
-		let targets = [];
-		try {
-			targets = adapters && typeof adapters.listTargets === "function" ? adapters.listTargets() : [];
-		} catch {
-			targets = [];
-		}
+		// D9: only the open-time snapshot, so a getter change after opening cannot alter the options.
+		const targets = targetsSnapshot;
 		picker.replaceChildren();
 		if (!targets.length) {
 			picker.append(el(document, "li", { class: "issue-report__picker-empty", text: "선택할 위치가 없습니다" }));
@@ -1392,17 +1486,17 @@ export function mountIssueReport(options = {}) {
 
 	function chooseTarget(target) {
 		const plain = target ? { kind: target.kind, key: target.key, label: target.label, rect: { ...target.rect }, framePath: [...(target.framePath ?? [])] } : null;
-		const gen = owner.begin();
-		// Picking a target is the explicit act that puts the 위치 item back after its removal.
+		// D9: the picked descriptor, already listed at freeze time, becomes the source identity for
+		// the rest of the session; the page is never captured or re-frozen again. Clearing restores
+		// the open-time source, and a source the user removed is never written back.
 		const removed = plain === null ? state.removed : state.removed.filter((item) => item !== "target");
-		dispatch({ type: "target", target: plain });
-		dispatch({ type: "context", context: freezeNow({ target: plain, removed, excerptEnabled: state.excerptEnabled }), removed });
+		baseline = plain === null ? clearTargetBaseline(baseline, { source: openSource, excerpt: openExcerpt, removed }) : pickTargetBaseline(baseline, target, removed);
+		dispatch({ type: "pick", target: plain, context: freezeNow({ target: plain, removed, excerptEnabled: state.excerptEnabled }), removed });
 		if (diagnostics && typeof diagnostics.recordAction === "function") diagnostics.recordAction("pick_target");
 		record("target", plain ? plain.key : null);
 		closePicker();
 		render();
 		void scheduleSave();
-		return gen;
 	}
 
 	picker.addEventListener("click", (event) => {
@@ -1460,6 +1554,8 @@ export function mountIssueReport(options = {}) {
 		const excerptEnabled = removed.includes("excerpt") ? false : state.excerptEnabled;
 		// The baseline forgets the item too: nothing removed survives in memory or in the stored draft.
 		baseline = pruneBaseline(baseline, removed);
+		if (key === "source") openSource = null;
+		if (key === "excerpt") openExcerpt = null;
 		owner.begin();
 		dispatch({ type: "context", context: freezeNow({ target: removed.includes("target") ? null : state.target, removed, excerptEnabled }), removed, excerptEnabled });
 		if (key === "target") dispatch({ type: "target", target: null });
@@ -1714,6 +1810,8 @@ export function mountIssueReport(options = {}) {
 				const fresh = recapture();
 				dispatch({ type: "open", context: fresh.context, target: null, excerptEnabled: fresh.excerptEnabled });
 			} else {
+				// Reopening keeps the frozen capture but takes the picker options of this open.
+				snapshotTargets();
 				dispatch({ type: "open" });
 			}
 		}
@@ -1760,6 +1858,7 @@ export function mountIssueReport(options = {}) {
 						// The approved capture is the only observation a stored draft carries; a removed
 						// or deselected item has no copy to come back from.
 						baseline = baselineFromEvidence(found.evidence);
+						rememberOpenSource();
 						owner.begin();
 					}
 					dispatch({
