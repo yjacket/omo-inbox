@@ -151,6 +151,51 @@ test("validateSummary keeps options out of question and permission items and rej
 	assert.equal(validateSummary("{oops}", { kind: "turn" }), null);
 });
 
+test("validateSummary keeps a valid next hint and turns malformed ones into null", () => {
+	const base = { kind: "done", headline: "끝났습니다" };
+	const next = { state: "ship", actions: [{ label: "설치", prompt: "패키지를 설치해" }, { label: "리로드", prompt: "확장을 다시 불러와" }] };
+	assert.deepEqual(validateSummary(JSON.stringify({ ...base, next }), { kind: "done" }).next, next);
+	for (const bad of ["done", [], 3, null, { state: "plan", actions: [] }, { state: "done", actions: "none" }]) {
+		assert.equal(validateSummary(JSON.stringify({ ...base, next: bad }), { kind: "done" }).next, null, JSON.stringify(bad));
+	}
+});
+
+test("validateSummary keeps at most two next actions and drops over-long or server-owned labels", () => {
+	const summary = (actions) => validateSummary(JSON.stringify({ kind: "done", headline: "끝났습니다", next: { state: "ask", actions } }), { kind: "done" }).next;
+	const three = [
+		{ label: "설치", prompt: "패키지를 설치해" },
+		{ label: "리로드", prompt: "확장을 다시 불러와" },
+		{ label: "배포", prompt: "서버에 배포해" },
+	];
+	assert.deepEqual(summary(three), { state: "ask", actions: three.slice(0, 2) });
+	assert.deepEqual(summary([{ label: "가".repeat(13), prompt: "설치해" }, { label: "테스트", prompt: "테스트를 돌려" }]), {
+		state: "ask",
+		actions: [{ label: "테스트", prompt: "테스트를 돌려" }],
+	});
+	assert.deepEqual(summary([{ label: "세션 닫기", prompt: "세션을 닫아" }, { label: "커밋", prompt: "커밋해" }, { label: "확인", prompt: "결과를 확인해" }]), {
+		state: "ask",
+		actions: [{ label: "확인", prompt: "결과를 확인해" }],
+	});
+});
+
+test("the summary schema and rules ask for an optional next hint", () => {
+	const request = buildSummaryRequest({ kind: "turn", raw: { text: "끝났습니다" } }, THREAD, {});
+	assert.match(request.system, /"next"/);
+	assert.match(request.system, /next는 turn·done·blocked 항목에만 씁니다/);
+	assert.match(request.system, /state done은 마지막 메시지가 사용자에게 남은 일이 없다고 할 때/);
+	assert.match(request.system, /직접 말한 후속 작업/);
+	assert.match(request.system, /세션 닫기·새 세션·커밋·푸시는 서버가 붙이므로 쓰지 않습니다/);
+});
+
+test("heuristicSummary sets next only for turn, done and blocked items", () => {
+	assert.equal(heuristicSummary({ kind: "turn", raw: { text: "턴이 끝났습니다" } }, THREAD).next, null);
+	assert.equal(heuristicSummary({ kind: "done", raw: { text: "끝났습니다" } }, THREAD).next, null);
+	assert.equal(heuristicSummary({ kind: "blocked", raw: { text: "막혔습니다" } }, THREAD).next, null);
+	const question = heuristicSummary({ kind: "question", raw: { text: "진행할까요?" } }, THREAD);
+	assert.equal("next" in question, false);
+	assert.equal("next" in heuristicSummary({ kind: "progress", raw: { text: "진행 중" } }, THREAD), false);
+});
+
 test("heuristicSummary parses the handoff block, strips paths and code, and keeps the question", () => {
 	const item = { kind: "turn", raw: { text: HANDOFF } };
 	const summary = heuristicSummary(item, THREAD);
@@ -379,6 +424,8 @@ test("finalizeSummary overwrites any model ifNoAnswer with the runtime fact per 
 	assert.equal(fin({ kind: "blocked", raw: {} }), "답이 없으면 멈춘 채로 있습니다");
 	for (const kind of ["done", "progress", "notice", "board"]) assert.equal(fin({ kind, raw: {} }), null);
 	assert.equal(model.ifNoAnswer, "자동으로 닫힙니다");
+	const next = { state: "ship", actions: [{ label: "설치", prompt: "패키지를 설치해" }] };
+	assert.deepEqual(finalizeSummary({ ...model, next }, { kind: "turn", raw: {} }, THREAD).next, next);
 });
 
 test("the system prompt tells the model the system fills ifNoAnswer", () => {

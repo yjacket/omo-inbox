@@ -17,6 +17,9 @@ const LIMITS = {
 };
 const MAX_OPTIONS = 4;
 const MAX_TERMS = 3;
+const NEXT_STATES = ["done", "ship", "ask"];
+const MAX_NEXT_ACTIONS = 2;
+const NEXT_LABEL_DROP_RE = /닫기|새 세션|커밋|푸시|commit|push/i;
 const MAX_TOKENS = 700;
 const RAW_CAP = 6000;
 const RAW_HEAD = 4000;
@@ -138,12 +141,14 @@ export const SUMMARY_SYSTEM_PROMPT = [
 	"9-9. ask에는 사용자에게 하는 물음뿐 아니라, 원문이 사용자가 직접 해야 한다고 말한 일(예: 직접 실행, 설치, 확인, 창 닫기, 새 세션 시작)을 한 문장으로 쓴다. 물음도 할 일도 없으면 ask는 null이다.",
 	"9-10. 작업 구간 요약에서 '구간의 메시지별 한 줄'은 맥락일 뿐이다. 결론은 '마지막 메시지 원문'에 적힌 결과다. 기다리는 줄은 결과가 아니다.",
 	"9-7. ifNoAnswer는 시스템이 실제 설정으로 채운다: 항상 null로 쓰고, body와 ask에도 답이 없을 때 무슨 일이 일어나는지(멈춤, 자동 진행, 보류)를 지어내 쓰지 않는다. 원문이 어느 쪽으로 진행하는지 말하면 그 방향을 쓴다. 이미 구현이 시작된 세션이면 '전체가 멈춘다' 대신 '이 결정이 필요한 부분만 대기합니다'로 쓴다. 원문이 사용자가 직접 해야 할 행동(창 닫기, 새 세션 시작 등)을 말하면 그 행동의 주체를 에이전트가 알아서 하는 것처럼 바꿔 쓰지 않는다. headline에 '~할 차례', '~확인해야 한다' 같은 과정어 대신 실제로 무엇을 해 달라는 것인지 쓴다.",
-	"10. 출력은 아래 스키마의 JSON 객체 하나만. 설명, 인사, 코드 펜스 금지.",
+	"10. next는 turn·done·blocked 항목에만 씁니다. state done은 마지막 메시지가 사용자에게 남은 일이 없다고 할 때, ship은 일은 끝났지만 커밋·푸시·설치·리로드·배포·확인 같은 마무리가 남았을 때, ask는 그 밖에 사용자에게 묻거나 맡길 때입니다. actions는 마지막 메시지가 직접 말한 후속 작업(설치, 리로드, 테스트 서버, 배포, 확인)만 최대 2개, label은 12자 이하 한국어, prompt는 에이전트에게 보낼 한국어 지시 200자 이하입니다. 세션 닫기·새 세션·커밋·푸시는 서버가 붙이므로 쓰지 않습니다. 근거 없는 행동은 만들지 않습니다.",
+	"11. 출력은 아래 스키마의 JSON 객체 하나만. 설명, 인사, 코드 펜스 금지.",
 	"스키마:",
 	'{"kind": "question|approval|permission|blocked|done|report|progress", "headline": "<=40자",',
 	' "context": "<=120자", "body": "<=300자", "ask": "<=120자 또는 null",',
 	' "options": [{"label": "<=20자", "why": "<=60자", "rec": true|false}], "ifNoAnswer": null,',
-	' "terms": [{"term": "<=20자", "meaning": "<=50자"}], "title": "<=24자, 제목을 요청받았을 때만"}',
+	' "terms": [{"term": "<=20자", "meaning": "<=50자"}], "title": "<=24자, 제목을 요청받았을 때만",',
+	' "next": {"state": "done|ship|ask", "actions": [{"label": "<=12자", "prompt": "<=200자"}]} | null}',
 	"kind 선택: 물음이면 question, 승인 요청이면 approval, 권한 대화상자면 permission, 막힘이면 blocked,",
 	"끝났으면 done, 진행 보고면 report, 아직 일하는 중이면 progress.",
 	"options는 4개 이하이고, 진행/보고 항목에는 넣지 않는다. 질문과 권한 항목은 화면이 원문 선택지를 그대로 쓰므로 options를 비운다. terms는 3개 이하이고, 요약 글에 그대로 나오는 낱말만 쓴다.",
@@ -248,6 +253,25 @@ function textOrNull(value, limit) {
 	return clipped ? clipped : null;
 }
 
+/** Optional model next-step hint: done/ship/ask with at most two grounded actions. */
+function normalizeNext(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	if (!NEXT_STATES.includes(value.state)) return null;
+	if (!Array.isArray(value.actions)) return null;
+	const actions = [];
+	for (const entry of value.actions) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const label = String(entry.label ?? "").trim();
+		const prompt = String(entry.prompt ?? "").trim();
+		if (label.length < 1 || label.length > 12) continue;
+		if (prompt.length < 1 || prompt.length > 200) continue;
+		if (NEXT_LABEL_DROP_RE.test(label)) continue;
+		actions.push({ label, prompt });
+		if (actions.length >= MAX_NEXT_ACTIONS) break;
+	}
+	return { state: value.state, actions };
+}
+
 export function validateSummary(text, item = {}) {
 	const chunk = firstJsonObject(text);
 	if (!chunk) return null;
@@ -275,6 +299,7 @@ export function validateSummary(text, item = {}) {
 		ifNoAnswer: textOrNull(parsed.ifNoAnswer, LIMITS.ifNoAnswer),
 		terms: normalizeTerms(parsed.terms).filter(({ term }) => [headline, context, body, ask].some((field) => field?.includes(term))),
 		title: title ? title : null,
+		next: normalizeNext(parsed.next),
 	};
 }
 
@@ -649,7 +674,7 @@ export function heuristicSummary(item, thread = {}) {
 	const context = clip(`요청: ${thread?.firstRequest ?? ""}`, LIMITS.context);
 	const body = clip(stripPaths(text), LIMITS.body);
 	const ask = detectQuestion(text) ? textOrNull(lastQuestionSentence(text), LIMITS.ask) : detectTodo(text) ? textOrNull(lastTodoSentence(text), LIMITS.ask) : null;
-	return {
+	const summary = {
 		kind: summaryKindFor(item?.kind),
 		headline,
 		context,
@@ -660,6 +685,8 @@ export function heuristicSummary(item, thread = {}) {
 		terms: [],
 		title: null,
 	};
+	if (item?.kind === "turn" || item?.kind === "done" || item?.kind === "blocked") summary.next = null;
+	return summary;
 }
 
 /** One Korean progress line for the Inbox list; the model request mirrors buildSummaryRequest's shape. */
