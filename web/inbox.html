@@ -115,7 +115,6 @@
 		.ctl:disabled { color: var(--ink-3); background: transparent; cursor: default; }
 		.ctl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 		.ctl.review { position: relative; }
-		.ctl.issue-tool { height: 44px; }
 		.badge {
 			position: absolute;
 			top: -8px;
@@ -312,8 +311,8 @@
 			</div>
 			<nav class="tools" aria-label="도구">
 				<button type="button" class="ctl bell" id="bell" hidden>알림 받기</button>
-				<a class="ctl review issue-tool" id="issuesLink" href="/issues">제보함<span class="badge" id="issueBadge" hidden></span></a>
-				<a class="ctl issue-tool" id="reportLink" data-issue-report href="/issues/new">제보</a>
+				<a class="ctl review" id="issuesLink" href="/issues">제보함<span class="badge" id="issueBadge" hidden></span></a>
+				<a class="ctl" id="reportLink" data-issue-report href="/issues/new">제보</a>
 				<a class="ctl review" id="reviewLink" href="/boards">Review<span class="badge" id="reviewBadge" hidden></span></a>
 			</nav>
 		</header>

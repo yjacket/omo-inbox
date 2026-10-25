@@ -877,12 +877,8 @@
 				("speechSynthesis" in window) ? h("button", { type: "button", class: "text", "data-action": "listen", "aria-pressed": listening ? "true" : "false" }, listening ? "멈추기" : "듣기") : null,
 				h("button", { type: "button", class: "text", "data-action": "raw", "aria-expanded": rawOpen ? "true" : "false" }, rawOpen ? "원문 닫기" : "원문 보기"),
 				h("button", { type: "button", class: "text", "data-action": "explain", disabled: explaining || null }, "더 쉽게"),
-				h("time", { datetime: item.createdAt, "data-at": item.createdAt, title: absoluteTime(item.createdAt) }, relativeTime(item.createdAt)),
-			),
-			h(
-				"div",
-				{ class: "report-entry" },
 				h("button", { type: "button", class: "text", "data-action": "report", "data-report-item": itemId, "data-key": "report" }, "제보"),
+				h("time", { datetime: item.createdAt, "data-at": item.createdAt, title: absoluteTime(item.createdAt) }, relativeTime(item.createdAt)),
 			),
 			h("div", { class: "raw", hidden: !rawOpen || null }, episodeOf(item) ? episodeNodes(item) : markdown(rawTextOf(item))),
 		);

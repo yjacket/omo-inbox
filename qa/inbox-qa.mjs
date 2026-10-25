@@ -791,8 +791,8 @@ try {
 	check("(T2) the board item shows the Review chip and a Review · 열기 line linking to its proposal page", boardState && boardState.kind === "Review" && boardState.sys.includes("Review · 열기") && boardState.links.includes(`/p/${ids.boardId}`), fmt(boardState && { kind: boardState.kind, sys: boardState.sys, links: boardState.links }));
 	const q1a = await itemState(ids.q1);
 	check(
-		"(T3) question bubble: 질문 chip, headline, 하던 일 context, three full-width options with ★권장 두 커밋 first and its why line, 직접 쓰기, 답이 없으면 line, 듣기 / 원문 보기 / 더 쉽게 and the time",
-		q1a && q1a.kind === "질문" && q1a.headline.length > 0 && String(q1a.context).startsWith("하던 일 · ") && q1a.opts.length === 3 && q1a.opts[0].label === "두 커밋" && q1a.opts[0].rec === true && q1a.opts[0].star === "★권장" && String(q1a.opts[0].why).includes("권장") && q1a.opts.every((o) => !o.disabled) && q1a.write === true && String(q1a.noanswer).includes("답이 없으면") && fmt(q1a.foot.map((b) => b.text)) === fmt(["듣기", "원문 보기", "더 쉽게"]) && q1a.time === "방금" && q1a.markup === 0,
+		"(T3) question bubble: 질문 chip, headline, 하던 일 context, three full-width options with ★권장 두 커밋 first and its why line, 직접 쓰기, 답이 없으면 line, 듣기 / 원문 보기 / 더 쉽게 / 제보 and the time",
+		q1a && q1a.kind === "질문" && q1a.headline.length > 0 && String(q1a.context).startsWith("하던 일 · ") && q1a.opts.length === 3 && q1a.opts[0].label === "두 커밋" && q1a.opts[0].rec === true && q1a.opts[0].star === "★권장" && String(q1a.opts[0].why).includes("권장") && q1a.opts.every((o) => !o.disabled) && q1a.write === true && String(q1a.noanswer).includes("답이 없으면") && fmt(q1a.foot.map((b) => b.text)) === fmt(["듣기", "원문 보기", "더 쉽게", "제보"]) && q1a.time === "방금" && q1a.markup === 0,
 		fmt(q1a && { kind: q1a.kind, headline: q1a.headline, context: q1a.context, opts: q1a.opts, write: q1a.write, noanswer: q1a.noanswer, foot: q1a.foot, time: q1a.time }),
 	);
 	await ev("window.scrollTo(0, 0)");

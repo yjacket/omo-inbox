@@ -159,6 +159,7 @@ const DIALOG = `(() => {
 			return {
 				reportHeight: Math.round(report.getBoundingClientRect().height),
 				issuesHeight: Math.round(issues.getBoundingClientRect().height),
+				reviewHeight: Math.round(document.getElementById('reviewLink').getBoundingClientRect().height),
 				badgeHidden: document.getElementById('issueBadge').hidden,
 				badgeText: document.getElementById('issueBadge').textContent,
 			};
@@ -284,7 +285,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		const needsExpected = String(threads.counts?.needsYou ?? 0);
 		check("Q15 the issue badge never changes the Review badge or 내 차례 counts", header720.badge.text === "1" && (threads.reviews?.mine ? header720.reviewBadge.text === reviewExpected && header720.reviewBadge.hidden === false : header720.reviewBadge.hidden === true) && (threads.counts?.needsYou > 0 ? header720.needsYou.text.includes(needsExpected) : header720.needsYou.hidden === true), JSON.stringify({ issue: header720.badge, review: header720.reviewBadge, reviewExpected, needsYou: header720.needsYou, needsExpected }));
 		check("Q15 the split tools stay inside 720px without overlapping", header720.overflow === false && header720.overlap === false && header720.tools.every((tool) => tool.right <= header720.width) && header720.issues.right <= header720.report.left && header720.report.right <= header720.review.left, JSON.stringify({ tools: header720.tools, heads: header720.heads, nav: header720.nav, overlap: header720.overlap }));
-		check("Q15 new header controls keep 44px hit areas at 720px", [header720.issues, header720.report].every((control) => control.width >= 44 && control.height >= 44), JSON.stringify({ issues: header720.issues, report: header720.report }));
+		check("Q15 제보함 and 제보 are as tall as Review at 720px", [header720.issues, header720.report].every((control) => control.height === header720.review.height), JSON.stringify({ issues: header720.issues, report: header720.report, review: header720.review }));
 
 		// ---- 390 and 1280 header checks (same document, no thread handoff) ----
 		await evalIn(page, `history.replaceState(null, "", "/")`, "q15_clear_s");
@@ -293,14 +294,14 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		const header390 = await evalIn(page, HEADER, "q15_header_390");
 		record.steps.header390 = header390;
 		check("Q15 at 390px the tools and the issue badge stay inside the viewport without covering 내 차례", header390.overflow === false && header390.overlap === false && header390.tools.every((tool) => tool.right <= 390) && header390.badge.hidden === false, JSON.stringify({ tools: header390.tools, heads: header390.heads, nav: header390.nav, overlap: header390.overlap }));
-		check("Q15 new header controls keep 44px hit areas at 390x844", header390.height === 844 && [header390.issues, header390.report].every((control) => control.width >= 44 && control.height >= 44), JSON.stringify({ issues: header390.issues, report: header390.report, height: header390.height }));
+		check("Q15 제보함 and 제보 are as tall as Review at 390x844", header390.height === 844 && [header390.issues, header390.report].every((control) => control.height === header390.review.height), JSON.stringify({ issues: header390.issues, report: header390.report, review: header390.review, height: header390.height }));
 		await saveShot(page, "Q15-390.png", "Q15-390.png");
 		await withDeadline(pinQaPage(page, { width: 1280, height: 900, scheme }), DEADLINE_MS, "q15_pin_1280");
 		await wait(page, "() => innerWidth === 1280 && document.querySelector('.row[data-session]') ? true : null", "q15_at_1280");
 		const header1280 = await evalIn(page, HEADER, "q15_header_1280");
 		record.steps.header1280 = header1280;
 		check("Q15 at 1280px the tools and the issue badge stay inside the viewport without covering 내 차례", header1280.overflow === false && header1280.overlap === false && header1280.tools.every((tool) => tool.right <= 1280) && header1280.badge.hidden === false, JSON.stringify({ tools: header1280.tools, heads: header1280.heads, nav: header1280.nav, overlap: header1280.overlap }));
-		check("Q15 new header controls keep 44px hit areas at 1280px", [header1280.issues, header1280.report].every((control) => control.width >= 44 && control.height >= 44), JSON.stringify({ issues: header1280.issues, report: header1280.report }));
+		check("Q15 제보함 and 제보 are as tall as Review at 1280px", [header1280.issues, header1280.report].every((control) => control.height === header1280.review.height), JSON.stringify({ issues: header1280.issues, report: header1280.report, review: header1280.review }));
 		await withDeadline(pinQaPage(page, { width, height, scheme }), DEADLINE_MS, "q15_pin_720");
 		await wait(page, "() => innerWidth === 720 && document.querySelector('iframe.thread') ? true : null", "q15_back_to_720");
 
@@ -333,7 +334,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		await wait(page, "() => document.querySelector('#issue-report')?.open === true && document.querySelector('#issue-description') === document.activeElement ? true : null", "q15_report_open");
 		const opened = await evalIn(page, DIALOG, "q15_dialog_open");
 		record.steps.opened = opened;
-		check("Q15 the report trigger opens one modal dialog with the list deferred", opened.open === true && opened.modal === true && opened.count === 1 && opened.deferred === "1" && opened.header.reportHeight >= 44, JSON.stringify(opened));
+		check("Q15 the report trigger opens one modal dialog with the list deferred", opened.open === true && opened.modal === true && opened.count === 1 && opened.deferred === "1" && opened.header.reportHeight === opened.header.reviewHeight, JSON.stringify(opened));
 
 		await withDeadline(page.click("#issue-target-pick"), DEADLINE_MS, "q15_open_picker");
 		const picked = await evalIn(page, `(() => {

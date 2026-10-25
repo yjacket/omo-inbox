@@ -544,7 +544,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 							const documentOverflow = metrics.scrollWidth > metrics.innerWidth;
 							const zoomOk = Math.abs((metrics.scale ?? 0) - zoom / 100) < 0.05;
 							const reportOk = name === "issues" ? metrics.issuesRoute === "list" : metrics.report === true;
-							const reportInside = Boolean(metrics.reportRect) && metrics.reportRect.width >= 44 && metrics.reportRect.height >= 44 && metrics.reportRect.x >= 0 && metrics.reportRect.right <= metrics.innerWidth + 1;
+							const reportInside = Boolean(metrics.reportRect) && metrics.reportRect.width > 0 && metrics.reportRect.height > 0 && (name !== "issues" || (metrics.reportRect.width >= 44 && metrics.reportRect.height >= 44)) && metrics.reportRect.x >= 0 && metrics.reportRect.right <= metrics.innerWidth + 1;
 							const keyboardOk = keyboard.inside === true && keyboard.tag !== "BODY" && keyboard.tag !== "HTML" && beforeEscape === afterEscape;
 							const schemeOk = metrics.colorScheme === currentScheme;
 							const cell = {

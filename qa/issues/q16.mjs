@@ -200,7 +200,10 @@ const THREAD_STATE = `(() => {
 		headline: document.querySelector('.headline')?.textContent ?? null,
 		controls: [...document.querySelectorAll('.tool, [data-action="report"]')].map((node) => {
 			const box = node.getBoundingClientRect();
-			return { text: (node.textContent || '').trim(), width: box.width, height: box.height };
+			const tool = node.matches('.tool');
+			const peer = tool ? document.querySelector('.bar .toggle') : node.closest('.foot')?.querySelector('[data-action="explain"]') ?? null;
+			const peerBox = peer ? peer.getBoundingClientRect() : null;
+			return { kind: tool ? "tool" : "message", text: (node.textContent || '').trim(), width: box.width, height: box.height, inFoot: Boolean(node.closest('.foot')), afterExplain: node.previousElementSibling?.getAttribute('data-action') === 'explain', peer: peer ? (peer.textContent || '').trim() : null, peerHeight: peerBox ? peerBox.height : null, sameRow: peerBox ? Math.abs(peerBox.top - box.top) < 1 : false };
 		}),
 		items: [...document.querySelectorAll('.group[data-item]')].map((group) => group.getAttribute('data-item')),
 		itemCount: document.querySelectorAll('.group[data-item]').length,
@@ -243,11 +246,17 @@ const REAL_EMBED_STATE = `(() => {
 		childItemIds: doc ? [...doc.querySelectorAll('.group[data-item]')].map((group) => group.getAttribute('data-item')) : [],
 		childControls: doc ? [...doc.querySelectorAll('.tool, [data-action="report"]')].map((node) => {
 			const box = node.getBoundingClientRect();
-			return { text: (node.textContent || '').trim(), width: box.width, height: box.height };
+			const tool = node.matches('.tool');
+			const peer = tool ? doc.querySelector('.bar .toggle') : node.closest('.foot')?.querySelector('[data-action="explain"]') ?? null;
+			const peerBox = peer ? peer.getBoundingClientRect() : null;
+			return { kind: tool ? "tool" : "message", text: (node.textContent || '').trim(), width: box.width, height: box.height, inFoot: Boolean(node.closest('.foot')), afterExplain: node.previousElementSibling?.getAttribute('data-action') === 'explain', peer: peer ? (peer.textContent || '').trim() : null, peerHeight: peerBox ? peerBox.height : null, sameRow: peerBox ? Math.abs(peerBox.top - box.top) < 1 : false };
 		}) : [],
 		overflow: document.documentElement.scrollWidth > innerWidth,
 	};
 })()`;
+
+/** The header's 제보함/제보 take the 숨기기 toggle's height on its row; each message's 제보 is a footer text button right after 더 쉽게, as tall as it and on its row. */
+const matchesNeighbors = (controls) => controls.length >= 3 && controls.some((entry) => entry.kind === "message") && controls.every((entry) => entry.peerHeight !== null && Math.abs(entry.height - entry.peerHeight) < 0.5 && entry.sameRow && (entry.kind === "tool" || (entry.inFoot && entry.afterExplain)));
 
 function keys(name) {
 	const map = {
@@ -365,7 +374,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		const threadHashBefore = hashTree(dataThreads);
 		const proposalHashBefore = hashTree(dataProposals);
 		const mailboxBefore = hashCode(mailboxDir);
-		check("Q16 the new header links and each message report button have 44px hit areas at 390x844", initial.controls.length >= 3 && initial.controls.every((entry) => entry.width >= 44 && entry.height >= 44), JSON.stringify(initial.controls));
+		check("Q16 제보함/제보 match the 숨기기 toggle and each message 제보 sits after 더 쉽게 in its footer at the same height at 390x844", matchesNeighbors(initial.controls), JSON.stringify(initial.controls));
 		act("measure", "new report controls at 390x844", JSON.stringify(initial.controls));
 
 		await withDeadline(page.evaluate("document.querySelector('.term').click()"), DEADLINE_MS, "q16_open_term");
@@ -480,13 +489,13 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 			if (!doc || !doc.querySelector('[data-action="report"]') || !doc.querySelector('#issue-report')) return null;
 			const controls = [...doc.querySelectorAll('.tool, [data-action="report"]')];
 			if (controls.length < 3) return null;
-			if (!controls.every((node) => { const box = node.getBoundingClientRect(); return box.width >= 44 && box.height >= 44; })) return null;
+			if (!controls.every((node) => { const box = node.getBoundingClientRect(); return box.width > 0 && box.height > 0; })) return null;
 			return window.__inboxIssueAdapters && window.__inboxIssueAdapters.current() && window.__inboxIssueAdapters.current().page === 'thread' ? true : null;
 		}`, "q16_real_embedded_ready")), DEADLINE_MS, "q16_real_embedded_ready");
 		const embeddedBefore = await withDeadline(embeddedPage.evaluate(REAL_EMBED_STATE), DEADLINE_MS, "q16_embedded_before");
 		record.steps.embedded = embeddedBefore;
 		check("Q16 the real Inbox iframe registers its thread adapter through the shared parent registry", embeddedBefore.current && embeddedBefore.current.page === "thread" && embeddedBefore.current.frame === true && embeddedBefore.childReady === true && embeddedBefore.parentDialogOpen === false, JSON.stringify(embeddedBefore.current));
-		check("Q16 the embedded thread's new report controls have 44px hit areas at 720x900", embeddedBefore.childControls.length >= 3 && embeddedBefore.childControls.every((entry) => entry.width >= 44 && entry.height >= 44), JSON.stringify(embeddedBefore.childControls));
+		check("Q16 at 720x900 embedded 제보함/제보 match the 숨기기 toggle and each message 제보 sits after 더 쉽게 at the same height", matchesNeighbors(embeddedBefore.childControls), JSON.stringify(embeddedBefore.childControls));
 
 		await withDeadline(embeddedPage.evaluate(`(() => {
 			const frame = document.querySelector('iframe.thread');
@@ -597,12 +606,12 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 			const doc = frame && frame.contentDocument;
 			if (!doc || frame.getBoundingClientRect().width <= 0) return null;
 			const controls = [...doc.querySelectorAll('.tool, [data-action="report"]')];
-			if (controls.length < 3 || !doc.querySelector('[data-action="report"]')) return null;
-			return controls.every((node) => { const box = node.getBoundingClientRect(); return box.width >= 44 && box.height >= 44; }) ? true : null;
+			if (controls.length < 3 || !doc.querySelector('.foot [data-action="report"]')) return null;
+			return controls.every((node) => { const box = node.getBoundingClientRect(); return box.width > 0 && box.height > 0; }) ? true : null;
 		}`, "q16_desktop_controls")), DEADLINE_MS, "q16_desktop_controls");
 		const desktop = await withDeadline(embeddedPage.evaluate(REAL_EMBED_STATE), DEADLINE_MS, "q16_desktop");
 		record.steps.desktop = { controls: desktop.childControls, overflow: desktop.overflow };
-		check("Q16 the new report controls keep 44px hit areas at 1280x900 embedded", desktop.childControls.length >= 3 && desktop.childControls.every((entry) => entry.width >= 44 && entry.height >= 44) && desktop.overflow === false, JSON.stringify(record.steps.desktop));
+		check("Q16 at 1280x900 embedded 제보함/제보 match the 숨기기 toggle and each message 제보 sits after 더 쉽게 at the same height", matchesNeighbors(desktop.childControls) && desktop.overflow === false, JSON.stringify(record.steps.desktop));
 
 		record.http = http;
 		record.actions = actions;

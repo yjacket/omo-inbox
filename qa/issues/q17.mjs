@@ -232,10 +232,10 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		evidence(`Q17-boards-${width}.png`, Buffer.from(await withDeadline(page.screenshot({ type: "png" }), DEADLINE_MS, "q17_overflow_screenshot")));
 		act("measure", `scrollWidth ${overflow.scrollWidth} <= innerWidth ${overflow.width} at ${width}px`, "page.evaluate resolved");
 		const tracker = await evalIn(page, TRACKER, "q17_install_tracker");
-		const hitAreas = await evalIn(page, `(() => ['[data-issue-report]', '.tools a[href="/issues"]'].flatMap((selector) => [...document.querySelectorAll(selector)].map((el) => { const box = el.getBoundingClientRect(); return { selector, label: el.textContent.trim(), width: box.width, height: box.height }; })))()`, "q17_hit_areas");
+		const hitAreas = await evalIn(page, `(() => { const back = document.querySelector('.heads .back').getBoundingClientRect(); return ['[data-issue-report]', '.tools a[href="/issues"]'].flatMap((selector) => [...document.querySelectorAll(selector)].map((el) => { const box = el.getBoundingClientRect(); return { selector, label: el.textContent.trim(), width: box.width, height: box.height, backHeight: back.height }; })); })()`, "q17_hit_areas");
 		record.hitAreas = { narrow: hitAreas };
 		record.starts = { ready, list, start, tracker };
-		check("Q17 the new header links have 44px hit areas at 390x844", tracker === true && hitAreas.length === 2 && hitAreas.every((box) => box.width >= 44 && box.height >= 44), JSON.stringify(hitAreas));
+		check("Q17 the new header links are as tall as ‹ Inbox at 390x844", tracker === true && hitAreas.length === 2 && hitAreas.every((box) => Math.abs(box.height - box.backHeight) < 0.5), JSON.stringify(hitAreas));
 		check("Q17 the real Review page mounts the reporter from its own script", ready === true, JSON.stringify({ ready }));
 		check("Q17 the header has independent 제보/제보함 links", start.trigger === true && start.triggerHref === "/issues/new" && start.listHref === "/issues", JSON.stringify({ trigger: start.trigger, triggerHref: start.triggerHref, listHref: start.listHref }));
 		check("Q17 the seeded Review rows still render and navigate to /p/", list.rows >= 2 && start.rows.every((row) => row.href && row.href.startsWith("/p/")), JSON.stringify(start.rows));
@@ -391,10 +391,10 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		await evalIn(wide, REPORT_READY, "q17_wide_ready");
 		await evalIn(wide, listReady(1), "q17_wide_list");
 		const wideOverflow = await evalIn(wide, "({ scrollWidth: document.documentElement.scrollWidth, innerWidth, trigger: Boolean(document.querySelector('[data-issue-report]')) })", "q17_wide_snapshot");
-		const wideHitAreas = await evalIn(wide, `(() => ['[data-issue-report]', '.tools a[href="/issues"]'].flatMap((selector) => [...document.querySelectorAll(selector)].map((el) => { const box = el.getBoundingClientRect(); return { selector, width: box.width, height: box.height }; })))()`, "q17_wide_hit_areas");
+		const wideHitAreas = await evalIn(wide, `(() => { const back = document.querySelector('.heads .back').getBoundingClientRect(); return ['[data-issue-report]', '.tools a[href="/issues"]'].flatMap((selector) => [...document.querySelectorAll(selector)].map((el) => { const box = el.getBoundingClientRect(); return { selector, width: box.width, height: box.height, backHeight: back.height }; })); })()`, "q17_wide_hit_areas");
 		record.wide = { ...wideOverflow, hitAreas: wideHitAreas };
 		check("Q17 the 1280px Review page shows the entry without horizontal overflow", wideOverflow.trigger === true && wideOverflow.scrollWidth <= wideOverflow.innerWidth, JSON.stringify(wideOverflow));
-		check("Q17 the new header links have 44px hit areas at 1280px", wideHitAreas.length === 2 && wideHitAreas.every((box) => box.width >= 44 && box.height >= 44), JSON.stringify(wideHitAreas));
+		check("Q17 the new header links are as tall as ‹ Inbox at 1280px", wideHitAreas.length === 2 && wideHitAreas.every((box) => Math.abs(box.height - box.backHeight) < 0.5), JSON.stringify(wideHitAreas));
 		evidence("Q17-boards-1280.png", Buffer.from(await withDeadline(wide.screenshot({ type: "png" }), DEADLINE_MS, "q17_wide_screenshot")));
 		act("screenshot", "Q17-boards-1280.png", "page.screenshot resolved");
 	} finally {

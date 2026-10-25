@@ -152,6 +152,7 @@ const PAGE_STATE = `(() => {
 		path: location.pathname + location.search,
 		history: history.state,
 		historyLength: history.length,
+		backLink: rect(document.querySelector("nav.top a.back[href='/']")),
 		viewerHidden: viewer.hidden,
 		viewer: { open: vb.viewer.open, label: vb.viewer.label, scale: vb.viewer.scale, drawing: vb.viewer.drawing, selected: Boolean(vb.viewer.selected) },
 		marks: vb.marks.map((m) => ({ rev: m.rev, frame: m.frame, comment: m.comment, w: m.w, h: m.h })),
@@ -235,8 +236,10 @@ const PICKER_GEOMETRY = `(() => {
 	};
 })()`;
 
-/** 44 CSS px in both directions on the clickable element itself (plan Scope: new controls at every width). */
+/** The viewer's .vbar buttons are 44 CSS px in both directions; its 제보 action matches them. */
 const tappable = (rect) => Boolean(rect) && rect.w >= 44 && rect.h >= 44;
+/** The header's 제보함/제보 are the same quiet links as ← Inbox: as tall as it. */
+const likeBack = (rect, back) => Boolean(rect) && Boolean(back) && Math.abs(rect.h - back.h) < 0.5;
 
 export default async function run({ browser, ctx, width, height, scheme = "light", check, evidence }) {
 	const { newQaPage, pinQaPage, withDeadline } = await import(pathToFileURL(path.join(qaRoot(), "issues-fixture.mjs")).href);
@@ -327,7 +330,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		const loaded = await evalIn(page, PAGE_STATE, "q18_loaded");
 		states.steps.loaded = loaded;
 		note("loaded", { history: loaded.history, path: loaded.path });
-		check(`Q18 the header has 제보함 (/issues, badge hidden) and 제보 (/issues/new), each at least 44x44 CSS px at ${width}px, and the reporter is mounted`, loaded.viewportWidth === width && loaded.issuesLink?.href === "/issues" && loaded.issuesLink.text === "제보함" && loaded.badge?.hidden === true && loaded.headerReport?.href === "/issues/new" && loaded.headerReport.text === "제보" && tappable(loaded.headerReport.rect) && tappable(loaded.issuesLink.rect) && loaded.dialog.present && !loaded.dialog.open, JSON.stringify({ viewportWidth: loaded.viewportWidth, issuesLink: loaded.issuesLink, headerReport: loaded.headerReport, badge: loaded.badge, dialog: loaded.dialog }));
+		check(`Q18 the header has 제보함 (/issues, badge hidden) and 제보 (/issues/new), each as tall as ← Inbox at ${width}px, and the reporter is mounted`, loaded.viewportWidth === width && loaded.issuesLink?.href === "/issues" && loaded.issuesLink.text === "제보함" && loaded.badge?.hidden === true && loaded.headerReport?.href === "/issues/new" && loaded.headerReport.text === "제보" && likeBack(loaded.headerReport.rect, loaded.backLink) && likeBack(loaded.issuesLink.rect, loaded.backLink) && loaded.dialog.present && !loaded.dialog.open, JSON.stringify({ viewportWidth: loaded.viewportWidth, issuesLink: loaded.issuesLink, headerReport: loaded.headerReport, backLink: loaded.backLink, badge: loaded.badge, dialog: loaded.dialog }));
 		check("Q18 the page shows revision 1 as the only tab, no marks, no banner", loaded.tabs.length === 1 && loaded.tabs[0].selected === "true" && loaded.rev === 1 && loaded.marks.length === 0 && loaded.banner.hidden === true && loaded.history === null, JSON.stringify({ tabs: loaded.tabs, rev: loaded.rev, history: loaded.history }));
 
 		// ---- open the frame in the viewer with a mouse click ----
@@ -704,7 +707,7 @@ export default async function run({ browser, ctx, width, height, scheme = "light
 		await pinQaPage(page, { width: 1280, height: 800, scheme });
 		await waitDom(page, framesSized, "q18_desktop_frames");
 		const desktop = await evalIn(page, PAGE_STATE, "q18_desktop_state");
-		check("Q18 desktop: the header keeps 제보함 and 제보 beside the Review chips at 1280px, each at least 44x44 CSS px", desktop.viewportWidth === 1280 && tappable(desktop.headerReport?.rect) && tappable(desktop.issuesLink?.rect) && desktop.headerReport.rect.y < 80, JSON.stringify({ viewportWidth: desktop.viewportWidth, header: desktop.headerReport, issues: desktop.issuesLink }));
+		check("Q18 desktop: the header keeps 제보함 and 제보 beside the Review chips at 1280px, each as tall as ← Inbox", desktop.viewportWidth === 1280 && likeBack(desktop.headerReport?.rect, desktop.backLink) && likeBack(desktop.issuesLink?.rect, desktop.backLink) && desktop.headerReport.rect.y < 80, JSON.stringify({ viewportWidth: desktop.viewportWidth, header: desktop.headerReport, issues: desktop.issuesLink, back: desktop.backLink }));
 		await shot(page, "Q18-desktop.png");
 		const canvas3 = await rectOf(page, "#sections .frame canvas");
 		await mouse(page, "mouseMoved", canvas3.cx, canvas3.cy);

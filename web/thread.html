@@ -173,7 +173,7 @@
 		.bar { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--s2); min-width: 0; }
 		.chips { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
 		.tools { display: flex; align-items: center; gap: var(--s2); flex: none; }
-		.tool { display: inline-flex; align-items: center; justify-content: center; gap: var(--s1); min-width: var(--tap); min-height: var(--tap); padding: 0 var(--s3); font-size: var(--fs-micro); font-weight: 600; color: var(--ink-2); text-decoration: none; border: 1px solid var(--line); border-radius: var(--r-pill); white-space: nowrap; }
+		.tool { display: inline-flex; align-items: center; justify-content: center; gap: var(--s1); height: 28px; padding: 0 var(--s3); font-size: var(--fs-micro); font-weight: 600; color: var(--ink-2); text-decoration: none; border: 1px solid var(--line); border-radius: var(--r-pill); white-space: nowrap; }
 		.tool:hover { color: var(--ink); }
 		.tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 		.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; font-size: 10px; font-variant-numeric: tabular-nums; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-pill); }
@@ -485,24 +485,6 @@
 			border-radius: var(--r-ctl);
 			cursor: pointer;
 		}
-		.report-entry { display: flex; margin-top: var(--s2); }
-		.report-entry .text {
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			min-width: var(--tap);
-			min-height: var(--tap);
-			padding: 0 var(--s2);
-			font-size: var(--fs-cap);
-			font-weight: 600;
-			color: var(--ink-2);
-			background: transparent;
-			border: 0;
-			border-radius: var(--r-ctl);
-			cursor: pointer;
-		}
-		.report-entry .text:hover:not(:disabled) { background: var(--wash-1); color: var(--ink); }
-		.report-entry .text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 		.foot .text:hover:not(:disabled) { background: var(--wash-1); color: var(--ink); }
 		.foot .text:disabled { color: var(--ink-3); cursor: default; }
 		.foot .text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -558,7 +540,10 @@
 			border-top: 1px solid var(--line);
 			padding: var(--s2) var(--s3) calc(var(--s2) + env(safe-area-inset-bottom, 0px));
 		}
-		.quick { display: flex; flex-wrap: wrap; gap: var(--s2); margin-bottom: var(--s2); }
+		/* the chips and the next actions share one row; a ghost 세션 닫기 sits at its end */
+		.replies { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
+		.replies:not(:has(> :not([hidden]))) { display: none; }
+		.quick { display: flex; flex-wrap: wrap; gap: var(--s2); }
 		.quick button {
 			height: 32px;
 			padding: 0 var(--s3);
@@ -574,20 +559,20 @@
 		.quick button:hover:not(:disabled) { background: var(--wash-2); }
 		.quick button:disabled { color: var(--ink-3); cursor: default; }
 		.quick button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-		/* next actions: the primary in the accent, the others as outlined controls, a ghost 세션 닫기 pushed apart by a gap */
-		.next-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
+		/* next actions in the chips' size and shape: the primary in the accent, the others outlined, a ghost 세션 닫기 pushed apart by a gap */
+		.next-actions { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 		.next-btn {
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
-			min-height: var(--tap);
-			padding: 0 var(--s4);
+			height: 32px;
+			padding: 0 var(--s3);
 			font-size: var(--fs-cap);
 			font-weight: 600;
 			color: var(--ink);
 			background: var(--bg);
 			border: 1px solid var(--line);
-			border-radius: var(--r-ctl);
+			border-radius: var(--r-pill);
 			white-space: nowrap;
 			cursor: pointer;
 			transition: background-color var(--t-micro), filter var(--t-micro);
@@ -643,13 +628,15 @@
 	</div>
 	<footer class="composer" id="composer">
 		<div class="measure">
-			<div class="quick" id="quick" hidden>
-				<button type="button" data-quick="계속해">계속해</button>
-				<button type="button" data-quick="승인">승인</button>
-				<button type="button" data-quick="진행">진행</button>
-				<button type="button" data-quick="멈춰">멈춰</button>
+			<div class="replies">
+				<div class="quick" id="quick" hidden>
+					<button type="button" data-quick="계속해">계속해</button>
+					<button type="button" data-quick="승인">승인</button>
+					<button type="button" data-quick="진행">진행</button>
+					<button type="button" data-quick="멈춰">멈춰</button>
+				</div>
+				<div class="next-actions" id="nextActions" hidden></div>
 			</div>
-			<div class="next-actions" id="nextActions" hidden></div>
 			<form class="compose" id="compose">
 				<textarea id="reply" rows="1" placeholder="답장" aria-label="답장"></textarea>
 				<button type="submit" class="btn" id="send">보내기</button>

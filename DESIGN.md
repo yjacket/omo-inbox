@@ -260,6 +260,6 @@ Additional composer states: a rejected attachment says why and offers removal/an
 
 ## Hit areas and dark scheme
 
-- Every new control has a hit area of at least 44 CSS pixels, including chip change/remove, close, attachment acceptance, image removal, send, retry, confirm, reopen and delete. The existing `--tap: 44px` in `web/thread.html` is the named reference; do not invent a new name.
+- Every new control has a hit area of at least 44 CSS pixels, including chip change/remove, close, attachment acceptance, image removal, send, retry, confirm, reopen and delete. The existing `--tap: 44px` in `web/thread.html` is the named reference; do not invent a new name. Entries placed on the existing pages are the exception: the bubble footer's `제보` and the headers' `제보함` and `제보` take the size and style of the controls beside them.
 - The new surfaces use the inherited `prefers-color-scheme: dark` preference and the dark override values above. They must not alter the palette of `/`, `/s/<sid>`, `/boards`, `/p/<id>` or the viewer, and must not force a light-only dialog over a dark page.
 - Motion stays restrained and does not replace text status. Focus rings remain visible in both schemes.

@@ -285,7 +285,7 @@ async function openThread(sid, count = 1) {
 	await settle();
 }
 const nextState = () =>
-	ev(`(() => ({ line: [...document.querySelectorAll(".msg.agent .next")].map((e) => e.textContent), quickHidden: document.getElementById("quick").hidden, quick: [...document.querySelectorAll("#quick button")].filter((b) => b.offsetParent !== null).map((b) => b.textContent), actionsHidden: document.getElementById("nextActions").hidden, actions: [...document.querySelectorAll("#nextActions button")].map((b) => ({ id: b.getAttribute("data-next"), text: b.textContent, primary: b.classList.contains("primary"), ghost: b.classList.contains("ghost"), disabled: b.disabled })), chip: (document.getElementById("statusChip") || {}).textContent || "", sys: [...document.querySelectorAll(".msg.sys .line")].map((e) => e.textContent).filter(Boolean) }))()`);
+	ev(`(() => ({ line: [...document.querySelectorAll(".msg.agent .next")].map((e) => e.textContent), quickHidden: document.getElementById("quick").hidden, quick: [...document.querySelectorAll("#quick button")].filter((b) => b.offsetParent !== null).map((b) => b.textContent), actionsHidden: document.getElementById("nextActions").hidden, actions: [...document.querySelectorAll("#nextActions button")].map((b) => ({ id: b.getAttribute("data-next"), text: b.textContent, primary: b.classList.contains("primary"), ghost: b.classList.contains("ghost"), disabled: b.disabled, top: Math.round(b.getBoundingClientRect().top), height: Math.round(b.getBoundingClientRect().height) })), chipBox: (() => { const b = [...document.querySelectorAll("#quick button")].find((e) => e.offsetParent !== null); if (!b) return null; const r = b.getBoundingClientRect(); return { top: Math.round(r.top), height: Math.round(r.height) }; })(), chip: (document.getElementById("statusChip") || {}).textContent || "", sys: [...document.querySelectorAll(".msg.sys .line")].map((e) => e.textContent).filter(Boolean) }))()`);
 const sheetState = () =>
 	ev(`(() => { const sheet = document.querySelector(".sheet"); if (!sheet) return null; return { title: sheet.querySelector("h3").textContent, lines: [...sheet.querySelectorAll("p, li")].map((e) => e.textContent), buttons: [...sheet.querySelectorAll("button")].map((b) => b.textContent), focus: document.activeElement && document.activeElement.getAttribute("data-sheet") }; })()`);
 const listState = () =>
@@ -435,7 +435,7 @@ async function s3(mode) {
 async function s4(mode) {
 	const sid = sidFor("ask", mode);
 	const label = `(S4/${mode})`;
-	await step(`${label} an ask final keeps four chips, shows no 다음 line and puts the ghost 세션 닫기 last`, async () => {
+	await step(`${label} an ask final keeps four chips, shows no 다음 line and puts the ghost 세션 닫기 last on the chips' row at their height`, async () => {
 		await meta(sid, { cwd: work, title: "답을 기다립니다" });
 		await prime(sid);
 		const itemId = await seedFinal(sid, ASK_TEXT);
@@ -447,6 +447,7 @@ async function s4(mode) {
 		expect(state.line.length === 0, `next line ${JSON.stringify(state.line)}`);
 		const last = state.actions[state.actions.length - 1];
 		expect(last.id === "close" && last.ghost && !last.primary, `actions ${JSON.stringify(state.actions)}`);
+		expect(state.chipBox && last.top === state.chipBox.top && last.height === state.chipBox.height, `close ${JSON.stringify(last)} chip ${JSON.stringify(state.chipBox)}`);
 		await shot(`s4-ask-${dim(mode)}.png`);
 	});
 }
