@@ -35,6 +35,8 @@
 	const ACTION_ERROR = { plan_missing: "계획 파일을 찾지 못했습니다.", cwd_missing: "세션 폴더가 없어 열지 못했습니다.", no_launcher: "터미널을 찾지 못했습니다.", launch_failed: "세션을 열지 못했습니다.", forbidden: "이 기기에서는 열 수 없습니다." };
 	const TEXT_ANSWER_KINDS = new Set(["turn", "blocked", "done", "notice"]);
 	const SENDING_TEXT = "보내는 중";
+	// The session queued the message but holds new turns until the terminal resumes it.
+	const HELD_LINE = { "held:stop": "세션이 멈춰 있어 터미널에서 재개하면 처리됩니다", "held:interrupted": "세션이 중단됐다 다시 열려 터미널에서 재개하면 처리됩니다" };
 	const OFFLINE_TEXT = "세션이 꺼져 있어 다시 열면 전달됩니다";
 	const EXPLAINING_TEXT = "더 쉬운 설명을 만드는 중";
 	const EMPTY_TEXT = "아직 온 것이 없습니다";
@@ -921,6 +923,8 @@
 		const record = state.deliveredHow.get(`${idOf(item)}:${answer.deliveryId}`);
 		const how = record ? record.how : Array.isArray(item.deliveredIds) && item.deliveredIds.includes(answer.deliveryId) ? "message" : null;
 		if (how) {
+			const held = record && HELD_LINE[record.detail];
+			if (held) return { text: held, warn: true, resend: false };
 			let text = DELIVERED_LINE[how] || "전달됨 ✓";
 			if (how === "refused" && record && record.detail) text += ` · ${record.detail === "dialog closed" ? "대화창이 닫힘" : String(record.detail)}`;
 			return { text, warn: how === "refused" || how === "dropped", resend: false };

@@ -248,6 +248,26 @@ export function createDelivery(deps = {}) {
 		}
 	}
 
+	/**
+	 * Why the engine holds new turns right now: "stop" after the user's Esc/Stop
+	 * (5.1.44+), "interrupted" for a session reopened after it died mid-run
+	 * (5.1.48+, senpi#4206), or null. A held message is queued, not lost, and
+	 * waits for terminal input or /resume; the ack tells the phone so.
+	 */
+	function holdCause() {
+		try {
+			const holds = getCtx?.()?.getPauseState?.()?.holds;
+			if (!Array.isArray(holds)) return null;
+			const stop = holds.some(
+				(hold) => (hold?.kind === "session_hold" && hold.key !== "interrupted-run") || hold?.kind === "inherited_hold",
+			);
+			if (stop) return "stop";
+			return holds.some((hold) => hold?.kind === "session_hold" && hold.key === "interrupted-run") ? "interrupted" : null;
+		} catch {
+			return null;
+		}
+	}
+
 	/** The current turn epoch, or null when the runtime has no admission gate. */
 	function gateEpoch() {
 		try {
@@ -421,8 +441,10 @@ export function createDelivery(deps = {}) {
 			await note(`delivery: ${payload.itemId} planning failed: ${messageOf(error)}`);
 			return "kept";
 		}
+		let held = null;
 		if (verdict.message) {
 			await markOwner("phone");
+			held = holdCause();
 			let sent;
 			try {
 				sent = await sendMessage(verdict.message, deliveryId, { steer: verdict.steer !== false });
@@ -438,7 +460,7 @@ export function createDelivery(deps = {}) {
 		}
 		if (deliveryId) await ledgerRemember(deliveryId, verdict.ack.how);
 		try {
-			await ack(payload.itemId, verdict.ack.how, verdict.ack.detail ?? null, deliveryId);
+			await ack(payload.itemId, verdict.ack.how, held ? `held:${held}` : (verdict.ack.detail ?? null), deliveryId);
 		} catch (error) {
 			// the answer is applied but unacked: keep the file and let the delivered
 			// set stop a second apply on the next drain

@@ -190,7 +190,7 @@ Windows에서는 서버를 `Win32_Process.Create`(PowerShell, 숨김)로 만들�
 
 - 위 막대: `‹ Inbox`, 제목, 제품·브랜치 칩, 상태 칩(내 차례면 `🙋 내 차례`, 가장 최근 항목이 막힘이면 `⛔ 막힘`), 세션이 꺼져 있으면 회색 `세션 꺼짐` 칩, 🔥 표시. `과정 보기` 왼쪽에 **숨기기** 버튼이 있고, 숨긴 대화에서는 **숨김 해제** 로 바뀝니다.
 - 에이전트 말풍선(왼쪽, 흰색): 종류 칩(질문 / 승인 요청 / 권한 요청 / 보고 / 막힘 / 끝남 / 진행 / 알림 / Review), 굵은 제목, 회색 `하던 일 · <context>`, 본문, 묻는 것, 선택지 버튼(★권장이 이유와 함께 맨 위, 여러 개 고르는 질문은 체크박스와 보내기, 질문마다 직접 쓰기 칸), 회색 `답이 없으면 · ...` 줄, 그리고 듣기, 원문 보기(원문을 마크다운으로 보여 줌: 제목, 목록, 인용, 표, 코드, 굵게, 기울임, https 링크. 원문 속 HTML은 글자 그대로), 더 쉽게(더 쉬운 요약 요청), 제보(이 메시지의 문제 제보), 시각이 있는 아래 줄.
-- 내 말풍선(오른쪽, 노란색): 보낸 내용과 상태. `보내는 중`, `전달됨 ✓`, `늦게 전달됨`, `세션이 꺼져 있어 다시 열면 전달됩니다`. 60초가 지나도 전달 확인이 없으면 다시 보내기가 나옵니다.
+- 내 말풍선(오른쪽, 노란색): 보낸 내용과 상태. `보내는 중`, `전달됨 ✓`, `늦게 전달됨`, `세션이 꺼져 있어 다시 열면 전달됩니다`. 세션이 새 턴을 보류한 채 받아 둔 메시지는 `세션이 멈춰 있어 터미널에서 재개하면 처리됩니다`(Esc/Stop 뒤) 또는 `세션이 중단됐다 다시 열려 터미널에서 재개하면 처리됩니다`(실행 중 죽었다 다시 연 세션)로 표시되고, 터미널 입력이나 `/resume` 뒤에 처리됩니다. 60초가 지나도 전달 확인이 없으면 다시 보내기가 나옵니다.
 - 시스템 줄(가운데, 회색): `터미널에서 답함`, `다음 작업으로 넘어감`, `시간 초과`, `Review · 열기`. 진행 항목은 상태와 상관없이 배경 없는 회색 한 줄 `<headline>` 이라, 에피소드의 줄들이 마지막 메시지 위에 남습니다.
 - 시스템 줄 추가: `closed-by-owner` 로 닫히면 `닫음`, `handed-off` 로 닫히면 `새 세션으로 넘어감`. 새 세션을 띄우면 `새 세션을 여는 중`, 새 세션이 연결되면 `/s/<새 sid>` 로 가는 `새 세션에서 이어감 · 열기` 가 나옵니다.
 - 머리의 `과정 보기` 토글(기본 켬, `localStorage` 키 `inbox.progressLines` 에 저장)이 진행 줄을 숨기거나 보입니다.
@@ -284,7 +284,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 - `thread.json` 키 `executes`(문자열 또는 null, 기본 null): 이 세션이 직접 실행하는 계획 slug로, 첫 입력 원문에서 읽습니다. `next` 이벤트 `{itemId, next}` 는 마지막 메시지의 판정을, `actions` 이벤트 `{producer, actions}` 는 제공자의 목록을, `handoff` 이벤트 `{itemId, to, via, status, slug}` 는 새 세션 띄우기를 저장합니다(`via` 는 `orca`, `wt`, `sink`, `status` 는 `launching`, `connected`).
 - 닫힘 이유에 `session-closed`(`세션 닫힘`) 외에 `closed-by-owner`(`닫음`)와 `handed-off`(`새 세션으로 넘어감`)가 있습니다.
 - 대화 상태. 세션이 90초 안에 `/api/here` 를 불렀거나 90초 안에 그냥 bye(`/reload`)를 보냈으면 살아 있습니다. 열린 needs-you 항목이 있고 세션이 살아 있거나, 세션이 꺼졌는데 열린 항목이 아직 묻고 있으면(하는 일 참고) `needs-you`, 아니면 살아 있을 때 `working`, 아니면 `ended`. 목록 줄과 대화 보기에는 `live`, `off`(살아 있지 않은데 needs-you, `_notices` 는 늘 false), `hidden` 이 붙습니다.
-- `delivered.how` 는 `bridge`, `message`, `late-message`, `dropped`(터미널이 먼저 답함), `refused`, `control`(세션 제어 파일 적용).
+- `delivered.how` 는 `bridge`, `message`, `late-message`, `dropped`(터미널이 먼저 답함), `refused`, `control`(세션 제어 파일 적용). `ctx.getPauseState()` 가 보류를 알리는 동안 넣은 메시지는 detail `held:stop`(Stop 또는 물려받은 보류) 또는 `held:interrupted`(`interrupted-run` 보류)로 확인합니다.
 - 우편함 파일은 `{v:1, type, ...}`: `item-answer`(itemId, kind, deliveryId, payload, text), `explain`(itemId), `board-feedback`(desk의 형식. `type` 없는 파일은 보드 의견).
 
 기획안:

@@ -781,3 +781,58 @@ test("mailbox answers are still delivered alongside controls", async (t) => {
 	assert.deepEqual(s.posts.map((post) => post.body.how), ["bridge", "control"]);
 	assert.equal(s.controls.length, 1);
 });
+
+for (const [label, holds, detail] of [
+	["a Stop hold", [{ kind: "session_hold", key: "stop" }], "held:stop"],
+	["an inherited hold", [{ kind: "inherited_hold", key: "parent" }], "held:stop"],
+	["the interrupted-run hold", [{ kind: "session_hold", key: "interrupted-run" }], "held:interrupted"],
+	["Stop on top of the interrupted-run hold", [{ kind: "session_hold", key: "interrupted-run" }, { kind: "session_hold", key: "stop" }], "held:stop"],
+	["only a run fence", [{ kind: "run_fence", key: "r" }], null],
+]) {
+	test(`a reply admitted under ${label} is acked with detail ${detail}`, async (t) => {
+		const s = setup({
+			items: { [ITEM]: { itemId: ITEM, kind: "turn", status: "open", raw: null } },
+			ctx: { isIdle: () => true, getPauseState: () => ({ pauseSeq: 1, holds }) },
+		});
+		t.after(s.cleanup);
+		answerFile(s.home, { kind: "turn", payload: { text: "계속해" } });
+
+		await s.delivery.drain();
+
+		// Delivery itself is unchanged: one admit, then the ack.
+		assert.equal(s.calls.filter((call) => call.what === "admit").length, 1);
+		assert.deepEqual(s.posts[0].body, { deliveryId: "d1", how: "message", detail });
+	});
+}
+
+test("a late answer admitted under a hold is acked as held", async (t) => {
+	const s = setup({
+		items: { [ITEM]: questionItem({ status: "closed", closedReason: "timed-out" }) },
+		verdict: "no-wait",
+		ctx: { getPauseState: () => ({ pauseSeq: 0, holds: [{ kind: "session_hold", key: "interrupted-run" }] }) },
+	});
+	t.after(s.cleanup);
+	answerFile(s.home);
+
+	await s.delivery.drain();
+
+	assert.deepEqual(s.posts[0].body, { deliveryId: "d1", how: "late-message", detail: "held:interrupted" });
+});
+
+test("a throwing getPauseState leaves the ack unchanged", async (t) => {
+	const s = setup({
+		items: { [ITEM]: { itemId: ITEM, kind: "turn", status: "open", raw: null } },
+		ctx: {
+			isIdle: () => true,
+			getPauseState: () => {
+				throw new Error("stale ctx");
+			},
+		},
+	});
+	t.after(s.cleanup);
+	answerFile(s.home, { kind: "turn", payload: { text: "계속해" } });
+
+	await s.delivery.drain();
+
+	assert.deepEqual(s.posts[0].body, { deliveryId: "d1", how: "message", detail: null });
+});
