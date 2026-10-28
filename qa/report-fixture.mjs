@@ -97,6 +97,7 @@ function issueView(issue, labels) {
  * Returns {url, requests, issues, files, refs, modes, setMode(mode), stop()}.
  */
 export function startFakeGitHub({ private: privateRepo = true, hasIssues = true } = {}) {
+	const knownTrees = new Set();
 	const issues = [];
 	const labels = [];
 	const files = {};
@@ -294,6 +295,7 @@ export function startFakeGitHub({ private: privateRepo = true, hasIssues = true 
 		if (rest[0] === "git" && rest[1] === "trees" && rest.length === 2 && req.method === "POST") {
 			const tree = Array.isArray(body?.tree) ? body.tree : [];
 			const sha = objectId("tree");
+			knownTrees.add(sha);
 			return jsonResponse(201, {
 				sha,
 				url: `${url.origin}/repos/${fullName}/git/trees/${sha}`,
@@ -303,6 +305,7 @@ export function startFakeGitHub({ private: privateRepo = true, hasIssues = true 
 		}
 
 		if (rest[0] === "git" && rest[1] === "commits" && rest.length === 2 && req.method === "POST") {
+			if (typeof body?.tree !== "string" || !knownTrees.has(body.tree)) return jsonResponse(422, { message: "Invalid request.", errors: [{ resource: "Commit", field: "tree", code: "invalid" }] });
 			const sha = objectId("commit");
 			return jsonResponse(201, {
 				sha,

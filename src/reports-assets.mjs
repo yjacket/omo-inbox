@@ -80,7 +80,7 @@ export async function ensureAssetsBranch(api, { branch }) {
 		throw unexpected("POST", `/repos/${api.repo}/git/trees`, trees);
 	}
 	const commit = await api.request("POST", `/repos/${api.repo}/git/commits`, {
-		body: { message: BOOTSTRAP_MESSAGE, tree: trees.json.tree.sha, parents: [] },
+		body: { message: BOOTSTRAP_MESSAGE, tree: trees.json.sha, parents: [] },
 	});
 	if (commit.status !== 201 && commit.status !== 200) {
 		throw unexpected("POST", `/repos/${api.repo}/git/commits`, commit);
