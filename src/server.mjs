@@ -567,8 +567,12 @@ export function createServer({
 	}
 
 	const reportsStore = createReportsStore({ dataDir: dir.data, now });
-	const legacy = migrateLegacy({ dataDir: dir.data, store: reportsStore, productOf, now, log: (line) => appendLog(dir.logs, line) });
-	appendLog(dir.logs, `legacy reports: migrated ${legacy.migrated} skipped ${legacy.skipped}`);
+	// Only the process that wins the port may write the reports store: a loser
+	// runs no setup after a failed listen, so migration belongs there.
+	function migrateReports() {
+		const legacy = migrateLegacy({ dataDir: dir.data, store: reportsStore, productOf, now, log: (line) => appendLog(dir.logs, line) });
+		appendLog(dir.logs, `legacy reports: migrated ${legacy.migrated} skipped ${legacy.skipped}`);
+	}
 	const reportApi = createGitHubApi({
 		repo: cfg.reports.repo,
 		apiBase: process.env.INBOX_GITHUB_API || "https://api.github.com",
@@ -1968,6 +1972,11 @@ export function createServer({
 					appendLog(dir.logs, `stall rebuild failed: ${error && error.stack ? error.stack : error}`);
 				}
 				trackNext(refreshStoredNexts());
+				try {
+					migrateReports();
+				} catch (error) {
+					appendLog(dir.logs, `legacy report migration failed: ${error && error.stack ? error.stack : error}`);
+				}
 				stateCache.refresh().catch(() => {});
 				publisher.start();
 				resolve({ port: actualPort });
