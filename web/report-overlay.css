@@ -82,6 +82,11 @@
 	pointer-events: auto;
 }
 
+[data-report-overlay] [role="toolbar"][data-edge="bottom"] {
+	top: auto;
+	bottom: max(12px, env(safe-area-inset-bottom));
+}
+
 [data-report-overlay] [data-report-hint] {
 	min-width: 0;
 	overflow: hidden;

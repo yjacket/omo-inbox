@@ -542,6 +542,59 @@ try {
 	const kindOk = machine2 && machine2.page && machine2.page.kind === "issues";
 	const labelOk = machine2 && machine2.element && typeof machine2.element.label === "string" && machine2.element.label.includes(irow.title);
 	check("(P10) the sent body has page kind issues and the row's label", kindOk === true && labelOk === true, fmt({ page: machine2 && machine2.page, element: machine2 && machine2.element }));
+
+	// ===== P12: the picking toolbar dodges out of the way of the elements under it =====
+
+	const toolbarState = () =>
+		ev(`(() => { const t = document.querySelector('[data-report-overlay] [role="toolbar"]'); const c = document.querySelector('[data-report-composer]'); const o = document.querySelector('[data-report-overlay]'); return { edge: t ? t.getAttribute('data-edge') : null, open: Boolean(o && o.matches(':popover-open')), composer: Boolean(c && c.open) }; })()`);
+
+	await scenario(PHONE, `${base}/`);
+	await waitFor("Boolean(window.__inboxReporter)", 10000, "inbox reporter for dodge");
+	await settle();
+	const phoneHref = await ev("location.href");
+	await startPickFromHeader("#reportLink");
+	await waitFor("document.querySelector('[data-report-overlay]')?.matches(':popover-open')", 5000, "dodge pick mode");
+	const topBar = await rectOf('[data-report-overlay] [role="toolbar"]');
+	const issuesRect = await rectOf("#issuesLink");
+	const coversIssues = Boolean(topBar && issuesRect)
+		&& topBar.l < issuesRect.l + issuesRect.w && topBar.l + topBar.w > issuesRect.l
+		&& topBar.t < issuesRect.t + issuesRect.h && topBar.t + topBar.h > issuesRect.t;
+	const startEdge = await toolbarState();
+	check("(P12) the phone pick toolbar starts at top and covers the 제보함 header anchor", startEdge.edge === "top" && coversIssues === true, fmt({ edge: startEdge.edge, bar: topBar, issues: issuesRect }));
+	const hintRect = await rectOf("[data-report-hint]");
+	await tap(hintRect.cx, hintRect.cy);
+	await waitFor("document.querySelector('[data-report-overlay] [role=\"toolbar\"]')?.getAttribute('data-edge') === 'bottom'", 5000, "toolbar flipped to bottom");
+	const flipped = await toolbarState();
+	check("(P12) a touch tap on the hint flips the toolbar to the bottom without opening the composer", flipped.edge === "bottom" && flipped.open === true && flipped.composer === false, fmt(flipped));
+	const issuesCenter = await rectOf("#issuesLink");
+	await tap(issuesCenter.cx, issuesCenter.cy);
+	await waitComposer();
+	const p12a = await composer();
+	const p12Target = await ev(`(() => { const s = document.querySelector('[data-selector]')?.getAttribute('data-selector'); const want = document.querySelector('#issuesLink'); let hit = null; try { hit = s ? document.querySelector(s) : null; } catch {} return { selector: s, isIssuesLink: Boolean(hit && hit === want), href: location.href }; })()`);
+	check("(P12) after the flip the 제보함 anchor picks a 링크 composer without navigating", p12a.open === true && typeof p12a.label === "string" && p12a.label.startsWith("링크") && p12Target.isIssuesLink === true && p12Target.href === phoneHref, fmt({ label: p12a.label, selector: p12Target.selector, href: p12Target.href }));
+	await escape();
+	await waitFor("(() => { const d = document.querySelector('[data-report-composer]'); return !d || !d.open; })()", 5000, "dodge composer closed");
+
+	await scenario(DESKTOP, `${base}/`);
+	await waitFor("Boolean(window.__inboxReporter)", 10000, "desktop reporter for dodge");
+	await settle();
+	await startPickFromHeader("#reportLink");
+	await waitFor("document.querySelector('[data-report-overlay]')?.matches(':popover-open')", 5000, "desktop dodge pick mode");
+	const deskBar = await rectOf('[data-report-overlay] [role="toolbar"]');
+	await move(deskBar.cx, deskBar.cy);
+	await waitFor("document.querySelector('[data-report-overlay] [role=\"toolbar\"]')?.getAttribute('data-edge') === 'bottom'", 5000, "desktop toolbar flipped to bottom");
+	const deskFlipped = await toolbarState();
+	check("(P12) a mouse entering the toolbar flips it to the bottom", deskFlipped.edge === "bottom" && deskFlipped.composer === false, fmt(deskFlipped));
+	const deskCancel = await rectOf("[data-report-cancel]");
+	await click(deskCancel.cx, deskCancel.cy);
+	let deskCancelOk = true;
+	try {
+		await waitFor("(() => { const o = document.querySelector('[data-report-overlay]'); return !o || !o.matches(':popover-open'); })()", 5000, "desktop cancel ended pick");
+	} catch {
+		deskCancelOk = false;
+	}
+	const deskEnded = await toolbarState();
+	check("(P12) 취소 still ends pick mode from the bottom edge", deskCancelOk && deskEnded.open === false && deskEnded.composer === false, fmt(deskEnded));
 } catch (error) {
 	exitError = error;
 	check("run completed", false, error && error.stack ? error.stack : String(error));

@@ -48,6 +48,44 @@ export function createOverlay(doc) {
 	bar.setAttribute("role", "toolbar");
 	bar.style.cssText = "position: fixed; top: 12px; left: 50%; margin: 0; transform: translateX(-50%); pointer-events: auto;";
 
+	// The toolbar sits at the top by default. A pointer moving toward something under it,
+	// or a touch landing on it, moves it to the opposite edge so that spot becomes pickable.
+	const setEdge = (edge) => {
+		bar.setAttribute("data-edge", edge);
+		if (edge === "bottom") {
+			bar.style.top = "auto";
+			bar.style.bottom = "max(12px, env(safe-area-inset-bottom))";
+		} else {
+			bar.style.top = "12px";
+			bar.style.bottom = "";
+		}
+	};
+	const toggleEdge = () => setEdge(bar.getAttribute("data-edge") === "bottom" ? "top" : "bottom");
+	const overCancel = (event) => {
+		if (event.target === cancel || cancel.contains(event.target)) return true;
+		try {
+			const el = doc.elementFromPoint(event.clientX, event.clientY);
+			return Boolean(el && (el === cancel || cancel.contains(el)));
+		} catch {
+			return false;
+		}
+	};
+	const onBarEnter = (event) => {
+		if (destroyed) return;
+		if (event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+		// Approaching 취소 must not flip the bar out from under the click.
+		if (overCancel(event)) return;
+		toggleEdge();
+	};
+	const onBarDown = (event) => {
+		if (destroyed || event.pointerType !== "touch") return;
+		if (event.target === cancel || cancel.contains(event.target)) return;
+		toggleEdge();
+	};
+	setEdge("top");
+	bar.addEventListener("pointerenter", onBarEnter);
+	bar.addEventListener("pointerdown", onBarDown);
+
 	const hint = doc.createElement("span");
 	hint.setAttribute("data-report-hint", "");
 	hint.textContent = DEFAULT_HINT;
@@ -159,6 +197,7 @@ export function createOverlay(doc) {
 	return {
 		showPicking() {
 			if (destroyed) return;
+			setEdge("top");
 			ensureSelectedMounted();
 			selected.hidden = true;
 			closePopover();
@@ -237,6 +276,8 @@ export function createOverlay(doc) {
 		destroy() {
 			if (destroyed) return;
 			destroyed = true;
+			bar.removeEventListener("pointerenter", onBarEnter);
+			bar.removeEventListener("pointerdown", onBarDown);
 			cancel.removeEventListener("click", onCancel);
 			if (coarseQuery) {
 				if (typeof coarseQuery.removeEventListener === "function") coarseQuery.removeEventListener("change", onCoarseChange);
