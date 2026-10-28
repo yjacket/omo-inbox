@@ -55,11 +55,12 @@ export function createReportsHttp({
 	function githubOf(record, states) {
 		if (record.github == null) return null;
 		const cached = states ? states.get(record.github.number) : undefined;
+		const missing = states != null && cached === undefined;
 		return {
 			number: record.github.number,
 			url: record.github.url,
-			state: cached?.state ?? null,
-			comments: cached?.comments ?? null,
+			state: missing ? "open" : cached?.state ?? null,
+			comments: missing ? 0 : cached?.comments ?? null,
 		};
 	}
 

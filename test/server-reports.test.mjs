@@ -472,6 +472,22 @@ test("a null cache map leaves GitHub state and comments null", async (t) => {
 	});
 });
 
+test("an issue missing from a fresh cache map shows as open with zero comments", async (t) => {
+	const f = await setup(t);
+	const id = uuidFor(33);
+	f.seed(id, {
+		createdAt: "2026-01-03T00:00:00.000Z",
+		state: "sent",
+		github: { number: 5, url: "https://github.com/yjacket/omo-inbox/issues/5", nodeId: "x", createdAt: "2026-10-29T00:00:00.000Z" },
+	});
+	f.state.map = new Map();
+	const response = await f.request("GET", "/api/reports");
+	assert.equal(response.status, 200);
+	const row = response.json.items.find((item) => item.id === id);
+	assert.equal(row.github.state, "open");
+	assert.equal(row.github.comments, 0);
+});
+
 test("detail carries the row plus delivery and the failed detail", async (t) => {
 	const f = await setup(t);
 	const nextAttemptAt = "2026-10-28T13:00:00.000Z";
