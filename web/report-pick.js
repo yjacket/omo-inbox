@@ -34,18 +34,42 @@ export function startPick({ win, overlay, describeLabel, onPick, onCancel }) {
 	function hit(doc, x, y) {
 		const element = doc.elementFromPoint(x, y);
 		if (!element || overlay.contains(element)) return null;
-		if (element.tagName === "IFRAME") {
+		let el = element;
+		// Painted layers may refuse pointer events (the viewer image and its mark
+		// canvas), so elementFromPoint stops at their container. Descend into
+		// such children; a canvas gives way to any other qualifying sibling.
+		for (;;) {
+			let next = null;
+			let canvas = null;
+			for (const child of [...el.children].reverse()) {
+				if (overlay.contains(child)) continue;
+				const style = doc.defaultView.getComputedStyle(child);
+				if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents !== "none") continue;
+				const rect = child.getBoundingClientRect();
+				if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+				if (child.tagName === "CANVAS") {
+					canvas ??= child;
+					continue;
+				}
+				next = child;
+				break;
+			}
+			next ??= canvas;
+			if (!next) break;
+			el = next;
+		}
+		if (el.tagName === "IFRAME") {
 			try {
-				const child = element.contentDocument;
+				const child = el.contentDocument;
 				if (child) {
-					const rect = element.getBoundingClientRect();
-					return hit(child, x - rect.left - element.clientLeft, y - rect.top - element.clientTop) || element;
+					const rect = el.getBoundingClientRect();
+					return hit(child, x - rect.left - el.clientLeft, y - rect.top - el.clientTop) || el;
 				}
 			} catch {
 				// Cross-origin frames are selectable as a frame, never inspected.
 			}
 		}
-		return element;
+		return el;
 	}
 
 	function highlight() {
