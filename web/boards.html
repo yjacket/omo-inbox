@@ -389,12 +389,6 @@
 			let requestSeq = 0;
 			let timer = null;
 			let loaded = false;
-			let diagnostics = null;
-			let badgeOfCounts = null;
-			let deferred = false;
-			let pendingLoad = false;
-			let pendingData = null;
-			let pendingFailure = null;
 
 			function h(tag, attrs, ...children) {
 				const el = document.createElement(tag);
@@ -599,16 +593,6 @@
 				console.error("inbox: load failed", error);
 			}
 
-			function recordListRequest(status, startedAt, errorCode) {
-				if (!diagnostics) return;
-				diagnostics.recordRequest({
-					route: "proposals_list",
-					status,
-					durationMs: Math.max(0, performance.now() - startedAt),
-					errorCode,
-				});
-			}
-
 			function applyData(data) {
 				facets = Array.isArray(data.facets) ? data.facets : [];
 				items = Array.isArray(data.items) ? data.items : [];
@@ -633,67 +617,33 @@
 			async function load() {
 				const seq = ++requestSeq;
 				const skeleton = loaded ? null : setTimeout(renderSkeleton, SKELETON_DELAY_MS);
-				const startedAt = performance.now();
-				let status = 0;
 				let data;
 				try {
 					const res = await fetch("/api/proposals" + queryOf(state), { headers: { accept: "application/json" }, cache: "no-store" });
-					status = res.status;
 					if (!res.ok) throw new Error(`HTTP ${res.status}`);
 					data = await res.json();
 				} catch (error) {
-					recordListRequest(status, startedAt, status === 0 ? "network" : "other");
 					if (skeleton) clearTimeout(skeleton);
 					if (seq !== requestSeq) return;
-					if (deferred) {
-						pendingLoad = true;
-						pendingData = null;
-						pendingFailure = error;
-						return;
-					}
 					showLoadFailure(error);
 					return;
 				}
-				recordListRequest(status, startedAt, null);
 				if (skeleton) clearTimeout(skeleton);
 				if (seq !== requestSeq) return;
-				if (deferred) {
-					pendingLoad = true;
-					pendingData = data;
-					pendingFailure = null;
-					return;
-				}
 				applyData(data);
 			}
 
-			function deferRender() {
-				deferred = true;
-			}
-
-			function resumeRender() {
-				deferred = false;
-				if (pendingLoad) {
-					const data = pendingData;
-					const failure = pendingFailure;
-					pendingLoad = false;
-					pendingData = null;
-					pendingFailure = null;
-					if (failure) showLoadFailure(failure);
-					else if (data) applyData(data);
-				}
-				void refreshIssueBadge();
-			}
-
 			async function refreshIssueBadge() {
-				if (typeof badgeOfCounts !== "function") return;
 				try {
-					const res = await fetch("/api/issues?limit=1", { headers: { accept: "application/json", "x-inbox": "1" }, cache: "no-store" });
+					const res = await fetch("/api/reports?limit=1", { headers: { accept: "application/json", "x-inbox": "1" }, cache: "no-store" });
 					if (!res.ok) return;
 					const data = await res.json();
-					const badge = badgeOfCounts(data.counts);
-					els.issueBadge.textContent = badge.text;
-					els.issueBadge.hidden = badge.hidden;
-					els.issueBadge.setAttribute("aria-label", badge.label || "확인 요청");
+					const counts = data && data.counts ? data.counts : {};
+					const n = (Number(counts.pending) || 0) + (Number(counts.failed) || 0);
+					els.issueBadge.textContent = n > 0 ? String(n) : "";
+					els.issueBadge.hidden = n === 0;
+					if (n === 0) els.issueBadge.removeAttribute("aria-label");
+					else els.issueBadge.setAttribute("aria-label", `보내지 못했거나 보내는 중인 제보 ${n}건`);
 				} catch {
 					// the badge is an enhancement; the list must keep working without it
 				}
@@ -729,9 +679,6 @@
 				if (event.target.name === "status") update({ status: event.target.value });
 			});
 			els.retry.addEventListener("click", () => load());
-			els.list.addEventListener("click", (event) => {
-				if (diagnostics && event.target && event.target.closest && event.target.closest(".row")) diagnostics.recordAction("open_review");
-			});
 			window.addEventListener("popstate", () => {
 				state = readState();
 				renderFilters();
@@ -746,101 +693,18 @@
 				}
 			});
 
-			function visibleRows() {
-				return Array.from(els.list.querySelectorAll(".row[data-id]")).filter((row) => {
-					const box = row.getBoundingClientRect();
-					return box.width > 0 && box.bottom > 0 && box.top < innerHeight;
-				});
-			}
-
-			function rowLabel(row) {
-				const title = row.querySelector(".title");
-				const text = ((title ? title.textContent : "") || row.getAttribute("data-id") || "").trim();
-				return text.slice(0, 160);
-			}
-
-			function pageView() {
-				return {
-					width: innerWidth,
-					height: innerHeight,
-					dpr: devicePixelRatio,
-					scale: 1,
-					scrollX,
-					scrollY,
-					theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
-					locale: navigator.language || "ko-KR",
-					embedded: false,
-					viewerOpen: false,
-				};
-			}
-
 			async function enhanceReporting() {
 				try {
-					const [reportMod, draftsMod, diagMod, adaptersMod, issuesMod] = await Promise.all([
-						import("/web/issue-report.js"),
-						import("/web/issue-drafts.js"),
-						import("/web/issue-diagnostics.js"),
-						import("/web/issue-adapters.js"),
-						import("/web/issues.js"),
-					]);
-					badgeOfCounts = issuesMod.issueBadgeFromCounts;
-					let image = null;
-					try {
-						const imageMod = await import("/web/issue-image.js");
-						image = imageMod.createIssueImage({ document, now: () => performance.now() });
-					} catch {
-						// text reporting stays usable without image acquisition
-					}
-					diagnostics = diagMod.createDiagnostics({ now: () => performance.now() });
-					diagnostics.attachWindowListeners(window);
-					const registry = adaptersMod.createAdapterRegistry({ ownerWindow: window });
-					registry.register({
-						page: "boards",
-						getContext() {
-							const rows = visibleRows();
-							return {
-								page: "boards",
-								source: null,
-								target: null,
-								view: pageView(),
-								excerpt: null,
-								excerptEnabled: false,
-								visibleIds: rows.slice(0, 50).map((row) => row.getAttribute("data-id")).filter(Boolean),
-								diagnostics: [],
-								clientBuild: null,
-							};
+					const { mountReporter } = await import("/web/report.js");
+					mountReporter({
+						page: { kind: "boards", route: "/boards" },
+						sourceOf: (el) => {
+							const row = el.closest(".row[data-id]");
+							if (!row) return null;
+							const proposalId = row.getAttribute("data-id");
+							return proposalId ? { kind: "proposal", proposalId, revision: null, frame: null } : null;
 						},
-						getTargets() {
-							const targets = [{ kind: "page", key: "boards", label: "Review 목록", rect: { x: 0, y: 0, w: innerWidth, h: innerHeight }, framePath: [] }];
-							for (const row of visibleRows().slice(0, 50)) {
-								const id = row.getAttribute("data-id");
-								if (!id) continue;
-								const box = row.getBoundingClientRect();
-								targets.push({ kind: "record", key: "proposal:" + id, label: rowLabel(row), rect: { x: box.left, y: box.top, w: box.width, h: box.height }, framePath: [] });
-							}
-							return targets;
-						},
-						deferRender,
-						resumeRender,
 					});
-					const fetchImpl = (url, init) => {
-						const headers = new Headers(init && init.headers ? init.headers : undefined);
-						headers.set("x-inbox", "1");
-						return fetch(url, { ...init, headers });
-					};
-					const report = reportMod.mountIssueReport({
-						document,
-						window,
-						adapters: registry,
-						drafts: draftsMod,
-						diagnostics,
-						image,
-						fetchImpl,
-						now: () => Date.now(),
-						uuid: () => crypto.randomUUID(),
-						pageKey: "/boards",
-					});
-					await report.ready;
 					await refreshIssueBadge();
 				} catch (error) {
 					console.error("inbox: issue reporting unavailable", error);
