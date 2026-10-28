@@ -31,7 +31,7 @@ function bootstrapHandler() {
 	return (call) => {
 		if (call.method === "GET" && call.path === REF) return { status: 404, headers: {}, json: null, text: "" };
 		if (call.method === "POST" && call.path === `/repos/${REPO}/git/trees`) {
-			return { status: 201, headers: {}, json: { tree: { sha: "tree-sha" } }, text: "" };
+			return { status: 201, headers: {}, json: { sha: "tree-sha", url: "https://api.github.com/repos/o/r/git/trees/tree-sha", tree: [{ path: ".gitkeep", mode: "100644", type: "blob", sha: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" }], truncated: false }, text: "" };
 		}
 		if (call.method === "POST" && call.path === `/repos/${REPO}/git/commits`) {
 			return { status: 201, headers: {}, json: { sha: "commit-sha" }, text: "" };
