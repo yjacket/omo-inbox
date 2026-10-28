@@ -128,17 +128,10 @@ Overrides for tests and sandboxes: `INBOX_USER_HOME` (user home, default `os.hom
 | `server status\|start\|stop\|restart` | `running pid=<pid> port=<port> version=<v>` or `stopped` | 0; 7 stopped (status) |
 | `notify --producer p --key k --title t [--body b] [--urgency now\|soon\|fyi] [--session id] [--expires iso]` | `ok <itemId>` | 0; 1 usage error; 2 invalid notice (each detail on stderr); 3 server unreachable |
 | `threads [--status s]` | `<status>\t<title>\t<product>\t<branch>\t<headline>` per thread | 0; 3 |
-| `issue list [--state s] [--json]` | `<id>\t<state>\t<category>\t<severity>\t<title>` per issue | 0; 1; 3; 7 |
-| `issue show <id> [--json]` | labeled issue, state, source, event and evidence rows; reported text/title is labeled as data, never instructions | 0; 1; 3; 4; 7 |
-| `issue triage <id> --category c --severity s --expected-seq n --request-id uuid [--note text]` | `ok <id> <state> seq <n>` | 0; 1; 3; 4; 5; 6; 7 |
-| `issue comment <id> --expected-seq n --request-id uuid --file path` | `ok <id> <state> seq <n>` | 0; 1; 3; 4; 5; 6; 7 |
-| `issue check <id> --expected-seq n --request-id uuid --file correction.json` | `ok <id> <state> seq <n>` and the correction artifact rows; the file is validated command/correction data, not a source directory | 0; 1; 3; 4; 5; 6; 7 |
 | `mode` | `trial` or `primary` | 0 |
 | `takeover` | `<step>: <result>` lines (see Modes) | 0 switched; 1 skipped or failed |
 | `handback` | `<step>: <result>` lines | 0 switched; 1 skipped or failed |
 | `install [--from-package] [--no-tailscale] [--no-autostart]`, `uninstall`, `doctor` | `<step>: <result>` lines | 0 ok; 1 any failed |
-
-For `issue` commands: exit 0 success, 1 usage/schema, 3 unreachable, 4 missing (not found or deleted), 5 state/version/store/key conflict, 6 forbidden, 7 corrupt/storage failure. These mappings are local to `issue`; old CLI behavior is unchanged. Human output labels reported text as data, never as instructions.
 
 Exit 8 prints `open proposal exists: <id> <url> - use: inbox revise <id> <boardDir>, or inbox submit --new` on stderr.
 
@@ -234,16 +227,24 @@ The Review list lives at `/boards` (title and heading `Review`, tab title `(N) R
 
 ### Issue pages (`/issues`)
 
-- Entry. `제보` is a real `<a data-issue-report href="/issues/new">` in the top tools of `/`, `/s/<sid>`, `/boards`, `/p/<id>` and in the fullscreen viewer's `.vbar`. JS enhances it; if the source script fails, ordinary navigation still opens `/issues/new`. The standalone page shows a page-level source hint only and never pretends to have captured the page that failed.
-- Composer. `문제 제보` opens at the description field; that description is the only required field (multiline free text or keyboard dictation). There is no title, severity, type, steps or expected-result input. Order: target chip with change/remove, description, attachment summary with `첨부 확인`, optional `사진 추가` and `화면 캡처` (only when the browser supports it), submission status, `보내기`. The default target is the current page/record; `위치 선택` is optional.
-- Closing, Escape or Back keeps a saved draft; `초안 버리기` asks for confirmation before removal. Success says `접수했습니다`, exposes the issue link and restores focus/scroll; it stays on the source page, never navigates to Inbox or sends an ack.
-- `/issues` is the `제보함` list, `/issues/new` the standalone composer and `/issues/<uuid>` the detail; list and detail share `web/issues.html`/`web/issues.js`. The header `제보함` link has a badge only for `needs-check`, independent of Review and `내 차례` counts.
-- States are `open` (`접수`), `investigating` (`조사 중`), `needs-check` (`확인 요청`), `resolved` (`해결`), and a terminal deletion tombstone. Comments and appended evidence keep the state; maintainer triage moves `open` or `investigating` to `investigating`, request-check is allowed from `open`, `investigating` or `needs-check` and moves to `needs-check`, owner confirmation moves `needs-check` to `resolved`, owner reopen moves `needs-check` or `resolved` to `open`, and owner purge ends in the tombstone, exactly as the HTTP API section states. Detail shows the original observation time/build, server receipt time/build, current source link, correction artifact and the owner's confirmation as separate labeled rows.
-- The fullscreen viewer gets its own `제보` action in `.vbar`; the source frame, zoom and marks stay unchanged. Issue dialogs are separate from `#comment`, `state.marks`, `#ackBtn` and `#reply`.
-- Entries added to the existing pages take the size and style of the controls beside them: the bubble footer's `제보` is one of its text buttons, and the headers' `제보함` and `제보` match each header's existing links or tools. The issue composer and the issues pages keep at least 44 CSS-pixel hit areas. Every state is readable as text, not color alone, and the new surfaces honor the inherited dark preference without changing the old pages' palette. Capture is never automatic: the composer displays `접수 확인 중` for an ambiguous send, and never claims acceptance before a receipt.
-- Context. Before sending, the composer previews every retained context item and lets you remove any of them individually; removal never touches the description. Context is limited to the allowlisted envelope fields (source reference, target, view, opt-in excerpt, visible record IDs, tagged diagnostics, acquisition status and visual provenance), so arbitrary selectors, outerHTML, form values or DOM attributes are never persisted. Selected text is opt-in through a visible `선택한 내용 포함` toggle that defaults on only when a specific record was invoked; page-level reporting defaults to metadata and no text. Diagnostics carry only named actions, route templates, numeric status/duration, stable error codes and script basename/line/column/error class; raw error messages and stacks, headers, URL query/hash, IP, user-agent, storage contents, input values, clipboard text, server log tails, cwd and session-file paths are excluded. Credential-pattern redaction applies only to excerpt, description, comment and mark text, with the original kept in the preview until you confirm the redacted submission; the server repeats it before persistence and retains no raw original in a side file.
-- Contract caps: description 1..8192 UTF-8 bytes; comment/note 1..4096 bytes; server-derived title at most 80 Unicode code points; selected excerpt at most 8192 bytes; at most 50 visible record IDs; at most 30 diagnostic events from the preceding 30 seconds; one raster with sides at most 4096 and at most 2,097,152 pixels; marks and masks at most 50 each with each mark note at most 256 UTF-8 bytes; input image files at most 10 MiB; list and event/evidence metadata pagination 50 by default and 100 at most; source IDs 1..200 bytes and target keys/labels at most 160 bytes each; context at most 32 KiB canonical JSON. Text is rejected rather than silently truncated. Accepted issues and pending reports never expire automatically; deletion is an explicit owner action and is terminal.
-- The issue source does not change on polling or revision updates. A missing adapter registration falls back to `/issues/new` with `contextStatus:"unavailable"` and keeps text reporting usable.
+- Entry. `제보` is a real `<a data-issue-report href="/issues/new">` in the top tools of `/`, `/s/<sid>`, `/boards`, `/p/<id>`, `/issues` and in the fullscreen viewer's `.vbar`; the bubble footer's `제보` button opens the composer on that bubble. The page script turns an unmodified primary click into inspect mode. The anchor still navigates to `/issues/new`, which needs its page script; that page is the text-only composer.
+- Inspect mode. A toolbar at the top center reads `고를 곳을 누르세요` with `취소`. On a PC, hovering draws a DevTools-like box and a label `tag#id.class W×H`, and a click selects. On touch a tap (at most 8 CSS px of movement within 500 ms) selects; a drag, a second finger, a scroll or a pinch stays with the page. While picking no page control fires: no navigation, no button action, no Review mark, no viewer opening. Native scroll and pinch keep working, but the viewer's own pan and zoom pause, so zoom first and then press `제보`. Escape, `취소` or Back leaves the mode. In the split view a pick inside the thread frame opens the composer in the top page.
+- Composer. One dialog: a sheet under 720 px, a centered panel `min(560px, 100vw - 32px)` from 720 px. In order: the title `문제 제보`; the selection card with a 64 px picture, the element's Korean label, its selector in monospace and `상위`, `하위`, `다시 고르기`, `빼기` (`빼기` drops the element and the card reads `화면 전체`); the picture area; `사진 추가`; the description `설명` (placeholder `무엇이 이상한지 적어 주세요`, focused on open, the only required field); a status line; `보내기` (off while the description is blank or a send runs) and `닫기`. `다시 고르기` keeps the text, and Escape while picking again restores the previous selection. The description is a draft in `localStorage["inbox.reportDraft"]`: it survives close and reload and is removed once the report is on GitHub.
+- Picture. The picture is now an automatic redraw of the chosen element shown before sending, which replaces the old rule "never a DOM reconstruction". While it's made the area reads `그림 만드는 중`; then it shows the picture captioned `화면을 다시 그린 그림` with `그림 빼기`, or `그림 없음` when the redraw failed. `사진 추가` or pasting an image replaces it with an uploaded picture captioned `올린 사진` (each side at most 4096 px, at most 2,097,152 px). A PNG over 8 MiB is exported once more at half the pixels before sending.
+- Sending. `보내기` stores the report on the PC first; GitHub gets it in the background, so a send survives a GitHub outage or a server restart. Status: `보내는 중` while the POST runs, `GitHub로 보내는 중` while it waits for GitHub, `GitHub #<n>에 올렸습니다` with `열기` and `처리 맡기기` only after GitHub returned the number, `보내지 못했습니다 · <reason>` with `다시 시도` on a hard failure. A network error or 5xx on the POST shows `서버에 보내지 못했습니다` with `다시 시도`, which resends the same report id. A 400 shows `내용을 확인해 주세요`, a 413 `그림이 너무 큽니다` with `그림 빼기`. If the text or picture changed after a failed send, the server answers `key_reused` and the composer resends once under a new id.
+- `제보함`. `/issues` lists reports newest first, 50 at a time with `더 보기`. Each row has the title (a link to the GitHub issue once sent), the relative time and the state: `GitHub로 보내는 중`, `보내지 못했습니다 · <reason>` with `다시 시도`, or `#<n> 열림` / `#<n> 닫힘` (just `#<n>` while the state is unknown) plus ` · 댓글 <c>` when there are comments. A row with a picture shows a 64 px thumbnail. With no reports it reads `아직 제보가 없습니다`. The list polls every 5 s while a row is pending, and when GitHub states are older than 60 s it fetches again after 3 s, at most 5 times per page load. `/issues/new` is the standalone composer: heading `문제 제보`, `설명`, `보내기` and the same status texts, without element or picture. Any other `/issues/<...>` redirects to `/issues`. The header `제보함` badge counts pending plus failed reports (`보내지 못했거나 보내는 중인 제보 <n>건`) and hides at 0.
+- Handoff. A sent row has `처리 맡기기` (`다시 맡기기` after a handoff). It starts a new agent session in the destination repo's folder: `새 세션을 여는 중입니다.`, then `새 세션에 맡겼습니다.`, and the row shows `맡김 · <time>`. Errors read `이 저장소의 폴더를 찾지 못했습니다.`, `터미널을 찾지 못했습니다.`, `세션을 열지 못했습니다.` and `아직 GitHub에 올라가지 않았습니다.`. The folder is `reports.folder` when it exists. Otherwise it's the worktree or cwd of a thread whose product is the destination repo, preferring branch `main` or `master`, then the newest; it's never inside the Inbox home, `<home>/app` or `~/.omo/agent/git`.
+- Entries on existing pages take the size and style of the controls beside them. Every control has at least a 44 CSS-pixel hit area, every state reads as text and not color alone, and the new surfaces follow the dark preference.
+- Legacy. On first start, open reports of the old `data/issues/` store become reports with their original time and go to GitHub marked `이전 제보함에서 옮긴 제보입니다`. Resolved and deleted ones are skipped, and the old files stay as they are.
+
+#### GitHub
+
+- Destination. `config.json` `reports.repo` (default `yjacket/omo-inbox`), label `reports.label` (default `inbox-report`, created when missing), pictures on the branch `reports.assetsBranch` (default `inbox-report-assets`) at `reports/YYYY/MM/<id>.png`. Only a private repo with Issues turned on is accepted.
+- Token. `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. It needs classic `repo`, or fine-grained `Issues: write`, `Contents: write` and `Metadata: read` on the destination repo.
+- Issue. The title is the description's first non-blank line (at most 80 code points, `…` when cut). The body holds the description, route and URL, element label, selector, DOM path, visible text, frame, source (`- 출처:`) and product (`- 제품:`), rect, viewport, scroll, DPR, color scheme, pointer, server build, the inline picture with a file link, a JSON block and the hidden marker `<!-- inbox-report:<id> -->`.
+- Delivery. One report at a time. Network errors, 5xx and rate limits are retried with backoff. A create whose answer got lost waits, then searches for the marker before creating again, so a report never makes two issues. Hard failures stop with a fixed reason: `GitHub 인증을 확인해야 합니다`, `GitHub 토큰이 없습니다`, `저장소에 쓸 권한이 없습니다`, `저장소를 찾을 수 없습니다`, `저장소의 Issues가 꺼져 있습니다`, `공개 저장소에는 올리지 않습니다`, `GitHub가 내용을 받지 않았습니다`, `그림 파일이 이미 다르게 올라가 있습니다`, and `GitHub에 연결하지 못했습니다` once retries run out.
+- Processing kickoff. `처리 맡기기` gives the new session `inbox-report <owner>/<repo>#<n>` as its first message.
+- Env overrides for tests and QA: `INBOX_GITHUB_API` (default `https://api.github.com`), `INBOX_GITHUB_TIMEOUT_MS` (per request, default 20000), `INBOX_REPORT_RETRY_MS` (backoff base, default 5000), `INBOX_REPORT_RECONCILE_MS` (wait before searching for a lost create, default 60000).
 
 ## Data layout
 ```
@@ -257,12 +258,10 @@ The Review list lives at `/boards` (title and heading `Review`, tab title `(N) R
   data/threads/<sid>/  one folder per session thread
     thread.json        { v: 1, session, cwd, product, feature, worktree, branch, title, titleSource, firstRequest, created, ended, sessionFile, hidden }
     events/<seq6>-<type>.json   item, summary, answer, delivered, bridge, state, pushed, closed, activity, cache, read, next, actions, handoff
-  data/issues/         independent issue store (the server is its only writer)
-    store.json         { v, storeId }
-    records/<issueId>/created.json
-    events/<seq6>.json
-    evidence/<captureId>/{context.json,image.png,manifest.json}
-    tombstones/<issueId>.json
+  data/reports/<id>/   one folder per report (the server is its only writer)
+    report.json        { v: 1, id, createdAt, fingerprint, report, image, asset, issueRequest, delivery, github, handoff, legacy }
+    image.png          the picture, when the report has one
+  data/issues/         the old issue store, read once for migration and kept as it is
   data/live.json       session -> last /api/here time (epoch ms), restores liveness after a server restart
   mailbox/<session>/<file>.json   answers and board feedback waiting for the extension, deleted after delivery
   ledger/<session>.json   delivery ids the extension already handled
@@ -300,12 +299,12 @@ Proposals:
 - The delivered text (the inbox file's `text`, which `inbox wait` prints too) ends with a `처리:` line. After a `재요청` it tells the session to answer with `inbox revise` and that a 재요청 is not an approval, so the session neither calls the decision final nor starts the work. After `승인` or `확인` it lists `reply / revise / close`.
 - Product key comes from the normalized `origin` remote (lowercased `host/path`), feature key is `<product key>#<branch>`, and the worktree path scopes counts and notices.
 
-`data/issues` is kept by `uninstall` exactly like the rest of `data`; a tombstone retains no description, context or images.
+`data/reports` and the old `data/issues` are kept by `uninstall` exactly like the rest of `data`. Report writes go through a temp file and a rename; a new report is staged in `data/reports/.staging-<id>-<rand>/` and renamed to `<id>`, and reads ignore folders without `report.json` and `.staging-*` folders. Delivery states are `queued`, `uploading`, `creating`, `reconciling`, `retry_wait`, `failed` and `sent`.
 
-`config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 } }`. `server.json` is written only by the server: `{ "v", "name", "port", "pid", "started", "version" }`. Install doesn't write it. `next.closeTab` (default true) lets a close also close the Orca tab; `false` leaves the tab open.
+`config.json`: `{ "v": 1, "port": 4387, "publicBase": "https://<machine>.<tailnet>.ts.net:4388" | null, "pcTailnetIps": [...], "owner": "<tailscale login>" | null, "baseline443": {...}, "mode": "trial" | "primary", "summary": { "enabled": true, "models": [...] }, "cacheLeadMinutes": 5, "progress": { "modelLines": true }, "episode": { "stallMinutes": 60 }, "reports": { "repo": "yjacket/omo-inbox", "label": "inbox-report", "assetsBranch": "inbox-report-assets", "folder": null } }`. `server.json` is written only by the server: `{ "v", "name", "port", "pid", "started", "version" }`. Install doesn't write it. `next.closeTab` (default true) lets a close also close the Orca tab; `false` leaves the tab open.
 
 ## HTTP API
-Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and `x-inbox: 1` (else 403). Body limit 30 MiB (else 413); `/api/issues*` instead reads at most 12 MiB, enforced while reading before JSON parsing, and the old endpoints keep 30 MiB. `/api/*` responses are `cache-control: no-store`; revision files are `public, max-age=31536000, immutable`.
+Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and `x-inbox: 1` (else 403). Body limit 30 MiB (else 413); `/api/reports*` instead reads at most 12 MiB, enforced while reading before JSON parsing. `/api/*` responses are `cache-control: no-store`; revision files are `public, max-age=31536000, immutable`.
 
 | Method | Path | Access | Response |
 | --- | --- | --- | --- |
@@ -328,13 +327,12 @@ Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and 
 | POST | `/api/p/<id>/revise` | session | `{ summary, url }` |
 | POST | `/api/p/<id>/reply` | session | `{ summary }` |
 | POST | `/api/p/<id>/close` | session | `{ summary }` |
-| GET | `/api/issues/capabilities` | read | `{ storeId, schema: 1, limits, serverBuild, features }`; no-store |
-| GET | `/api/issues?state=&q=&cursor=&limit=` | read | `{ items, counts: { open, investigating, "needs-check", resolved }, nextCursor }`; `q` at most 200 UTF-8 bytes, literal case-insensitive title/description search |
-| GET | `/api/issues/<id>?after=&limit=` | read | `{ issue, state, currentSeq, events, evidence, nextAfter, capabilities }`; numeric `after` and `nextAfter` |
-| GET | `/api/issues/<id>/evidence/<captureId>/image` | read | manifest-selected sanitized PNG, or 404/410; `Content-Type: image/png`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'`, `Cache-Control: private, no-store` |
-| POST | `/api/issues` | feedback | 201 commit or 200 exact replay; receipt and currentSeq |
-| POST | `/api/issues/<id>/feedback` | feedback | owner `comment`, `append_evidence`, `confirm`, `reopen`, `purge` commands |
-| POST | `/api/issues/<id>/commands` | session | maintainer `triage`, `comment`, `request_check` commands |
+| GET | `/api/reports?limit=&cursor=` | read | `{items: [Row], counts: {pending, failed, sent}, nextCursor, repo, statesAt}` newest first; `limit` 1..100, default 50; `cursor` is a report id |
+| GET | `/api/reports/<id>` | read | `Row` plus `delivery: {state, attempts, nextAttemptAt}`; 404 `not_found` |
+| GET | `/api/reports/<id>/image` | read | the stored PNG, or 404; `Content-Type: image/png`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'`, `Cache-Control: private, no-store` |
+| POST | `/api/reports` | feedback | 201 `{ok: true, id, state, github: null}`; exact replay 200 `{ok: true, id, state, github, replay: true}`; 400 `{error: "bad_input", fields}`; 409 `key_reused`; 403 `forbidden`; 413 `too_long` |
+| POST | `/api/reports/<id>/retry` | feedback | failed -> queued, 200 `{ok: true, state: "pending"}`; 409 `not_failed`; 404 `not_found` |
+| POST | `/api/reports/<id>/handoff` | reopen | `{ok: true, via, session}`; 409 `not_sent` or `cwd_missing`; 503 `no_launcher`; 502 `launch_failed`; 404 `not_found` |
 | GET | `/api/here?cwd=&session=[&start=1][&idle=0\|1]` | session | `{ product, feature, mine, theirs, pending, waiting, notice, noticeKeys, footer }` |
 | POST | `/api/bye` | session | `{session, closed?}` -> `{ ok }`; `closed: true` closes the thread's open items as `session-closed` |
 | POST | `/api/shutdown` | session | `{ ok }`, then exit |
@@ -362,9 +360,9 @@ Server on `127.0.0.1:4387`. All POSTs need `content-type: application/json` and 
 
 Items and their views carry `next` (the contract shape, or null). 내 차례 rows and ended rows with an actionable closed final carry `next: {state, label}` or null. The thread view adds `handoff` (`{to, via, status, slug, at}` or null) and `actions` (the provider actions). `/api/here` takes `watch=<n>`, the session's live count of standing monitors.
 
-Issue create is `{v:1,storeId,requestId,description,evidence}` and a command is `{v:1,storeId,requestId,expectedSeq,command}`. A mutation returns `{ok:true,id,storeId,receipt:{requestId,seq,acceptedAt},currentSeq,state,evidenceManifest}`; a create receipt starts at seq 1 and an exact replay returns the original receipt and current projection, not a new acceptance time. Detail is `{issue:{id,storeId,title,description,createdAt,source},state,currentSeq,events,evidence,nextAfter,capabilities}`; list is `{items:[{id,title,state,category,severity,createdAt,updatedAt}],counts,nextCursor}` sorted by createdAt descending then id descending. Issue errors are `{error:code,fields?:string[],currentSeq?:integer,state?:string}`: `bad_input` 400, `forbidden` 403, `not_found` 404, `too_long` 413, `key_reused` 409, `version_conflict` 409, `store_changed` 409, `invalid_transition` 409, `corrupt_record` for missing or corrupt committed events/blobs, and 410 for a purged issue. A requestId replay is compared by canonical fingerprint before current-sequence/state checks; a different body is `key_reused`, a stale `expectedSeq` is `version_conflict`.
+Report create is `{v: 2, reportId, description, page, element, view, source, image}`: `reportId` a uuid v4, `description` 1..8192 UTF-8 bytes, `page` `{kind: "inbox"|"thread"|"boards"|"proposal"|"issues", route, url, title, frames}` (`url` a pathname, plus `?s=<sid>` only on `/`, at most 2048 bytes; `title` at most 160 bytes; at most one frame `{selector, url}`), `element` null or `{selector, selectorStability, domPath, domPathTruncated, tag, role, label, textExcerpt, excerptTruncated, rect}` (selector and DOM path at most 2048 bytes, label 160, excerpt 512), `view` `{layout, visual, scroll, dpr, colorScheme, pointer}`, `source` null or `{kind: "thread", threadId, itemId}` or `{kind: "proposal", proposalId, revision, frame}`, and `image` null or `{provenance: "snapshot"|"upload", png, width, height}` (base64 PNG, each side at most 4096, at most 2,097,152 px, at most 8 MiB decoded, its header must match the stated size). Unknown keys, a client-sent `source.product` included, are 400 with their JSON paths in `fields`. The server adds `source.product` from its own thread or proposal record and redacts credential patterns in the description, element label, excerpt and page title before storing. A replay with the same `reportId` and the same content returns the stored report; different content is `key_reused`.
 
-States are `open` (접수), `investigating` (조사 중), `needs-check` (확인 요청) and `resolved` (해결), plus a terminal tombstone. Triage moves open/investigating to investigating with `category:inbox-ui|report-content|other` and `severity:normal|high|low`. Request-check is allowed from open/investigating/needs-check and needs a note plus correction evidence, and says `수정안 확인`; confirm is owner-only from needs-check to resolved; reopen is owner-only from needs-check/resolved to open; purge is owner-only. Invalid pairs return 409 `invalid_transition`. Each new operation emits one event; an exact replay emits none.
+`Row` is `{id, title, createdAt, state: "pending"|"failed"|"sent", detail, github: null|{number, url, state: "open"|"closed"|null, comments}, image, handoff: null|{at, via}}`. `detail` is the fixed Korean failure reason or null. Stored delivery states map to `failed`, `sent` and `pending` for everything else. GitHub open/closed state and comment counts come from a cache that is refreshed in the background, so the list never waits on GitHub; `statesAt` is the time of its last successful refresh, or null.
 
 `waiting` lists the calling session's open decision boards that wait on the owner: status `mine`, or `theirs` while the latest feedback is still undelivered (delivery `pending`). Each entry is `{ id, title, url, status, since, seq }`, where `since` is the time of the board's last submitted, revised or feedback event (a session reply never moves it) and `seq` is the latest feedback's seq for `theirs`, else `null`. Report boards, ownerless boards and other sessions' boards are never listed, and without `session` it's `[]`.
 
@@ -398,7 +396,7 @@ Each request is classified as `local`, `pc`, `tailnet` or `reject`:
 
 So a phone on your tailnet can read and send feedback, but can't submit, post items, close as a session, or launch programs on the PC, except `POST /api/threads/<sid>/reopen`, which resumes only that thread's stored session.
 
-Issue routes keep that ALLOW map unchanged. For forwarded tailnet issue requests the server additionally requires a configured non-null owner; local and known-PC requests keep their current classes. Browser mutations require an `Origin` header equal to the request's validated local origin or the configured `publicBase` origin. A missing `Origin` is allowed only for the local non-browser CLI and tests; `Origin: null`, foreign origins and Funnel are rejected. Nothing in the request picks the command, folder or file, and Funnel is rejected as everywhere else.
+Report routes keep that ALLOW map unchanged: reading is `read`, create and retry are `feedback`, and handoff is `reopen`. For forwarded tailnet report requests the server additionally requires a configured non-null owner; local and known-PC requests keep their current classes. Browser mutations require an `Origin` header equal to the request's validated local origin or the configured `publicBase` origin. A missing `Origin` is allowed only for the local non-browser CLI and tests; `Origin: null`, foreign origins and Funnel are rejected. A handoff takes nothing from the request but the report id: the server picks the folder and the message.
 
 ## Session wake and capture
 ### Capture
@@ -547,9 +545,9 @@ Limits:
 - PC: the browser program must be running (a background process is enough; the tab can be closed).
 - Each browser and each origin (`http://127.0.0.1:4387` on the PC, the tailnet `https` origin on the phone) subscribes separately.
 
-### Issue notifications
+### Report notifications
 
-Only a new `request_check` event sends a push through the existing subscriptions: title `제보한 문제의 수정안이 왔습니다`, body `제보함에서 확인해 주세요.`, URL `/issues/<id>`, tag `issue:<id>`. The payload carries no description, image or log text. An exact replay sends no second push, and a push failure never rolls back the issue or claims delivery; the badge and list are authoritative when push is unavailable. No source thread event or mailbox is written.
+When a report fails to reach GitHub, one push goes through the existing subscriptions: title `제보를 GitHub에 올리지 못했습니다`, body the report title clipped to 80 characters, URL `/issues`, tag `report:<id>`. It's sent once per failure, carries no description or picture, and a push failure changes nothing about the report. Nothing else about reports sends a push.
 
 ## Notices for other extensions
 Other extensions can post to the inbox by emitting `inbox:notice` on `pi.events`; the extension fills in the session and cwd and forwards it to `POST /api/notices`. From a shell, `inbox notify` does the same.
@@ -623,6 +621,8 @@ Browser QA for the Inbox turn flow: `bun qa/turn-list-qa.mjs` (port 4395), `bun 
 
 Browser QA for next actions: `bun qa/next-qa.mjs` (port 4402), the same way. `bun qa/session-qa.mjs` S25 and S26 cover close and new-session against a real session, and `reopen-launch-qa` also checks that a close shuts the Orca tab.
 
+Browser QA for reports: `bun qa/report-pick-qa.mjs` (port 4403), `bun qa/report-send-qa.mjs` (4404) and `bun qa/report-look-qa.mjs` (4405), the same way. They point `INBOX_GITHUB_API` at a fake GitHub and never call the real GitHub API.
+
 Every push in tests and QA goes to an `INBOX_PUSH_SINK` file, and every reopen to an `INBOX_REOPEN_SINK` file (except `reopen-launch-qa`). QA never uses ports 4387 or 4388.
 
 ## Limits
@@ -642,7 +642,7 @@ Every push in tests and QA goes to an `INBOX_PUSH_SINK` file, and every reopen t
 - 듣기 in the thread page needs a tap; nothing is read aloud by itself.
 - Reopen needs Orca or Windows Terminal (and `omo` on PATH for Windows Terminal) on the PC.
 - Summaries need a subscription model; without one every item uses the heuristic summary.
-- No automatic or silent screenshot. `화면 캡처` happens only from the user's own action and only where the browser's `navigator.mediaDevices.getDisplayMedia` is callable; elsewhere it is absent. Denial, unsupported capture or a failed/tainted frame yields no image and its exact reason, never a DOM reconstruction.
-- Images are re-encoded server-side to plain PNG with no metadata; the original compressed upload is not retained.
-- Drafts live in the browser's IndexedDB best-effort. If storage is unavailable or a transaction fails, the composer shows `이 기기에 초안을 저장하지 못했습니다` and never a fake saved state.
-- Fix evidence keeps the correction artifact, the applied build and the owner's confirmation separate. `수정안 확인` never claims a fix is installed, and the owner can still report that the problem remains.
+- The report picture is a redraw of the chosen element, not a screen capture, so it can differ from what the screen showed.
+- Android can't capture the screen in a browser; `사진 추가` is the way to attach a real screenshot.
+- Only private destination repos are accepted.
+- GitHub shows the inline picture only to viewers with access to the repo.
