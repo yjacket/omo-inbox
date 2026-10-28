@@ -63,6 +63,11 @@ const TEXT = Object.freeze({
 const app = document.getElementById("app");
 const mode = location.pathname.replace(/\/+$/, "") === "/issues/new" ? "new" : "list";
 
+// The old reporter's drafts database is replaced by the inspector reporter's own storage; drop it.
+try {
+	indexedDB.deleteDatabase("inbox-issues-v1");
+} catch {}
+
 /* ---------- shared ---------- */
 
 function el(tag, className, text) {
@@ -636,4 +641,7 @@ function startComposer() {
 }
 
 if (mode === "new") startComposer();
-else startList();
+else {
+	startList();
+	import("/web/report.js").then(({ mountReporter }) => mountReporter({ page: { kind: "issues", route: "/issues" }, sourceOf: () => null }));
+}
