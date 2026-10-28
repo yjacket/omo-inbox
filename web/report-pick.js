@@ -150,7 +150,7 @@ export function startPick({ win, overlay, describeLabel, onPick, onCancel }) {
 			}
 		};
 		for (const type of blocked) listen(realm, type, handle);
-		for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
+		for (const type of ["touchstart", "touchmove", "touchend", "touchcancel", "wheel"]) {
 			listen(realm, type, (event) => {
 				if (!overlay.contains(event.target)) event.stopImmediatePropagation();
 			}, passive);
