@@ -174,6 +174,28 @@ test("new session plan passes the kickoff as one Windows Terminal argv entry whe
 	assert.deepEqual(plan.attempts[0].args.slice(7), ["C:/bin/omo.exe", "--session-id", "valid-sid1", "/skill:ulw-execute x"]);
 });
 
+test("new session plan accepts a report kickoff message for Orca and Windows Terminal", () => {
+	const exists = (p) => ["C:/bin/orca.exe", "C:/bin/wt.exe", "C:/bin/omo.exe"].includes(p);
+	const message = "inbox-report yjacket/omo-inbox#12";
+	const plan = planNewSession({ sid: "valid-sid1", folder: "C:/Work/Repo", message, env: { PATH: "C:/bin" }, exists, isDir: () => true, worktrees: ["c:\\work\\repo"] });
+	assert.equal(plan.title, "제보 처리 12");
+	assert.deepEqual(plan.attempts.map((attempt) => attempt.via), ["orca", "wt"]);
+	assert.equal(plan.attempts[0].args[7], 'omo --session-id valid-sid1 "inbox-report yjacket/omo-inbox#12"');
+	assert.equal(plan.attempts[1].args.at(-1), message);
+	assert.equal(plan.attempts[1].args.filter((arg) => arg === message).length, 1);
+});
+
+test("new session plan rejects malformed report kickoff messages", () => {
+	const base = { sid: "valid-sid1", folder: "C:/work", env: { PATH: "C:/bin" }, exists: (p) => ["C:/bin/wt.exe", "C:/bin/omo.exe"].includes(p), isDir: () => true, worktrees: [] };
+	for (const message of [
+		"inbox-report a/b#0",
+		'inbox-report yjacket/omo-inbox#12"',
+		"inbox-report yjacket/omo-inbox#12 extra",
+		"inbox-report yjacket/omo-inbox#12\n",
+		"inbox-report 제보/omo-inbox#12",
+		"inbox-report yjacket/omo-inbox",
+	]) assert.deepEqual(planNewSession({ ...base, message }), { error: "bad_message" }, message);
+});
 test("new session plan validates the kickoff, sid, folder and launchers", () => {
 	const base = { sid: "valid-sid1", folder: "C:/work", message: "/skill:ulw-execute x", env: { PATH: "C:/bin" }, exists: (p) => ["C:/bin/wt.exe", "C:/bin/omo.exe"].includes(p), isDir: () => true, worktrees: [] };
 	for (const message of ["/skill:ulw-execute ../x", "rm -rf /", "/skill:ulw-execute ", "/skill:ulw-execute X"]) assert.deepEqual(planNewSession({ ...base, message }), { error: "bad_message" });
