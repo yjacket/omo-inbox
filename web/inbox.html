@@ -705,7 +705,7 @@
 						if (n > 0) els.issueBadge.setAttribute("aria-label", `보내지 못했거나 보내는 중인 제보 ${n}건`);
 						else els.issueBadge.removeAttribute("aria-label");
 					})
-					.catch(() => {});
+					.catch((error) => console.error("inbox: report badge failed", error));
 			}
 
 			function setupReporting() {

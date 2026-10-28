@@ -1,6 +1,6 @@
 # Design contract: contextual issue reporting
 
-This file records the visual contract for the new issue surfaces. It copies existing tokens by name and value; it does not add tokens or redesign an existing page. The source of truth for behavior is `README.md`; this file is for the visual workers who build `web/issues.html`, `web/issues.js` and the composer/picker additions.
+This file records the visual contract for the new issue surfaces. It copies existing tokens by name and value; it does not add tokens or redesign an existing page. The source of truth for behavior is `README.md`; this file is for the visual workers who build `web/reports.html`, `web/reports.js` and the composer/picker additions.
 
 ## Existing tokens
 

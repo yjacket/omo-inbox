@@ -538,17 +538,6 @@ export function createServer({
 		return allowed.has(origin);
 	}
 
-	function boardHasFrame(board, frame) {
-		for (const section of Array.isArray(board?.sections) ? board.sections : []) {
-			for (const card of Array.isArray(section?.cards) ? section.cards : []) {
-				for (const entry of Array.isArray(card?.frames) ? card.frames : []) {
-					if (Array.isArray(entry) && entry[0] === frame.label && entry[1] === frame.path) return true;
-				}
-			}
-		}
-		return false;
-	}
-
 	// Fire and forget: called after the response is written, never awaited by a handler.
 	function notifyLater(message, options = {}) {
 		Promise.resolve()
