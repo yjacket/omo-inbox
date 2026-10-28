@@ -66,7 +66,7 @@ function byNewest(a, b) {
 	return a.id < b.id ? 1 : -1;
 }
 
-export function createReportsStore({ dataDir, now = () => new Date() } = {}) {
+export function createReportsStore({ dataDir, now = () => new Date(), renameSync = fs.renameSync } = {}) {
 	if (typeof dataDir !== "string" || dataDir === "") throw fail("bad_input", "dataDir is required");
 	const root = path.join(dataDir, "reports");
 	fs.mkdirSync(root, { recursive: true });
@@ -133,7 +133,17 @@ export function createReportsStore({ dataDir, now = () => new Date() } = {}) {
 			// A directory without a readable report.json is ignored on read, so it
 			// cannot be a live record and must not block this create.
 			fs.rmSync(finalDir, { recursive: true, force: true });
-			fs.renameSync(staging, finalDir);
+			try {
+				renameSync(staging, finalDir);
+			} catch (error) {
+				// Two processes may create the same report at once. The loser's
+				// rename fails against the winner's directory; an identical record
+				// already there means this create is an exact concurrent replay.
+				if (error?.code !== "EPERM" && error?.code !== "EEXIST" && error?.code !== "ENOTEMPTY") throw error;
+				const concurrent = readRecord(id);
+				if (!concurrent || concurrent.fingerprint !== fingerprint) throw error;
+				return { created: false, record: structuredClone(concurrent) };
+			}
 		} finally {
 			fs.rmSync(staging, { recursive: true, force: true });
 		}

@@ -107,6 +107,28 @@ test("an exact create replay returns created:false with the stored record", (t) 
 	assert.equal(again.record.createdAt, "2026-01-02T03:04:05.000Z");
 });
 
+test("a concurrent create whose rename fails accepts the winner's identical record", (t) => {
+	const f = setup(t);
+	let competitor = null;
+	const racer = createReportsStore({
+		dataDir: f.dataDir,
+		now: () => new Date("2026-01-02T03:04:05.000Z"),
+		renameSync: () => {
+			create(competitor, "id-a");
+			const error = new Error("EPERM: operation not permitted, rename");
+			error.code = "EPERM";
+			throw error;
+		},
+	});
+	competitor = createReportsStore({ dataDir: f.dataDir, now: () => new Date("2026-01-02T03:04:05.000Z") });
+	const result = create(racer, "id-a");
+	assert.equal(result.created, false);
+	assert.deepEqual(result.record, f.store.get("id-a"));
+	assert.ok(fs.existsSync(path.join(f.dataDir, "reports", "id-a", "report.json")));
+	const staging = fs.readdirSync(path.join(f.dataDir, "reports")).filter((name) => name.startsWith(".staging-"));
+	assert.deepEqual(staging, []);
+});
+
 test("a different fingerprint for the same id throws key_reused", (t) => {
 	const f = setup(t);
 	create(f.store, "id-a");
