@@ -35,6 +35,42 @@ function capability(win, deadlineMs) {
 	return probes.get(win);
 }
 
+function opaqueBackground(win, value) {
+	const color = value.trim().toLowerCase();
+	if (!color || color === "transparent") return null;
+	const alpha = (part) => part.endsWith("%") ? Number.parseFloat(part) / 100 : Number.parseFloat(part);
+	const channel = (part) => part.endsWith("%") ? Number.parseFloat(part) * 2.55 : Number.parseFloat(part);
+	const rgb = color.match(/^rgba?\(([^)]*)\)$/);
+	if (rgb) {
+		const parts = rgb[1].split(/[\s,\/]+/).filter(Boolean);
+		if (parts.length < 3) return null;
+		const values = parts.slice(0, 3).map(channel);
+		if (values.some((n) => !Number.isFinite(n))) return null;
+		if (parts.length > 3 && !(alpha(parts[3]) > 0)) return null;
+		return value;
+	}
+	const srgb = color.match(/^color\(srgb\s+([^)]*)\)$/);
+	if (srgb) {
+		const parts = srgb[1].split(/[\s\/]+/).filter(Boolean);
+		if (parts.length < 3) return null;
+		if (parts.some((part) => !Number.isFinite(Number.parseFloat(part)))) return null;
+		if (parts.length > 3 && !(alpha(parts[3]) > 0)) return null;
+		return value;
+	}
+	return null;
+}
+
+function backdrop(win, el) {
+	const doc = el.ownerDocument;
+	for (let node = el.parentElement; node; node = node.parentElement) {
+		const color = opaqueBackground(win, win.getComputedStyle(node).backgroundColor);
+		if (color) return color;
+		if (node === doc.documentElement) break;
+	}
+	const scheme = win.getComputedStyle(doc.documentElement).colorScheme;
+	return win.matchMedia("(prefers-color-scheme: dark)").matches && /(?:^|\s)dark(?:\s|$)/.test(scheme) ? "#111214" : "#ffffff";
+}
+
 export async function snapshotElement(el, { pad = 12, maxSide = 4096, maxPixels = 2097152, scale, deadlineMs = 5000 } = {}) {
 	const doc = el.ownerDocument;
 	const win = doc.defaultView;
@@ -183,7 +219,7 @@ export async function snapshotElement(el, { pad = 12, maxSide = 4096, maxPixels 
 			const foreign = doc.createElementNS(SVG, "foreignObject");
 			for (const [key, value] of Object.entries({ x: 0, y: 0, width: w, height: h })) foreign.setAttribute(key, value);
 			const wrapper = doc.createElementNS(XHTML, "div");
-			const background = win.getComputedStyle(doc.body || doc.documentElement).backgroundColor;
+			const background = backdrop(win, el);
 			wrapper.style.cssText = `position:relative;width:${w}px;height:${h}px;background:${background};`;
 			const style = doc.createElement("style");
 			style.textContent = rules.map(({ id, pseudo, holder }) => `[data-snap="${id}"]${pseudo}{${holder.style.cssText}}`).join("\n");
@@ -198,8 +234,6 @@ export async function snapshotElement(el, { pad = 12, maxSide = 4096, maxPixels 
 			canvas.width = width;
 			canvas.height = height;
 			const ctx = canvas.getContext("2d");
-			ctx.fillStyle = "#fff";
-			ctx.fillRect(0, 0, width, height);
 			ctx.fillStyle = background;
 			ctx.fillRect(0, 0, width, height);
 			ctx.drawImage(image, 0, 0, width, height);
