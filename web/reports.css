@@ -1,0 +1,280 @@
+/* 제보함 (web/reports.html): the report list at /issues and the text-only composer at /issues/new.
+ * Tokens are web/inbox.html's `:root` and its dark overrides, copied by name and value (DESIGN.md tables);
+ * `--tap` (44px, web/thread.html) is the hit-area floor for every control. State is text first and colour only
+ * accompanies it; depth is borders only; radius: controls 8px, rows 10px; spacing on the 4px base. */
+
+:root {
+	color-scheme: light dark;
+	--bg: #f3f4f6;
+	--surface: #fcfcfd;
+	--ink: #15171b;
+	--ink-2: #5b6069;
+	--ink-3: #6b707b;
+	--ink-rgb: 21 23 27;
+	--accent: #b4530a;
+	--accent-ink: #fff7ee;
+	--ok: #1b6e3f;
+	--ok-rgb: 27 110 63;
+	--danger: #b42318;
+	--danger-rgb: 180 35 24;
+	--line: rgb(var(--ink-rgb) / 0.10);
+	--line-soft: rgb(var(--ink-rgb) / 0.06);
+	--wash-1: rgb(var(--ink-rgb) / 0.04);
+	--wash-2: rgb(var(--ink-rgb) / 0.08);
+	--font: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
+	--mono: "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+	--fs-title: 1.375rem;
+	--fs-row: 0.9375rem;
+	--fs-body: 0.875rem;
+	--fs-cap: 0.8125rem;
+	--fs-micro: 0.75rem;
+	--s1: 4px;
+	--s2: 8px;
+	--s3: 12px;
+	--s4: 16px;
+	--s5: 20px;
+	--s6: 24px;
+	--s8: 32px;
+	--s10: 40px;
+	--r-xs: 4px;
+	--r-ctl: 8px;
+	--r-row: 10px;
+	--r-pill: 999px;
+	--t-micro: 120ms ease-out;
+	--measure: 920px;
+	--ctl-h: 34px;
+	--dot: 8px;
+	--tap: 44px;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #111214;
+		--surface: #191b1f;
+		--ink: #ecedef;
+		--ink-2: #a2a7b1;
+		--ink-3: #8a8f99;
+		--ink-rgb: 236 237 239;
+		--accent: #f0a35c;
+		--accent-ink: #1d1206;
+		--ok: #6cc48f;
+		--ok-rgb: 108 196 143;
+		--danger: #f08a80;
+		--danger-rgb: 240 138 128;
+	}
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { background: var(--bg); -webkit-text-size-adjust: 100%; }
+body {
+	margin: 0;
+	font: 400 var(--fs-body) / 1.5 var(--font);
+	color: var(--ink);
+	-webkit-font-smoothing: antialiased;
+}
+button, textarea { font: inherit; }
+.page { max-width: var(--measure); margin: 0 auto; padding: var(--s6) var(--s4) var(--s10); }
+
+/* header: ‹ Inbox, 제보함, 제보 */
+.top { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s5); }
+.heads { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.tools { display: flex; align-items: center; gap: var(--s2); flex: none; margin-left: auto; }
+h1 { margin: 0; font-size: var(--fs-title); font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+.back {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	min-width: var(--tap);
+	min-height: var(--tap);
+	/* the padding gives the label its full tap target; the matching negative margin keeps the text where the
+	 * other headers put it, so the row of titles starts at the same x */
+	margin-inline: calc(var(--s2) * -1);
+	padding-inline: var(--s2);
+	font-size: var(--fs-cap);
+	color: var(--ink-2);
+	text-decoration: none;
+	white-space: nowrap;
+	transition: color var(--t-micro);
+}
+.back:hover { color: var(--ink); }
+.back:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-xs); }
+.ctl {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	font-size: var(--fs-cap);
+	font-weight: 600;
+	color: var(--ink-2);
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: var(--r-ctl);
+	min-height: var(--tap);
+	padding: 0 var(--s4);
+	white-space: nowrap;
+	text-decoration: none;
+	cursor: pointer;
+	transition: background-color var(--t-micro), color var(--t-micro);
+}
+.ctl:hover:not(:disabled) { background-color: var(--wash-1); color: var(--ink); }
+.ctl:active:not(:disabled) { background-color: var(--wash-2); }
+.ctl:disabled { color: var(--ink-3); background: transparent; cursor: default; }
+.ctl:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ctl[hidden] { display: none; }
+
+/* notice: the list could not be loaded */
+.notice {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--s2) var(--s3);
+	margin-bottom: var(--s3);
+	padding: var(--s2) var(--s3);
+	border-radius: var(--r-ctl);
+	background: rgb(var(--danger-rgb) / 0.10);
+	color: var(--danger);
+	font-size: var(--fs-cap);
+}
+.notice[hidden] { display: none; }
+.notice button {
+	font-weight: 600;
+	color: var(--danger);
+	background: rgb(var(--danger-rgb) / 0.12);
+	border: 0;
+	border-radius: 6px;
+	min-height: var(--tap);
+	padding: 0 var(--s3);
+	cursor: pointer;
+	transition: background-color var(--t-micro);
+}
+.notice button:hover { background: rgb(var(--danger-rgb) / 0.18); }
+.notice button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* rows: one report each, the same surface and rhythm as the Inbox list */
+.rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: var(--r-row);
+	overflow: hidden;
+}
+.rows[hidden] { display: none; }
+.row { display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s3) var(--s4); }
+.row + .row { border-top: 1px solid var(--line-soft); }
+.main { flex: 1 1 auto; min-width: 0; display: grid; gap: var(--s1); }
+.side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); max-width: 40%; }
+.title { margin: 0; font-size: var(--fs-row); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+/* the GitHub link keeps the title's place in the row but owns a 44px tap box: the vertical padding brings a
+ * one-line title to 44px and the equal negative margin gives that space back, whatever the number of lines */
+.title a {
+	display: inline-block;
+	padding-block: calc((var(--tap) - 1.35em) / 2);
+	margin-block: calc((1.35em - var(--tap)) / 2);
+	color: inherit;
+	text-decoration: underline;
+	text-decoration-color: var(--ink-3);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+	transition: text-decoration-color var(--t-micro);
+}
+.title a:hover { text-decoration-color: var(--ink); }
+.title a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-xs); }
+.state {
+	margin: 0;
+	font-size: var(--fs-cap);
+	font-variant-numeric: tabular-nums;
+	color: var(--ink-2);
+	overflow-wrap: anywhere;
+}
+.row[data-state="failed"] .state { color: var(--danger); }
+.handed { margin: 0; font-size: var(--fs-micro); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.when {
+	padding-top: 2px;
+	font-size: var(--fs-cap);
+	font-variant-numeric: tabular-nums;
+	color: var(--ink-3);
+	white-space: nowrap;
+}
+.thumb {
+	display: block;
+	height: 64px;
+	width: auto;
+	max-width: 100%;
+	object-fit: contain;
+	border: 1px solid var(--line);
+	border-radius: var(--r-xs);
+	background: var(--bg);
+}
+.row-actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s1); }
+.note { margin: 0; font-size: var(--fs-cap); color: var(--ink-2); overflow-wrap: anywhere; }
+.note.error { color: var(--danger); }
+.note:empty { display: none; }
+.more { display: flex; margin: var(--s4) auto 0; }
+.more[hidden] { display: none; }
+.empty {
+	margin: 0;
+	padding: var(--s10) var(--s4);
+	text-align: center;
+	color: var(--ink-2);
+	background: var(--surface);
+	border: 1px dashed var(--line);
+	border-radius: var(--r-row);
+}
+.empty[hidden] { display: none; }
+
+/* composer: 문제 제보, one description, 보내기 */
+.compose {
+	display: grid;
+	gap: var(--s3);
+	padding: var(--s4);
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: var(--r-row);
+}
+.compose h2 { margin: 0; font-size: var(--fs-row); font-weight: 700; line-height: 1.35; }
+.label { font-size: var(--fs-cap); font-weight: 600; color: var(--ink-2); }
+textarea {
+	width: 100%;
+	min-height: calc(var(--tap) * 3);
+	max-height: 50vh;
+	padding: var(--s2) var(--s3);
+	font-size: 16px;
+	line-height: 1.4;
+	color: var(--ink);
+	background: var(--bg);
+	border: 1px solid var(--line);
+	border-radius: var(--r-ctl);
+	resize: vertical;
+}
+textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+textarea:read-only { color: var(--ink-2); }
+.status { margin: 0; min-height: 1.5em; font-size: var(--fs-cap); color: var(--ink-2); overflow-wrap: anywhere; }
+.status.error { color: var(--danger); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: var(--tap);
+	padding: 0 var(--s5);
+	font-weight: 700;
+	color: var(--accent-ink);
+	background: var(--accent);
+	border: 0;
+	border-radius: var(--r-ctl);
+	white-space: nowrap;
+	cursor: pointer;
+	transition: filter var(--t-micro);
+}
+.btn:hover:not(:disabled) { filter: brightness(1.06); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.btn[hidden] { display: none; }
+
+@media (max-width: 360px) {
+	.ctl { padding: 0 var(--s2); }
+}
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after { transition: none !important; }
+}
