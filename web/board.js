@@ -157,15 +157,12 @@
 	}
 
 	async function api(path, options) {
-		const startedAt = performance.now();
 		let res;
 		try {
 			res = await fetch(path, { cache: "no-store", ...options });
 		} catch (error) {
-			noteRequest(path, startedAt, 0, "network");
 			throw error;
 		}
-		noteRequest(path, startedAt, res.status);
 		if (!res.ok) {
 			const error = new Error(`${res.status} ${path}`);
 			error.status = res.status;
@@ -309,7 +306,6 @@
 	async function selectRev(wanted, { replace = true } = {}) {
 		const n = state.revs.some((r) => r.n === wanted) ? wanted : state.latest;
 		if (n === state.rev) return;
-		noteAction("change_revision");
 		stopListening();
 		forgetListening();
 		state.rev = n;
@@ -814,7 +810,6 @@
 
 	function openViewer(label, source, diagram) {
 		if (vv.open) return;
-		noteAction("open_viewer");
 		vsource = source;
 		vopener = document.activeElement;
 		Object.assign(vv, { open: true, label, scale: 1, tx: 0, ty: 0, drawing: false, selected: null });
@@ -839,7 +834,6 @@
 	// Closing by button also steps back over the history entry opening pushed, but only while that entry is still current.
 	function closeViewer({ popped = false } = {}) {
 		if (!vv.open) return;
-		noteAction("close_viewer");
 		Object.assign(vv, { open: false, drawing: false, selected: null });
 		vpoints.clear();
 		vgesture = null;
@@ -1322,10 +1316,7 @@
 		try {
 			const data = await api(`/api/p/${encodeURIComponent(id)}?since=${state.lastSeq}`);
 			const fresh = absorb(data);
-			// While the issue composer is open the page keeps absorbing but does not repaint: the events wait in
-			// deferredFresh and resumeRender applies them once after it closes.
-			if (renderDeferred) deferredFresh.push(...fresh);
-			else if (fresh.length) applyFresh(fresh);
+			if (fresh.length) applyFresh(fresh);
 			else renderHeader();
 		} catch (error) {
 			console.error("poll", error);
@@ -1364,25 +1355,21 @@
 			setBusy(false);
 			return;
 		}
-		noteAction(verdict === "change" ? "request_change" : verdict);
 		setStatus("보내는 중…");
 		const headers = window.__vbSendHeaders || DEFAULT_HEADERS;
 		const route = `/api/p/${encodeURIComponent(id)}/feedback`;
-		const startedAt = performance.now();
 		try {
 			const res = await fetch(route, {
 				method: "POST",
 				headers,
 				body: JSON.stringify({ rev: state.rev, verdict, answers, comment: comment || null, marks }),
 			});
-			noteRequest(route, startedAt, res.status);
 			if (res.ok) {
 				location.replace("/");
 				return;
 			}
 			setStatus(res.status === 409 ? "이미 끝난 Review입니다." : "보내지 못했습니다.");
 		} catch (error) {
-			noteRequest(route, startedAt, 0, "network");
 			console.error("send", error);
 			setStatus("보내지 못했습니다.");
 		}
@@ -1549,185 +1536,45 @@
 
 	// ---------- issue reporting ----------
 
-	// The issue composer (web/issue-report.js) mounts from this closure, so its capture reads the page's own state and
-	// never the DOM or window.__vb. The capture frozen when it opens names the revision and frame on screen at that
-	// moment; while it stays open, poll results are absorbed but not painted (deferRender), and resumeRender applies the
-	// retained events once after it closes. Its own history entry sits on top of the viewer's, so Back closes only the
-	// composer and the next Back closes the viewer as before.
-	let issueDiagnostics = null;
-	let renderDeferred = false;
-	let deferredFresh = [];
-
-	function noteAction(name) {
-		if (issueDiagnostics) issueDiagnostics.recordAction(name);
-	}
-
-	// Completed page requests, named by route template only: status, duration and a stable error code.
-	function noteRequest(path, startedAt, status, errorCode = null) {
-		if (!issueDiagnostics) return;
-		const route = /^\/api\/p\/[^/?]+\/feedback$/.test(path) ? "proposal_feedback" : /^\/api\/p\//.test(path) ? "proposal_detail" : "other";
-		const code = errorCode ?? (status >= 400 ? (status === 404 ? "not_found" : "other") : null);
-		issueDiagnostics.recordRequest({ route, status, durationMs: performance.now() - startedAt, errorCode: code });
-	}
-
-	function deferRender() {
-		renderDeferred = true;
-	}
-
-	function resumeRender() {
-		renderDeferred = false;
-		const fresh = deferredFresh;
-		deferredFresh = [];
-		if (fresh.length) applyFresh(fresh);
-		else if (state.summary) renderHeader();
-	}
-
-	// The [label, path] pair of a frame in the revision on screen, as board.json names it.
-	function frameOf(label) {
-		const board = state.boards[state.rev] || {};
-		for (const section of board.sections || []) {
-			for (const card of section.cards || []) {
-				for (const [name, rel] of card.frames || []) if (name === label) return { label, path: rel };
-			}
-		}
-		return null;
-	}
-
-	function revisionHash(n) {
-		const event = state.events.find((ev) => (ev.type === "submitted" || ev.type === "revised") && ev.rev === n);
-		return event && typeof event.hash === "string" && /^[0-9a-f]{64}$/.test(event.hash) ? event.hash : null;
-	}
-
-	function issueSource() {
+	// What a report records about this page: the revision on screen and the frame it was picked from.
+	function reportSource(node) {
 		if (!id || !Number.isSafeInteger(state.rev) || state.rev < 1) return null;
-		return { kind: "proposal", proposalId: id, revision: state.rev, observedSeq: state.lastSeq, recordedContentHash: revisionHash(state.rev), frame: vv.open ? frameOf(vv.label) : null };
+		const wrap = node && typeof node.closest === "function" ? node.closest(".frame") : null;
+		return { kind: "proposal", proposalId: id, revision: state.rev, frame: (wrap && wrap._frame) || (vv.open ? el.vLabel.textContent : null) };
 	}
 
-	// The viewer's zoom (to two decimals) is the scale while it is open; otherwise the visual viewport's.
-	function issueView() {
-		const visual = window.visualViewport;
+	// 제보함 counts the reports still waiting for GitHub: not yet sent, including failed sends.
+	function reportBadge(counts) {
+		const raw = Number(counts && counts.pending) + Number(counts && counts.failed);
+		const count = Number.isSafeInteger(raw) && raw > 0 ? raw : 0;
 		return {
-			width: innerWidth,
-			height: innerHeight,
-			dpr: window.devicePixelRatio || 1,
-			scale: vv.open ? Math.round(vv.scale * 100) / 100 : visual && visual.scale > 0 ? visual.scale : 1,
-			scrollX,
-			scrollY,
-			theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
-			locale: navigator.language || "ko-KR",
-			embedded: Boolean(window.top && window.top !== window),
-			viewerOpen: vv.open,
+			count,
+			hidden: count === 0,
+			text: count === 0 ? "" : count > 99 ? "99+" : String(count),
+			label: count === 0 ? "" : `보내지 못했거나 보내는 중인 제보 ${count}건`,
 		};
 	}
 
-	// Text already on screen: the open frame's label and its marks' comments, or the title and lead of the revision.
-	function issueExcerpt() {
-		if (vv.open) {
-			const lines = [vv.label];
-			for (const { mark, n } of vFrameMarks()) if (mark.comment) lines.push(`표시 ${n}: ${mark.comment}`);
-			return lines.join("\n");
-		}
-		const board = state.boards[state.rev] || {};
-		const text = [state.summary ? state.summary.title : "", board.lead || ""].filter(Boolean).join("\n");
-		return text || null;
-	}
-
-	function issueContext() {
-		return {
-			page: "proposal",
-			source: issueSource(),
-			target: null,
-			view: issueView(),
-			excerpt: issueExcerpt(),
-			// A frame opened in the viewer is a specific record; the page entry starts without text.
-			excerptEnabled: vv.open,
-			visibleIds: id ? [id] : [],
-			diagnostics: [],
-			clientBuild: null,
-		};
-	}
-
-	function clientRect(node) {
-		const r = node.getBoundingClientRect();
-		return { x: r.left, y: r.top, w: r.width, h: r.height };
-	}
-
-	// What 위치 선택 offers: in the viewer the open frame and its marks, otherwise the page and the frames shown on it.
-	function issueTargets() {
-		if (vv.open) {
-			const stage = el.vStage.getBoundingClientRect();
-			const targets = [{ kind: "frame", key: `frame:${vv.label}`, label: vv.label, rect: { x: stage.left + vv.tx, y: stage.top + vv.ty, w: vpicture.w * vv.scale, h: vpicture.h * vv.scale }, framePath: [] }];
-			for (const { mark, n } of vFrameMarks()) {
-				const r = vRect(mark);
-				targets.push({ kind: "record", key: `mark:${state.rev}:${n}`, label: `표시 ${n} · ${vv.label}`, rect: { x: stage.left + r.x, y: stage.top + r.y, w: r.w, h: r.h }, framePath: [] });
-			}
-			return targets;
-		}
-		const targets = [{ kind: "page", key: `proposal:${id}`, label: state.summary ? state.summary.title : "Review", rect: { x: 0, y: 0, w: innerWidth, h: innerHeight }, framePath: [] }];
-		for (const wrap of document.querySelectorAll("#sections .frame")) {
-			if (!wrap._frame) continue;
-			targets.push({ kind: "frame", key: `frame:${wrap._frame}`, label: wrap._frame, rect: clientRect(wrap), framePath: [] });
-			if (targets.length >= 50) break;
-		}
-		return targets;
-	}
-
-	// 제보함 shows only the 확인 요청 count; it is separate from the Review status chips above.
-	async function loadIssueBadge(badgeOf) {
+	async function loadReportBadge() {
 		if (!el.issueBadge) return;
 		try {
-			const res = await fetch("/api/issues?limit=1", { headers: { accept: "application/json", "x-inbox": "1" }, cache: "no-store" });
+			const res = await fetch("/api/reports?limit=1", { headers: { accept: "application/json", "x-inbox": "1" }, cache: "no-store" });
 			if (!res.ok) return;
 			const data = await res.json();
-			const badge = badgeOf(data.counts);
+			const badge = reportBadge(data.counts);
 			el.issueBadge.textContent = badge.text;
 			el.issueBadge.hidden = badge.hidden;
-			el.issueBadge.setAttribute("aria-label", badge.label || "확인 요청");
+			el.issueBadge.setAttribute("aria-label", badge.label || "제보함");
 		} catch (error) {
-			console.error("issue badge", error);
+			console.error("report badge", error);
 		}
 	}
 
 	async function enhanceReporting() {
 		try {
-			const [reportMod, draftsMod, diagMod, adaptersMod, issuesMod] = await Promise.all([
-				import("/web/issue-report.js"),
-				import("/web/issue-drafts.js"),
-				import("/web/issue-diagnostics.js"),
-				import("/web/issue-adapters.js"),
-				import("/web/issues.js"),
-			]);
-			let image = null;
-			try {
-				const imageMod = await import("/web/issue-image.js");
-				image = imageMod.createIssueImage({ document, now: () => performance.now() });
-			} catch (error) {
-				// text reporting stays usable without image acquisition
-				console.error("issue image", error);
-			}
-			issueDiagnostics = diagMod.createDiagnostics({ now: () => performance.now() });
-			issueDiagnostics.attachWindowListeners(window);
-			const registry = adaptersMod.createAdapterRegistry({ ownerWindow: window });
-			registry.register({ page: "proposal", getContext: issueContext, getTargets: issueTargets, deferRender, resumeRender });
-			const fetchImpl = (url, init) => {
-				const headers = new Headers(init && init.headers ? init.headers : undefined);
-				headers.set("x-inbox", "1");
-				return fetch(url, { ...init, headers });
-			};
-			const report = reportMod.mountIssueReport({
-				document,
-				window,
-				adapters: registry,
-				drafts: draftsMod,
-				diagnostics: issueDiagnostics,
-				image,
-				fetchImpl,
-				now: () => Date.now(),
-				uuid: () => crypto.randomUUID(),
-				pageKey: location.pathname,
-			});
-			await report.ready;
-			await loadIssueBadge(issuesMod.issueBadgeFromCounts);
+			const { mountReporter } = await import("/web/report.js");
+			mountReporter({ page: { kind: "proposal", route: "/p/:id" }, sourceOf: reportSource, doc: document });
+			await loadReportBadge();
 		} catch (error) {
 			console.error("issue reporting unavailable", error);
 		}
