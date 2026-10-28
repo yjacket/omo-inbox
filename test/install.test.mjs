@@ -12,16 +12,16 @@ const DNS = "host.tailnet.ts.net";
 const PROXY = "http://127.0.0.1:4387";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Every issue-reporting runtime asset: src/issues-*.mjs, web/issue-*.{js,css} and the issues page. */
-function issueRuntimeAssets(root) {
+/** Every report runtime asset: the src report modules, the GitHub client, and the report pages. */
+function reportRuntimeAssets(root) {
 	const pick = (dir, pattern) =>
 		fs.readdirSync(path.join(root, dir))
 			.filter((name) => pattern.test(name))
 			.sort()
 			.map((name) => `${dir}/${name}`);
 	return [
-		...pick("src", /^issues-.*\.mjs$/),
-		...pick("web", /^(?:issue-.*\.(?:js|css)|issues\.(?:html|js|css))$/),
+		...pick("src", /^(?:reports-.*|github-api)\.mjs$/),
+		...pick("web", /^(?:report-.*\.(?:js|css)|reports\.(?:html|js|css))$/),
 	];
 }
 
@@ -501,7 +501,7 @@ test("uninstall removes extension, skill, rule and Run value, and keeps data", a
 	}
 });
 
-test("an isolated install copies every issue runtime asset and no runtime file imports QA", async () => {
+test("an isolated install copies every report runtime asset and no runtime file imports QA", async () => {
 	const s = setup();
 	const opts = {
 		...s.opts,
@@ -511,8 +511,8 @@ test("an isolated install copies every issue runtime asset and no runtime file i
 		env: { ...s.env, INBOX_NO_TAILSCALE: "1" },
 	};
 	try {
-		const assets = issueRuntimeAssets(REPO_ROOT);
-		assert.ok(assets.length >= 16, `expected every issue runtime asset, found ${assets.length}`);
+		const assets = reportRuntimeAssets(REPO_ROOT);
+		assert.ok(assets.length >= 12, `expected every report runtime asset, found ${assets.length}`);
 		const { ok, lines } = await install(opts);
 		assert.equal(ok, true, lines.join("\n"));
 		assert.equal(lineFor(lines, "app"), "app: written");
@@ -522,7 +522,7 @@ test("an isolated install copies every issue runtime asset and no runtime file i
 				`${asset} is missing or differs in the isolated copy`,
 			);
 		}
-		const important = ["src/issues-contract.mjs", "src/issues-store.mjs", "src/issues-http.mjs", "web/issue-report.js", "web/issues.html", "web/issues.css"];
+		const important = ["src/reports-contract.mjs", "src/reports-store.mjs", "src/reports-http.mjs", "src/reports-publisher.mjs", "src/github-api.mjs", "web/report.js", "web/reports.html", "web/reports.css"];
 		for (const asset of important) assert.ok(fs.existsSync(path.join(s.home, "app", asset)), asset);
 
 		// A QA path is scaffolding: no runtime module or page script may import one.
@@ -547,7 +547,10 @@ test("an isolated install copies every issue runtime asset and no runtime file i
 			fs.mkdirSync(path.join(s.home, dir), { recursive: true });
 			fs.writeFileSync(path.join(s.home, dir, "marker.json"), JSON.stringify({ dir }));
 		}
+		fs.mkdirSync(path.join(s.home, "data", "reports", id), { recursive: true });
+		fs.writeFileSync(path.join(s.home, "data", "reports", id, "report.json"), JSON.stringify({ id, description: "설치 보존 확인" }));
 		const before = sha256Tree(path.join(s.home, "data", "issues"));
+		const beforeReports = sha256Tree(path.join(s.home, "data", "reports"));
 		const isolationBefore = ["data/proposals", "data/threads", "mailbox"].map((dir) => sha256Tree(path.join(s.home, dir)));
 
 		const removed = await uninstall(opts);
@@ -555,12 +558,14 @@ test("an isolated install copies every issue runtime asset and no runtime file i
 		assert.equal(lineFor(removed.lines, "app"), "app: removed");
 		assert.equal(fs.existsSync(path.join(s.home, "app")), false);
 		assert.deepEqual(sha256Tree(path.join(s.home, "data", "issues")), before);
+		assert.deepEqual(sha256Tree(path.join(s.home, "data", "reports")), beforeReports);
 		assert.deepEqual(["data/proposals", "data/threads", "mailbox"].map((dir) => sha256Tree(path.join(s.home, dir))), isolationBefore);
 
 		const again = await install(opts);
 		assert.equal(again.ok, true, again.lines.join("\n"));
 		for (const asset of assets) assert.ok(fs.existsSync(path.join(s.home, "app", asset)), `${asset} after reinstall`);
 		assert.deepEqual(sha256Tree(path.join(s.home, "data", "issues")), before);
+		assert.deepEqual(sha256Tree(path.join(s.home, "data", "reports")), beforeReports);
 		assert.deepEqual(["data/proposals", "data/threads", "mailbox"].map((dir) => sha256Tree(path.join(s.home, dir))), isolationBefore);
 	} finally {
 		s.tmp.cleanup();

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import os from "node:os";
 import crypto from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,8 +19,14 @@ import { redact } from "./redact.mjs";
 import { buildPushPayload, cacheReminderAt, createScheduler, pushPlan, summaryWaitDeadline, topicFor, CACHE_LEAD_MINUTES } from "./policy.mjs";
 import { isExpired, noticeItemInput, validateNotice } from "./notices.mjs";
 import { createReopener, uuidv7 } from "./reopen.mjs";
-import { createIssuesStore } from "./issues-store.mjs";
-import { createIssuesHttp, ISSUE_PAGE, ISSUE_UUID } from "./issues-http.mjs";
+import { createReportsStore } from "./reports-store.mjs";
+import { createReportsHttp, REPORT_PAGE } from "./reports-http.mjs";
+import { createGitHubApi } from "./github-api.mjs";
+import * as reportAssets from "./reports-assets.mjs";
+import * as reportIssues from "./reports-issues.mjs";
+import * as reportBody from "./reports-body.mjs";
+import { createPublisher } from "./reports-publisher.mjs";
+import { migrateLegacy } from "./reports-legacy.mjs";
 import { computeNext, finalText, planSlugOf, validateProviderActions } from "./next.mjs";
 import { probeFacts } from "./facts.mjs";
 
@@ -345,6 +352,7 @@ export function createServer({
 } = {}) {
 	if (!home) throw fail("bad_input", "home is required");
 	const cfg = { v: 1, port, publicBase: null, pcTailnetIps: [], owner: null, ...config };
+	cfg.reports = { repo: "yjacket/omo-inbox", label: "inbox-report", assetsBranch: "inbox-report-assets", folder: null, ...config.reports };
 	const dir = {
 		data: path.join(home, "data"),
 		mailbox: path.join(home, "mailbox"),
@@ -359,7 +367,6 @@ export function createServer({
 	const version = readVersion();
 	const buildInfo = readBuildInfo(REPO_ROOT, home);
 	const buildStamp = () => (sourceManifestId(REPO_ROOT) === buildInfo.buildId ? buildInfo.buildId : null);
-	const issues = createIssuesStore({ dataDir: dir.data, now, lockOwner: { pid: process.pid }, redactText: redact });
 	const aside = asidePath ?? asideExe();
 	const lastSeen = new Map();
 	const byeAt = new Map();
@@ -511,12 +518,12 @@ export function createServer({
 		res.end(JSON.stringify({ error: "not_found" }));
 	}
 
-	function issueAllowed(access, _headers, level = "read") {
+	function reportAllowed(access, _headers, level = "read") {
 		if (!ALLOW[level].includes(access)) return false;
 		return !(access === "tailnet" && cfg.owner == null);
 	}
 
-	function issueOriginAllowed(headers, access) {
+	function reportOriginAllowed(headers, access) {
 		const origin = headers ? headers.origin : undefined;
 		if (origin === undefined) return access === "local";
 		if (typeof origin !== "string" || origin === "null") return false;
@@ -542,64 +549,113 @@ export function createServer({
 		return false;
 	}
 
-	// Reference checks only read the owner of each namespace. Expiry and read-mark
-	// paths belong to the GET handlers and must not run while accepting an issue.
-	async function resolveIssueReference(source) {
-		const checkedAt = now().toISOString();
-		if (source === null) return { status: "unversioned", checkedAt };
-		try {
-			if (source.kind === "proposal") {
-				const data = store.get(source.proposalId);
-				if (!data.revs.some((rev) => rev.n === source.revision)) return { status: "mismatch", checkedAt };
-				let hash = null;
-				for (const event of data.events) {
-					if ((event.type === "submitted" || event.type === "revised") && event.rev === source.revision) hash = event.hash;
-				}
-				if (source.recordedContentHash !== null && source.recordedContentHash !== hash) return { status: "mismatch", checkedAt };
-				if (source.frame !== null && !boardHasFrame(store.board(source.proposalId, source.revision), source.frame)) {
-					return { status: "mismatch", checkedAt };
-				}
-				return { status: "matched", checkedAt };
-			}
-			if (source.kind === "thread") {
-				const data = threads.getThread(source.threadId);
-				if (source.itemId !== null && !data.items.some((item) => item.itemId === source.itemId)) return { status: "mismatch", checkedAt };
-				if (source.observedSeq > (data.events.at(-1)?.seq ?? 0)) return { status: "mismatch", checkedAt };
-				return { status: "matched", checkedAt };
-			}
-			const data = issues.get(source.issueId);
-			if (source.observedSeq > data.currentSeq) return { status: "mismatch", checkedAt };
-			return { status: "matched", checkedAt };
-		} catch (error) {
-			if (error && (error.code === "not_found" || error.code === "gone" || error.code === "bad_rev")) {
-				return { status: "missing", checkedAt };
-			}
-			throw error;
-		}
-	}
-
-	const issuesHttp = createIssuesHttp({
-		store: issues,
-		sendJson,
-		readJsonBody,
-		buildInfo,
-		buildStamp,
-		pusher: push,
-		log: (line) => appendLog(dir.logs, line),
-		now,
-		resolveReference: resolveIssueReference,
-		proposalStore: store,
-		bodyLimit: 12 * 1024 * 1024,
-		allowAccess: issueAllowed,
-		allowOrigin: issueOriginAllowed,
-	});
-
 	// Fire and forget: called after the response is written, never awaited by a handler.
 	function notifyLater(message, options = {}) {
 		Promise.resolve()
 			.then(() => push.notify(message, options))
 			.catch((error) => appendLog(dir.logs, `push notify failed: ${error && error.stack ? error.stack : error}`));
 	}
+
+	function productOf(source) {
+		try {
+			if (source?.kind === "proposal") return store.get(source.proposalId).proposal.product.key ?? null;
+			if (source?.kind === "thread") return threads.getThread(source.threadId).thread.product.key ?? null;
+		} catch {
+			// an unknown or unreadable source has no product
+		}
+		return null;
+	}
+
+	const reportsStore = createReportsStore({ dataDir: dir.data, now });
+	const legacy = migrateLegacy({ dataDir: dir.data, store: reportsStore, productOf, now, log: (line) => appendLog(dir.logs, line) });
+	appendLog(dir.logs, `legacy reports: migrated ${legacy.migrated} skipped ${legacy.skipped}`);
+	const reportApi = createGitHubApi({
+		repo: cfg.reports.repo,
+		apiBase: process.env.INBOX_GITHUB_API || "https://api.github.com",
+		fetchImpl: fetch,
+		env: process.env,
+		timeoutMs: Number(process.env.INBOX_GITHUB_TIMEOUT_MS) || 20000,
+	});
+	const stateCache = reportIssues.createStateCache(reportApi, { label: cfg.reports.label });
+	const publisher = createPublisher({
+		store: reportsStore,
+		api: reportApi,
+		assets: reportAssets,
+		issues: reportIssues,
+		body: reportBody,
+		config: cfg.reports,
+		publicBase: cfg.publicBase,
+		serverBuild: buildInfo.buildId,
+		version,
+		notify: (message) => notifyLater(message, {}),
+		onSent: () => {
+			stateCache.refresh().catch(() => {});
+		},
+		log: (line) => appendLog(dir.logs, line),
+		now,
+		setTimer,
+		clearTimer,
+		retryMs: Number(process.env.INBOX_REPORT_RETRY_MS) || 5000,
+		reconcileMs: Number(process.env.INBOX_REPORT_RECONCILE_MS) || 60000,
+	});
+
+	function isDir(p) {
+		try {
+			return typeof p === "string" && p !== "" && fs.statSync(p).isDirectory();
+		} catch {
+			return false;
+		}
+	}
+
+	function insideDir(child, parent) {
+		const rel = path.relative(path.resolve(parent), path.resolve(child));
+		return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+	}
+
+	async function reportHandoff({ record }) {
+		let folder = null;
+		if (isDir(cfg.reports.folder)) folder = cfg.reports.folder;
+		else {
+			const productKey = "github.com/" + cfg.reports.repo.toLowerCase();
+			const banned = [home, path.join(home, "app"), path.join(os.homedir(), ".omo", "agent", "git")];
+			const candidates = [];
+			for (const row of threads.list()) {
+				let raw;
+				try {
+					raw = threads.getThread(row.session).thread;
+				} catch {
+					continue;
+				}
+				if (raw?.product?.key !== productKey) continue;
+				const where = raw.worktree || raw.cwd;
+				if (!isDir(where) || banned.some((b) => insideDir(where, b))) continue;
+				candidates.push({ where, main: raw.branch === "main" || raw.branch === "master", created: String(raw.created ?? "") });
+			}
+			candidates.sort((a, b) => Number(b.main) - Number(a.main) || (a.created < b.created ? 1 : a.created > b.created ? -1 : 0));
+			folder = candidates[0]?.where ?? null;
+		}
+		if (!folder) return { ok: false, error: "cwd_missing" };
+		const sid = uuidv7();
+		const result = await reopenSessions.launch({ sid, folder, message: "inbox-report " + cfg.reports.repo + "#" + record.github.number });
+		if (!result || !result.ok) return { ok: false, error: result?.error ?? "launch_failed" };
+		return { ok: true, via: result.via, session: sid };
+	}
+
+	const reportsHttp = createReportsHttp({
+		store: reportsStore,
+		publisher,
+		stateCache,
+		sendJson,
+		readJsonBody,
+		bodyLimit: 12 * 1024 * 1024,
+		allowAccess: reportAllowed,
+		allowOrigin: reportOriginAllowed,
+		handoff: reportHandoff,
+		productOf,
+		repo: cfg.reports.repo,
+		log: (line) => appendLog(dir.logs, line),
+		now,
+	});
 
 	function proposalMessage(title, body, id) {
 		return { title, body, url: `/p/${id}`, tag: `inbox-${id}` };
@@ -1371,11 +1427,14 @@ export function createServer({
 	async function handleGet(res, rawPath, query, access) {
 		const parts = rawPath.split("/");
 
-		if (rawPath === "/issues" || rawPath === "/issues/new" || (/^\/issues\/[^/]+$/.test(rawPath) && ISSUE_UUID.test(rawPath.slice(8)))) {
-			if (!issueAllowed(access, null, "read")) return sendJson(res, 403, { error: "forbidden" });
-			const file = path.join(webDir, ISSUE_PAGE);
-			if (!fs.existsSync(file)) return sendMissingPage(res);
-			return servePage(res, file, PAGE_HEADERS);
+		if (rawPath === "/issues" || rawPath === "/issues/new") {
+			if (!reportAllowed(access, null, "read")) return sendJson(res, 403, { error: "forbidden" });
+			if (!fs.existsSync(REPORT_PAGE)) return sendMissingPage(res);
+			return servePage(res, REPORT_PAGE, PAGE_HEADERS);
+		}
+		if (rawPath.startsWith("/issues/")) {
+			res.writeHead(302, { location: "/issues", "cache-control": "no-store" });
+			return res.end();
 		}
 		if (rawPath === "/" || rawPath === "") {
 			if (!guard(res, access, "read")) return;
@@ -1410,8 +1469,8 @@ export function createServer({
 			return handleFileGet(res, parts);
 		}
 		if (parts[1] === "api") {
-			if (parts[2] === "issues") {
-				return issuesHttp.handleGet(res, parts, query, access);
+			if (parts[2] === "reports") {
+				return reportsHttp.handleGet(res, parts, query, access);
 			}
 			if (parts[2] === "push" && parts[3] === "key" && parts.length === 4) {
 				if (!guard(res, access, "read")) return;
@@ -1621,8 +1680,8 @@ export function createServer({
 			return;
 		}
 		const parts = rawPath.split("/");
-		if (parts[1] === "api" && parts[2] === "issues") {
-			return issuesHttp.handlePost(res, req, parts, access);
+		if (parts[1] === "api" && parts[2] === "reports") {
+			return reportsHttp.handlePost(res, req, parts, access);
 		}
 		const body = await readJsonBody(req);
 
@@ -1909,6 +1968,8 @@ export function createServer({
 					appendLog(dir.logs, `stall rebuild failed: ${error && error.stack ? error.stack : error}`);
 				}
 				trackNext(refreshStoredNexts());
+				stateCache.refresh().catch(() => {});
+				publisher.start();
 				resolve({ port: actualPort });
 			};
 			httpServer.once("error", onError);
@@ -1926,9 +1987,9 @@ export function createServer({
 		closing = true;
 		scheduler.cancelPrefix("");
 		try {
-			issues.close();
+			publisher.stop();
 		} catch {
-			// a lock already released by a failed startup is not an error at shutdown
+			// a publisher already stopped is not an error at shutdown
 		}
 		return new Promise((resolve) => {
 			const finish = () => Promise.allSettled([...pendingNext]).then(() => resolve());
@@ -1940,7 +2001,7 @@ export function createServer({
 		});
 	}
 
-	return { listen, close, drain, store, threads, scheduler, issues, buildInfo };
+	return { listen, close, drain, store, threads, scheduler, buildInfo };
 }
 
 async function probeHealth(port) {

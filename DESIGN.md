@@ -202,64 +202,56 @@ New surfaces reuse these names. Do not rename, retune or replace them. Where the
 
 ## Surfaces
 
+### Inspector overlay (`고를 곳을 누르세요`)
+
+Pressing `제보` on `/`, `/s/<sid>`, `/boards`, `/p/<id>`, `/issues` or the viewer's `.vbar` starts inspect mode instead of navigating. A toolbar sits at the top center with the hint `고를 곳을 누르세요` and `취소`. On a PC, hovering draws a DevTools-like box over the element under the pointer with a label `tag#id.class W×H`; a click selects it. On touch, a tap (at most 8 CSS px of movement within 500 ms) selects; a drag, a second finger, a scroll or a pinch stays with the page. While picking, no page control fires: no navigation, no button action, no Review mark, no viewer opening. The overlay itself is never a pick target. In the split view a pick inside the thread frame opens the composer in the top page.
+
 ### Composer dialog (`문제 제보`)
 
-A native `<dialog>` layered over the source page. It is a sheet at narrow widths and a measured panel at wide widths, never a page navigation. Contents, in order:
+One native `<dialog>` over the source page: a sheet under 720 px, a centered panel `min(560px, 100vw - 32px)` from 720 px. It never navigates. Contents, in order:
 
 1. Title `문제 제보`.
-2. Target chip showing the current page/record label, with `바꾸기` and `지우기` (remove target) actions. `위치 선택` is optional.
-3. Description field, multiline, focused when the dialog opens. It is the only required field.
-4. Attachment summary with `첨부 확인`; empty summary says no attachment. Later optional `사진 추가` / `화면 캡처` appear only when the corresponding input/capability exists.
-5. Submission status line using text, never color alone.
-6. `보내기` and `초안 버리기`. Closing controls are Escape, Back and a close button.
+2. Selection card: a 64 px picture, the element's Korean label, its selector in monospace, and `상위`, `하위`, `다시 고르기`, `빼기`. After `빼기` the card reads `화면 전체`.
+3. Picture area: `그림 만드는 중` while the redraw runs, then the picture captioned `화면을 다시 그린 그림` with `그림 빼기`, or `그림 없음`. An uploaded or pasted image replaces it, captioned `올린 사진`.
+4. `사진 추가`.
+5. Description `설명` (placeholder `무엇이 이상한지 적어 주세요`), the only required field.
+6. A status line in text.
+7. `보내기` and `닫기`.
 
-There is no title, severity, type, steps or expected-result field. No explanatory paragraph stands in for a missing capability. Screenshot capture is offered only when `navigator.mediaDevices?.getDisplayMedia` is callable in the secure current context; it is never invoked automatically.
-
-### Target picker
-
-An explicit picker opened by `위치 선택` or `바꾸기`. It lists adapter-approved visible targets (page, record, control, frame), not arbitrary selectors. Pointer scrolling/panning stays usable; only the chosen activation is cancelled before the source control handles it. Keyboard selection moves through this list with Enter/Space; the source controls' `tabindex` is not changed. Selecting a frame never creates a Review mark. Cancelling returns to the dialog with the previous target and capture generation intact.
-
-### Attachment summary
-
-Shows the final bitmap dimensions, provenance (upload, display capture, source crop, reproduction), mask/mark counts and a preview after explicit acceptance. A rejected file leaves the description and context intact and offers remove/another file. The summary states that the server stores a plain PNG with no metadata; it never shows the original compressed file or implies that an image was captured when it was not.
+There's no title, severity, type or steps field.
 
 ### `제보함` list (`/issues`)
 
-Header `제보함` with a `제보`/new-report action. The header badge counts only `needs-check` and is independent of Review and `내 차례` counts. Rows show title, state text, category, severity and updated time. Filters cover state and literal search; pagination uses the list cursor. Purged issues do not appear.
-
-### Detail (`/issues/<uuid>`)
-
-The detail keeps these as separate labeled rows: original observation time/build, server receipt time/build, current source link, correction artifact, applied build and the owner's confirmation. Evidence shows a plain PNG through the sanitized image route. Owner actions are `확인` (needs-check to resolved), `다시 열기` (needs-check/resolved to open) and `삭제` (second confirmation naming this issue). Maintainer actions are triage, comment and `수정안 확인` (request-check). A deleted issue becomes a terminal tombstone: content is gone, reads/replays answer 410, and the screen shows the deletion/store history without pretending the report still exists.
+Header `제보함`. Reports are listed newest first, 50 at a time with `더 보기`. A row shows the title (a link to the GitHub issue once sent), a relative time, a 64 px thumbnail when there's a picture, and the state as text: `GitHub로 보내는 중`, `보내지 못했습니다 · <reason>` with `다시 시도`, or `#<n> 열림` / `#<n> 닫힘` (just `#<n>` while unknown) plus ` · 댓글 <c>`. A sent row has `처리 맡기기` (`다시 맡기기` after a handoff, then `맡김 · <time>`). With no reports the page reads `아직 제보가 없습니다`. `/issues/new` is the text-only standalone composer with the same texts.
 
 ## States
 
-All states are conveyed by text as well as color. A spinner or hue alone is never the status.
+Every state reads as text as well as color. A spinner or hue alone is never the status.
 
 | State | Text | Behavior |
 | --- | --- | --- |
-| idle | `보내기` enabled when description is nonblank | No send yet; description is the only required input. |
-| draft saved | `초안 저장됨` | Shown only after the IndexedDB transaction completes. Closing/Escape/Back keeps it. |
-| save failed | `이 기기에 초안을 저장하지 못했습니다` | Keep current memory state; offer copying the description and an online send without recovery. Never show `저장됨`; sending requires explicit `저장 없이 보내기`. |
-| sending | `보내는 중` | Outbox payload/requestId is frozen; no recapture or retarget. Control is locked so one press sends once. |
-| pending / uncertain | `접수 확인 중` | A lost or ambiguous response is neither sent nor failed. Resolve by GET of the deterministic issue id, then exact replay. Cancel stops retries without claiming unacceptance. |
-| accepted | `접수했습니다` | Receipt received. Show the issue link, clear the outbox payload, restore focus/scroll and stay on the source page. Do not navigate to Inbox or send an ack. |
-| conflict | conflict text plus current state and sequence | `key_reused`, `version_conflict`, `store_changed` and `invalid_transition` keep the local text and offer the required explicit next step; never merge or rebase silently. |
-| deleted | `삭제됨` plus tombstone history | Content is denied with 410. The tombstone retains no description, context or images. |
-
-Additional composer states: a rejected attachment says why and offers removal/another file; a capture denial/unsupported result yields `visual: none` with the exact reason; `409 store_changed` preserves local content and requires an explicit new report under the new store.
+| picking | `고를 곳을 누르세요` | Page controls don't fire. Escape, `취소` or Back leaves. |
+| idle | `보내기` enabled when the description is nonblank | The description is the only required input. |
+| drawing | `그림 만드는 중` | Ends in a picture or `그림 없음`; sending isn't blocked. |
+| sending | `보내는 중` | The POST runs; `보내기` is off so one press sends once. |
+| stored, waiting for GitHub | `GitHub로 보내는 중` | The report is safe on the PC; the status polls. |
+| sent | `GitHub #<n>에 올렸습니다` | Shows `열기` and `처리 맡기기`. Only after GitHub returned the number. |
+| failed | `보내지 못했습니다 · <reason>` | Fixed reason text and `다시 시도`. |
+| server unreachable | `서버에 보내지 못했습니다` | `다시 시도` resends the same report id. |
+| rejected | `내용을 확인해 주세요` / `그림이 너무 큽니다` | 400 / 413; the second offers `그림 빼기`. |
+| handing off | `새 세션을 여는 중입니다.` | Then `새 세션에 맡겼습니다.` or a fixed error text. |
 
 ## Focus and keyboard
 
-- Entry is a real `<a data-issue-report href="/issues/new">` in the source page's top tools or the viewer's `.vbar`. Opening the enhanced composer moves focus directly to the description field. If enhancement fails, the link navigates normally and the standalone page shows only a page-level source hint.
-- The dialog contains focus while open: Tab cycles inside it, Shift+Tab reverses, and focus cannot reach the inert source page. Any pre-existing inert state is saved and restored.
-- Escape closes the reporter. If a nested confirmation is open, Escape dismisses that confirmation first. Closing keeps the draft and returns focus to the immediate opener if it is still connected, otherwise to the page's report control. Scroll is restored to the captured position.
-- The reporter adds exactly one history token. While that token is active, its `popstate` and Escape handling runs in the capture phase, closes only the reporter, and stops the event reaching the viewer's generic close handler. The next Back closes the original viewer.
-- A breakpoint handoff at 719/720 saves the complete draft before navigation and restores it once in the new top-level owner. If storage is unavailable, suppress only the handoff navigation while the dialog is open and resume it after close; never navigate away from an unsaved draft.
-- Picker selection: Enter/Space selects the current keyboard item; click/auxclick is captured before target handlers and cancels activation. Arrow keys move the approved list. Pointer scrolling and panning remain usable.
-- List rows and detail actions are normal links/buttons with visible focus. Status text is part of the accessible name or adjacent text, not a color-only cue.
+- Entry is a real `<a data-issue-report href="/issues/new">`. Without its page script the link navigates to the standalone composer.
+- Picking: Escape cancels and restores the previous selection when re-picking. The page's own tabindex values aren't changed.
+- Opening the composer moves focus to the description. Tab and Shift+Tab cycle inside the dialog.
+- Escape closes the composer and keeps the draft. Focus returns to the opener when it's still connected, otherwise to the page's `제보` control.
+- The reporter adds one history entry while active. Its popstate and Escape handlers run in the capture phase, close only the reporter, and keep the event from the viewer's close handler. The next Back closes the viewer.
+- List rows and actions are normal links and buttons with visible focus.
 
 ## Hit areas and dark scheme
 
-- Every new control has a hit area of at least 44 CSS pixels, including chip change/remove, close, attachment acceptance, image removal, send, retry, confirm, reopen and delete. The existing `--tap: 44px` in `web/thread.html` is the named reference; do not invent a new name. Entries placed on the existing pages are the exception: the bubble footer's `제보` and the headers' `제보함` and `제보` take the size and style of the controls beside them.
-- The new surfaces use the inherited `prefers-color-scheme: dark` preference and the dark override values above. They must not alter the palette of `/`, `/s/<sid>`, `/boards`, `/p/<id>` or the viewer, and must not force a light-only dialog over a dark page.
-- Motion stays restrained and does not replace text status. Focus rings remain visible in both schemes.
+- Every new control has a hit area of at least 44 CSS pixels, including `취소`, `상위`, `하위`, `다시 고르기`, `빼기`, `그림 빼기`, `사진 추가`, `보내기`, `닫기`, `다시 시도`, `처리 맡기기` and `더 보기`. The existing `--tap: 44px` in `web/thread.html` is the named reference. Entries placed on the existing pages are the exception: the bubble footer's `제보` and the headers' `제보함` and `제보` take the size and style of the controls beside them.
+- The overlay, composer and `제보함` follow `prefers-color-scheme: dark` with the dark override values above. They don't alter the palette of `/`, `/s/<sid>`, `/boards`, `/p/<id>` or the viewer, and never force a light dialog over a dark page.
+- Motion stays restrained and never replaces text status. Focus rings stay visible in both schemes.

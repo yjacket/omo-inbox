@@ -1,0 +1,367 @@
+/* Report composer dialog (web/report.js): the `문제 제보` sheet/panel that opens after a pick.
+ *
+ * Tokens are the web/thread.html `:root` names (DESIGN.md tables), read from the host page with that
+ * page's light value as the fallback; `--tap` (44px) is the named hit-area floor. The dark scheme
+ * arrives through the host page's own `prefers-color-scheme: dark` overrides of the same names
+ * (web/inbox.html, web/thread.html, web/boards.html, web/reports.css all define them), so a dialog
+ * over a dark page is dark and a dialog over the light-only web/proposal.html stays light instead of
+ * mixing a dark fallback set into that page's light `--surface`/`--ink`. The scrim and the panel
+ * shadow repeat web/thread.html `.sheet-dim` / `.sheet` (rgb(0 0 0 / .25)); the selection color
+ * #1463ff is the DevTools content-box color shared with web/report-overlay.css. Depth is borders,
+ * radius is controls 8px / rows 10px, spacing is the 4px scale, state is text first. */
+
+.report {
+	--report-tap: var(--tap, 44px);
+	position: fixed;
+	inset: auto 0 0 0;
+	box-sizing: border-box;
+	width: 100%;
+	max-width: none;
+	max-height: calc(100dvh - var(--s6, 24px));
+	margin: 0;
+	padding: 0;
+	border: 0;
+	border-radius: var(--r-row, 10px) var(--r-row, 10px) 0 0;
+	background: var(--surface, #fcfcfd);
+	color: var(--ink, #15171b);
+	font-family: var(--font, "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", system-ui, sans-serif);
+	font-size: var(--fs-body, 0.875rem);
+	line-height: 1.45;
+	box-shadow: 0 10px 30px rgb(0 0 0 / 0.25);
+	overscroll-behavior: contain;
+}
+
+.report[open] {
+	display: flex;
+	flex-direction: column;
+}
+
+.report::backdrop {
+	background: rgb(0 0 0 / 0.25);
+}
+
+/* The flex/grid rules below would otherwise beat the UA [hidden] rule. */
+.report [hidden] {
+	display: none !important;
+}
+
+.report *,
+.report *::before,
+.report *::after {
+	box-sizing: border-box;
+}
+
+.report button,
+.report textarea {
+	font: inherit;
+}
+
+@media (min-width: 720px) {
+	.report {
+		inset: 0;
+		width: min(560px, calc(100vw - var(--s4, 16px) * 2));
+		max-height: min(760px, calc(100dvh - var(--s8, 32px) * 2));
+		margin: auto;
+		border-radius: var(--r-row, 10px);
+	}
+}
+
+/* ---- head ---- */
+
+.report__head {
+	flex: none;
+	padding: var(--s4, 16px) var(--s4, 16px) var(--s2, 8px);
+}
+
+.report__title {
+	margin: 0;
+	font-size: var(--fs-row, 0.9375rem);
+	font-weight: 700;
+	line-height: 1.35;
+	letter-spacing: -0.01em;
+}
+
+/* ---- body: selection card, picture area, description ---- */
+
+.report__body {
+	display: grid;
+	grid-auto-rows: max-content;
+	align-content: start;
+	gap: var(--s3, 12px);
+	min-height: 0;
+	padding: 0 var(--s4, 16px) var(--s3, 12px);
+	overflow: auto;
+}
+
+.report__card {
+	display: grid;
+	gap: var(--s2, 8px);
+	padding: var(--s3, 12px);
+	border: 1px solid var(--line, rgb(21 23 27 / 0.1));
+	border-radius: var(--r-row, 10px);
+	background: var(--bg, #f3f4f6);
+}
+
+.report__target {
+	display: flex;
+	align-items: center;
+	gap: var(--s3, 12px);
+	min-width: 0;
+}
+
+.report__thumb {
+	display: block;
+	flex: none;
+	height: 64px;
+	width: auto;
+	max-width: 40%;
+	object-fit: contain;
+	border: 1px solid var(--line, rgb(21 23 27 / 0.1));
+	border-radius: var(--r-xs, 4px);
+	background: var(--surface, #fcfcfd);
+}
+
+.report__meta {
+	display: grid;
+	gap: var(--s1, 4px);
+	min-width: 0;
+}
+
+.report__label {
+	margin: 0;
+	font-size: var(--fs-row, 0.9375rem);
+	font-weight: 600;
+	line-height: 1.35;
+	overflow-wrap: anywhere;
+}
+
+.report__selector {
+	margin: 0;
+	font-family: var(--mono, "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace);
+	font-size: var(--fs-micro, 0.75rem);
+	color: var(--ink-2, #5b6069);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.report__selector:empty {
+	display: none;
+}
+
+.report__controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--s2, 8px);
+}
+
+.report__picture {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--s2, 8px);
+	padding-top: var(--s2, 8px);
+	border-top: 1px solid var(--line-soft, rgb(21 23 27 / 0.06));
+}
+
+.report__caption {
+	flex: 1 1 auto;
+	margin: 0;
+	font-size: var(--fs-cap, 0.8125rem);
+	color: var(--ink-2, #5b6069);
+	overflow-wrap: anywhere;
+}
+
+.report__file {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.report__field {
+	display: grid;
+	gap: var(--s1, 4px);
+}
+
+.report__field-label {
+	font-size: var(--fs-cap, 0.8125rem);
+	font-weight: 600;
+	color: var(--ink-2, #5b6069);
+}
+
+.report__text {
+	width: 100%;
+	min-height: calc(var(--report-tap) * 3);
+	max-height: 40vh;
+	margin: 0;
+	padding: var(--s2, 8px) var(--s3, 12px);
+	/* 16px: below that iOS zooms the page when the field takes focus. */
+	font-size: 16px;
+	line-height: 1.4;
+	color: var(--ink, #15171b);
+	background: var(--bg, #f3f4f6);
+	border: 1px solid var(--line, rgb(21 23 27 / 0.1));
+	border-radius: var(--r-ctl, 8px);
+	resize: vertical;
+}
+
+.report__text:read-only {
+	color: var(--ink-2, #5b6069);
+}
+
+.report__text:focus-visible {
+	outline: 2px solid var(--accent, #b4530a);
+	outline-offset: 1px;
+}
+
+/* ---- foot: status, result controls, actions ---- */
+
+.report__foot {
+	flex: none;
+	display: grid;
+	gap: var(--s2, 8px);
+	padding: var(--s2, 8px) var(--s4, 16px) var(--s4, 16px);
+	border-top: 1px solid var(--line-soft, rgb(21 23 27 / 0.06));
+}
+
+.report__status {
+	margin: 0;
+	min-height: 1.5em;
+	font-size: var(--fs-cap, 0.8125rem);
+	color: var(--ink-2, #5b6069);
+	overflow-wrap: anywhere;
+}
+
+.report__status.is-error {
+	color: var(--danger, #b42318);
+}
+
+.report__note {
+	margin: 0;
+	font-size: var(--fs-cap, 0.8125rem);
+	color: var(--ink-2, #5b6069);
+	overflow-wrap: anywhere;
+}
+
+.report__note.is-error {
+	color: var(--danger, #b42318);
+}
+
+.report__note:empty {
+	display: none;
+}
+
+.report__result {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--s2, 8px);
+}
+
+.report__result:empty {
+	display: none;
+}
+
+.report__actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: var(--s2, 8px);
+}
+
+/* ---- controls: every one at least --tap on both sides ---- */
+
+.report__ctl {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	min-width: var(--report-tap);
+	min-height: var(--report-tap);
+	margin: 0;
+	padding: 0 var(--s3, 12px);
+	font-size: var(--fs-cap, 0.8125rem);
+	font-weight: 600;
+	color: var(--ink-2, #5b6069);
+	background: var(--surface, #fcfcfd);
+	border: 1px solid var(--line, rgb(21 23 27 / 0.1));
+	border-radius: var(--r-ctl, 8px);
+	white-space: nowrap;
+	text-decoration: none;
+	cursor: pointer;
+	transition: background-color var(--t-micro, 120ms ease-out), color var(--t-micro, 120ms ease-out);
+}
+
+.report__ctl:hover:not(:disabled) {
+	background-color: var(--wash-1, rgb(21 23 27 / 0.04));
+	color: var(--ink, #15171b);
+}
+
+.report__ctl:active:not(:disabled) {
+	background-color: var(--wash-2, rgb(21 23 27 / 0.08));
+}
+
+.report__ctl:disabled {
+	color: var(--ink-3, #6b707b);
+	background: transparent;
+	cursor: default;
+}
+
+.report__ctl:focus-visible {
+	outline: 2px solid var(--accent, #b4530a);
+	outline-offset: 1px;
+}
+
+.report__btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	min-width: var(--report-tap);
+	min-height: var(--report-tap);
+	margin: 0;
+	padding: 0 var(--s5, 20px);
+	font-size: var(--fs-cap, 0.8125rem);
+	font-weight: 700;
+	color: var(--accent-ink, #fff7ee);
+	background: var(--accent, #b4530a);
+	border: 0;
+	border-radius: var(--r-ctl, 8px);
+	white-space: nowrap;
+	cursor: pointer;
+	transition: filter var(--t-micro, 120ms ease-out);
+}
+
+.report__btn:hover:not(:disabled) {
+	filter: brightness(1.06);
+}
+
+.report__btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.report__btn:focus-visible {
+	outline: 2px solid var(--ink, #15171b);
+	outline-offset: 1px;
+}
+
+@media (max-width: 360px) {
+	.report__ctl {
+		padding: 0 var(--s2, 8px);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.report *,
+	.report *::before,
+	.report *::after {
+		transition: none !important;
+	}
+}

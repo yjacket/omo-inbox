@@ -177,110 +177,8 @@
 		nextBusy: false,
 		nextSig: null,
 		handoff: null,
-		// Issue reporting: the per-message entry names its item; renders and read marks wait until it closes.
-		reportPick: null,
-		reporting: false,
-		pendingData: null,
 	};
-	let diagnostics = null;
-	let reportUi = null;
-	let reportRegistry = null;
-	let reportEmbedded = false;
-	let reportRegistered = false;
-	let reportHandle = null;
-	let reportOptions = null;
-	let reportSetupObserver = null;
-
-	function recordAction(name) {
-		if (diagnostics) diagnostics.recordAction(name);
-	}
-
-	function reportVisible() {
-		return Array.from(els.chat.querySelectorAll('.group[data-item]')).filter((group) => {
-			const box = group.getBoundingClientRect();
-			return box.width > 0 && box.bottom > 0 && box.top < innerHeight;
-		});
-	}
-
-	function reportItem(itemId) {
-		return state.items.find((item) => idOf(item) === itemId) || null;
-	}
-
-	function reportLabel(item) {
-		return clip(headlineOf(item), 80) || idOf(item);
-	}
-
-	function reportDescriptor(item) {
-		const group = els.chat.querySelector(`.group[data-item="${CSS.escape(idOf(item))}"]`);
-		if (!group) return null;
-		const box = group.getBoundingClientRect();
-		return {
-			kind: "record",
-			key: `thread:${sid}:${idOf(item)}`,
-			label: reportLabel(item),
-			rect: { x: box.left, y: box.top, w: box.width, h: box.height },
-			framePath: [],
-		};
-	}
-
-	// The child reports through the parent's registry when it is embedded; origin and contentWindow
-	// identity are checked there. Anything else falls back to the entry's plain /issues/new link.
-	function reportContext() {
-		const picked = ui.reportPick ? reportItem(ui.reportPick) : null;
-		const target = picked ? reportDescriptor(picked) : null;
-		const visible = reportVisible().slice(0, 50).map((group) => group.getAttribute("data-item"));
-		const built = metaBuild();
-		return {
-			page: "thread",
-			source: { kind: "thread", threadId: sid, itemId: picked ? idOf(picked) : null, observedSeq: state.lastSeq },
-			target,
-			view: {
-				width: innerWidth,
-				height: innerHeight,
-				dpr: devicePixelRatio,
-				scale: 1,
-				scrollX,
-				scrollY,
-				theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
-				locale: navigator.language || "ko-KR",
-				embedded: reportEmbedded,
-				viewerOpen: false,
-			},
-			excerpt: picked ? reportLabel(picked) : null,
-			excerptEnabled: Boolean(picked),
-			visibleIds: visible,
-			diagnostics: diagnostics ? diagnostics.snapshot() : [],
-			clientBuild: built,
-		};
-	}
-
-	function metaBuild() {
-		const stamp = document.querySelector('meta[name="inbox-build"]');
-		const digest = stamp && typeof stamp.content === "string" ? stamp.content.trim() : "";
-		return /^[0-9a-f]{64}$/.test(digest) ? { kind: "page_response_manifest", version: null, digest } : null;
-	}
-
-	function reportTargets() {
-		const out = [{ kind: "page", key: `thread:${sid}`, label: "대화", rect: { x: 0, y: 0, w: innerWidth, h: innerHeight }, framePath: [] }];
-		for (const group of reportVisible()) {
-			const item = reportItem(group.getAttribute("data-item"));
-			const target = item ? reportDescriptor(item) : null;
-			if (target) out.push(target);
-		}
-		return out;
-	}
-
-	function deferReportRender() {
-		ui.reporting = true;
-	}
-
-	function resumeReportRender() {
-		ui.reporting = false;
-		const pending = ui.pendingData;
-		ui.pendingData = null;
-		if (pending) applyData(pending);
-		else void load();
-	}
+	let reporter = null;
 
 	// ---------- helpers ----------
 
@@ -1288,7 +1186,6 @@
 	}
 
 	function reopenSession() {
-		recordAction("reopen_session");
 		setComposeStatus("세션을 여는 중입니다.", false);
 		return postJson(`${apiThread}/reopen`, {}).then(async (res) => {
 			const body = await readJson(res);
@@ -1437,7 +1334,6 @@
 		try {
 			let res;
 			let body = null;
-			recordAction(target.mode === "message" ? "send_reply" : "answer");
 			if (target.mode === "comment") res = await postJson(`/api/items/${encodeURIComponent(idOf(target.item))}/answer`, { comment: value });
 			else if (target.mode === "text") res = await postJson(`/api/items/${encodeURIComponent(idOf(target.item))}/answer`, { text: value });
 			else res = await postJson(`${apiThread}/message`, { text: value });
@@ -1470,7 +1366,6 @@
 		const itemId = idOf(item);
 		if (ui.busy.has(itemId)) return;
 		if (!bypassGate && sessionOff()) return gateSend(() => sendAnswer(item, body, true));
-		recordAction("answer");
 		ui.busy.add(itemId);
 		ui.error.delete(itemId);
 		refreshItem(itemId);
@@ -1521,7 +1416,6 @@
 	}
 
 	async function toggleHidden() {
-		recordAction("hide_thread");
 		const current = state.thread && state.thread.hidden === true;
 		try {
 			const res = await postJson(`${apiThread}/hide`, { hidden: !current });
@@ -1646,8 +1540,11 @@
 			refreshItem(itemId);
 			return;
 		}
-		if (action === "report") return openReport(itemId, button);
-		if (action === "raw") { recordAction("toggle_original"); return toggleRaw(item, group); }
+		if (action === "report") {
+			if (reporter) reporter.openFor(group, button);
+			return;
+		}
+		if (action === "raw") return toggleRaw(item, group);
 		if (action === "request") return toggleRequest(itemId);
 		if (action === "episode") return void loadEpisode(item);
 		if (action === "explain") return void explain(item);
@@ -1733,7 +1630,6 @@
 
 	// POST read once new non-read events arrived while the page is visible; the read event itself never re-triggers it.
 	function markRead() {
-		if (ui.reporting) return;
 		if (document.visibilityState !== "visible" || state.maxNonReadSeq <= state.readSeq) return;
 		const seq = state.lastSeq;
 		state.readSeq = seq;
@@ -1760,7 +1656,6 @@
 	async function load() {
 		if (state.gone) return;
 		const seq = ++state.requestSeq;
-		const startedAt = performance.now();
 		let data;
 		try {
 			const res = await fetch(`${apiThread}?since=${state.lastSeq}`, { headers: { accept: "application/json" }, cache: "no-store" });
@@ -1774,7 +1669,6 @@
 			}
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			data = await res.json();
-			if (diagnostics) diagnostics.recordRequest({ route: "thread_detail", status: res.status, durationMs: Math.round(performance.now() - startedAt), errorCode: null });
 		} catch (error) {
 			if (seq !== state.requestSeq) return;
 			els.chat.setAttribute("aria-busy", "false");
@@ -1783,10 +1677,6 @@
 			return;
 		}
 		if (seq !== state.requestSeq) return;
-		if (ui.reporting) {
-			ui.pendingData = data;
-			return;
-		}
 		applyData(data);
 	}
 
@@ -1839,225 +1729,44 @@
 
 	// ---------- issue reporting ----------
 
-	// The parent's own entry re-registers the Inbox adapter when it is clicked, so an embedded
-	// message report must claim the shared registry itself instead of activating that entry. The
-	// reporter still lives in the parent-owned registry; only this frame's thread adapter becomes current.
-	function registerReportAdapter() {
-		if (!reportOptions) return false;
-		const options = reportEmbedded
-			? { ...reportOptions, origin: location.origin, frameWindow: window }
-			: { ...reportOptions, origin: location.origin };
-		if (reportHandle && typeof reportRegistry.unregister === "function") {
-			try {
-				reportRegistry.unregister(reportHandle);
-			} catch (error) {
-				// the previous record is already gone
-			}
-		}
-		reportHandle = reportRegistry.register(options);
-		reportRegistered = true;
-		return true;
-	}
+	// The reporter asks this frame which bubble an element belongs to; the item id is what the
+	// composer records as source.itemId. The top window reads it through this window when the
+	// thread is embedded in the split view.
+	window.__inboxReportSource = (el) => {
+		const bubble = el && typeof el.closest === "function" ? el.closest("section[data-item]") : null;
+		return { kind: "thread", threadId: sid, itemId: bubble ? bubble.getAttribute("data-item") : null };
+	};
 
-	// The parent registers its page adapter while this frame boots, which can happen after the
-	// frame's first registration. Its reporter mount is the one observable that follows that
-	// registration, so claim the registry once more then and disconnect immediately.
-	function claimReportAdapterAfterParentSetup() {
-		let parentDocument;
-		try {
-			parentDocument = window.parent.document;
-		} catch (error) {
-			return;
-		}
-		const disconnect = () => {
-			if (reportSetupObserver) {
-				reportSetupObserver.disconnect();
-				reportSetupObserver = null;
-			}
-		};
-		const claim = () => {
-			if (!parentDocument.querySelector("#issue-report")) return false;
-			disconnect();
-			const current = typeof reportRegistry.current === "function" ? reportRegistry.current() : null;
-			if (!current || !reportHandle || current.id !== reportHandle.id) registerReportAdapter();
-			return true;
-		};
-		reportSetupObserver = new MutationObserver(() => {
-			claim();
-		});
-		reportSetupObserver.observe(parentDocument.documentElement, { childList: true, subtree: true });
-		claim();
-	}
-
-	// The parent creates its registry before the first thread iframe gets its src and announces it
-	// with a same-origin event. A load that started before the registry existed waits for one of
-	// those, and never creates a frame-local registry while embedded.
-	function parentReportRegistry() {
-		try {
-			const registry = window.parent.__inboxIssueAdapters;
-			return registry && typeof registry.register === "function" ? registry : null;
-		} catch (error) {
-			return null;
-		}
-	}
-
-	function waitForParentReportRegistry() {
-		const current = parentReportRegistry();
-		if (current) return Promise.resolve(current);
-		return new Promise((resolve) => {
-			let settled = false;
-			const finish = (registry) => {
-				if (settled || !registry) return;
-				settled = true;
-				window.removeEventListener("inbox-issue-adapters-ready", onReady);
-				window.removeEventListener("load", onLoad);
-				resolve(registry);
-			};
-			function onReady() {
-				finish(parentReportRegistry());
-			}
-			function onLoad() {
-				finish(parentReportRegistry());
-			}
-			window.addEventListener("inbox-issue-adapters-ready", onReady);
-			window.addEventListener("load", onLoad);
-			// A registry that appeared with an already-dispatched load event is checked once here;
-			// this is not a poll.
-			if (document.readyState === "complete") finish(parentReportRegistry());
-		});
-	}
-
-	async function openReport(itemId, opener) {
-		ui.reportPick = itemId || null;
-		if (reportEmbedded && reportRegistry && reportOptions) {
-			try {
-				registerReportAdapter();
-			} catch (error) {
-				console.error("thread: embedded report registration failed", error);
-				reportRegistered = false;
-				location.assign("/issues/new");
-				return;
-			}
-		}
-		if (reportUi) {
-			await reportUi.open({ opener });
-			return;
-		}
-		location.assign("/issues/new");
-	}
-
-	async function loadIssueBadge() {
+	async function loadReportBadge() {
 		const badge = document.getElementById("issuesBadge");
 		if (!badge) return;
 		try {
-			const res = await fetch("/api/issues?limit=1", { headers: { accept: "application/json", "x-inbox": "1" }, cache: "no-store" });
+			const res = await fetch("/api/reports?limit=1", { headers: { accept: "application/json", "x-inbox": "1" }, cache: "no-store" });
 			if (!res.ok) return;
 			const body = await res.json();
-			const mod = await import("/web/issues.js");
-			const data = mod.issueBadgeFromCounts(body && body.counts);
-			badge.textContent = data.text;
-			badge.hidden = data.hidden;
-			badge.setAttribute("aria-label", data.label);
+			const counts = body && body.counts && typeof body.counts === "object" ? body.counts : {};
+			const n = (Number(counts.pending) || 0) + (Number(counts.failed) || 0);
+			badge.textContent = n > 0 ? String(n) : "";
+			badge.hidden = n === 0;
+			badge.setAttribute("aria-label", `보내지 못했거나 보내는 중인 제보 ${n}건`);
 		} catch (error) {
-			console.error("thread: issue badge failed", error);
+			console.error("thread: report badge failed", error);
 		}
 	}
 
-	async function bootReporting() {
-		reportEmbedded = document.documentElement.hasAttribute("data-embed");
-		reportOptions = {
-			page: "thread",
-			getContext: reportContext,
-			getTargets: reportTargets,
-			deferRender: deferReportRender,
-			resumeRender: resumeReportRender,
-		};
-		const parentRegistryReady = reportEmbedded ? waitForParentReportRegistry() : null;
-		try {
-			const [adapterMod, diagMod] = await Promise.all([import("/web/issue-adapters.js"), import("/web/issue-diagnostics.js")]);
-			diagnostics = diagMod.createDiagnostics({ now: () => performance.now() });
-			diagnostics.attachWindowListeners(window);
-			if (reportEmbedded) {
-				reportRegistry = await parentRegistryReady;
-				if (!reportRegistry) throw new Error("parent registry is unavailable");
-			} else {
-				reportRegistry = adapterMod.createAdapterRegistry({ ownerWindow: window });
-			}
-			registerReportAdapter();
-			if (reportEmbedded) claimReportAdapterAfterParentSetup();
-			const [draftsMod, reportMod] = await Promise.all([
-				import("/web/issue-drafts.js"),
-				import("/web/issue-report.js"),
-			]);
-			let image = null;
-			try {
-				const imageMod = await import("/web/issue-image.js");
-				image = imageMod.createIssueImage({ document, now: () => performance.now() });
-			} catch (error) {
-				console.error("thread: image editor unavailable", error);
-			}
-			let capabilities = null;
-			try {
-				const res = await fetch("/api/issues/capabilities", { headers: { accept: "application/json", "x-inbox": "1" } });
-				if (res.ok) capabilities = await res.json();
-			} catch (error) {
-				console.error("thread: issue capabilities failed", error);
-			}
-			const build = metaBuild();
-			reportUi = reportMod.mountIssueReport({
-				document,
-				window,
-				adapters: reportRegistry,
-				drafts: draftsMod,
-				diagnostics,
-				image,
-				fetchImpl: (url, init) => window.fetch(url, init),
-				now: () => Date.now(),
-				uuid: () => crypto.randomUUID(),
-				buildId: build ? build.digest : null,
-				capabilities,
-				pageKey: sid,
-			});
-			await reportUi.ready;
-		} catch (error) {
-			console.error("thread: issue reporting unavailable", error);
-			reportUi = null;
-		}
-		loadIssueBadge();
+	function bootReporting() {
+		import("/web/report.js")
+			.then(({ mountReporter }) => {
+				reporter = mountReporter({ page: { kind: "thread", route: "/s/:sid" }, sourceOf: window.__inboxReportSource });
+			})
+			.catch((error) => console.error("thread: reporting unavailable", error));
+		void loadReportBadge();
 	}
-
-	// A page-level entry reports the page, not a message still picked from the last menu open.
-	document.addEventListener("click", (event) => {
-		const entry = event.target.closest("[data-issue-report]");
-		if (entry) ui.reportPick = null;
-	}, true);
-
-	// The embedded page entry opens the reporter on the shared registry; its plain href stays for a failed registration.
-	document.addEventListener("click", (event) => {
-		const entry = event.target.closest("[data-issue-report]");
-		if (!entry || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-		if (reportEmbedded && reportRegistered) {
-			event.preventDefault();
-			void openReport(null, entry);
-		}
-	});
-
-	window.addEventListener("pagehide", () => {
-		if (reportSetupObserver) reportSetupObserver.disconnect();
-		if (reportRegistry && reportHandle && typeof reportRegistry.unregister === "function") {
-			try {
-				reportRegistry.unregister(reportHandle);
-			} catch {
-				// the frame is going away
-			}
-		}
-	});
 
 	// ---------- wiring ----------
 
 	els.progressToggle.addEventListener("click", () => {
 		const on = els.progressToggle.getAttribute("aria-pressed") !== "true";
-		recordAction("toggle_progress");
 		try {
 			localStorage.setItem(PROGRESS_KEY, on ? "on" : "off");
 		} catch (error) {
@@ -2070,20 +1779,15 @@
 	els.chat.addEventListener("click", onChatClick);
 	els.chat.addEventListener("input", onChatInput);
 	els.chat.addEventListener("change", onChatInput);
-	// The reporter owns its clicks and Escape. Touching its interior must not dismiss the term
-	// popover (which would also re-render the thread while reporting is active).
-	function insideReporter(target) {
-		const dialog = reportUi && reportUi.element;
-		return Boolean(dialog && target && dialog.contains(target));
-	}
-
+	// The reporter owns its clicks and Escape. Touching its composer must not dismiss the term
+	// popover (which would also re-render the thread under an open report).
 	document.addEventListener("click", (event) => {
-		if (ui.reporting || insideReporter(event.target)) return;
+		if (event.target.closest("[data-report-composer]")) return;
 		if (event.target.closest("[data-action=\"report\"], [data-issue-report]")) return;
 		if (ui.termOpen && !event.target.closest(".term, .term-pop")) closeTermPopover();
 	});
 	document.addEventListener("keydown", (event) => {
-		if (ui.reporting || insideReporter(event.target)) return;
+		if (event.target.closest("[data-report-composer]")) return;
 		if (event.key === "Escape" && ui.termOpen) closeTermPopover(true);
 	});
 	if ("speechSynthesis" in window) {

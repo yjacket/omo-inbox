@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const SID_RE = /^[0-9A-Za-z][0-9A-Za-z-]{7,63}$/;
+const ULW_MESSAGE_RE = /^\/skill:ulw-execute [a-z0-9][a-z0-9-]{0,79}$/;
+const REPORT_MESSAGE_RE = /^inbox-report [A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}#[1-9][0-9]{0,8}$/;
 
 export function safeTitle(text) {
 	const value = String(text ?? "").replace(/[^\uac00-\ud7a3\u3131-\u314eA-Za-z0-9 ._()-]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
@@ -102,12 +104,13 @@ function matchingWorktree(worktrees, cwd) {
 }
 
 export function planNewSession({ sid, folder, message, env, exists, isDir, worktrees }) {
-	if (typeof message !== "string" || !/^\/skill:ulw-execute [a-z0-9][a-z0-9-]{0,79}$/.test(message)) return { error: "bad_message" };
+	if (typeof message !== "string" || (!ULW_MESSAGE_RE.test(message) && !REPORT_MESSAGE_RE.test(message))) return { error: "bad_message" };
 	if (!SID_RE.test(sid)) return { error: "bad_sid" };
 	const cwd = safePath(folder);
 	if (!cwd || !isDir(cwd)) return { error: "cwd_missing" };
-	const slug = message.slice("/skill:ulw-execute ".length);
-	const title = safeTitle("ulw-execute " + slug);
+	const title = REPORT_MESSAGE_RE.test(message)
+		? safeTitle("제보 처리 " + message.slice(message.lastIndexOf("#") + 1))
+		: safeTitle("ulw-execute " + message.slice("/skill:ulw-execute ".length));
 	const attempts = [];
 	const orcaPath = orcaPathFor(env, exists);
 	if (orcaPath) {
