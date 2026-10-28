@@ -28,19 +28,25 @@ export function createOverlay(doc) {
 		doc.head.append(link);
 	}
 
+	// Layout-critical properties are inline at creation: before the stylesheet applies, nothing here
+	// may become an in-flow block and squeeze the host page's layout. The stylesheet keeps the visuals.
 	const root = doc.createElement("div");
 	root.setAttribute("popover", "manual");
 	root.setAttribute("data-report-overlay", "");
+	root.style.cssText = "position: fixed; inset: 0; box-sizing: border-box; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; overflow: visible; background: transparent; pointer-events: none;";
 
 	const box = doc.createElement("div");
 	box.setAttribute("data-report-box", "");
+	box.style.cssText = "position: absolute; box-sizing: border-box; margin: 0; pointer-events: none;";
 
 	const label = doc.createElement("div");
 	label.setAttribute("data-report-label", "");
+	label.style.cssText = "position: absolute; margin: 0; pointer-events: none;";
 	label.hidden = true;
 
 	const bar = doc.createElement("div");
 	bar.setAttribute("role", "toolbar");
+	bar.style.cssText = "position: fixed; top: 12px; left: 50%; margin: 0; transform: translateX(-50%); pointer-events: auto;";
 
 	const hint = doc.createElement("span");
 	hint.setAttribute("data-report-hint", "");
@@ -59,6 +65,7 @@ export function createOverlay(doc) {
 
 	const selected = doc.createElement("div");
 	selected.setAttribute("data-report-selected", "");
+	selected.style.cssText = "position: fixed; left: 0; top: 0; box-sizing: border-box; margin: 0; pointer-events: none;";
 	selected.hidden = true;
 
 	let cancelFn = null;

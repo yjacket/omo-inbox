@@ -477,8 +477,10 @@ function createReporter({ win, doc, pageInfo, sourceOf }) {
 			frames: framesOf(target),
 			source: sourceFor(target),
 		};
-		showOutline();
+		// Start the redraw before the outline and the composer touch the page, so the snapshot never
+		// captures a frame in which the overlay or the modal dialog changed the layout.
 		startSnapshot(target);
+		showOutline();
 		render();
 	}
 
