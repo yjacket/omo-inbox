@@ -46,13 +46,13 @@ git으로 설치한 확장은 `omo update --extensions` 로 한꺼번에 업데�
 
 개발자 설치는 개발 확인용입니다. checkout 에서 `inbox install`(또는 `install.ps1`)도 그대로 되며 `source.json` 에 channel `checkout` 을 기록합니다. 패키지는 이것을 덮어쓰지 않습니다. 패키지로 넘기려면 `inbox uninstall` 을 실행하고, 확인이 끝나면 git 설치로 돌아갑니다.
 
-Windows PowerShell 한 줄로 checkout 없이 GitHub `main` 에서 개발자 설치를 합니다. 스크립트가 `gh auth token` 이나 `GITHUB_TOKEN` 에서 토큰을 읽으므로 `gh` 로그인(`gh auth login`)이 필요합니다:
+Windows PowerShell 한 줄로 checkout 없이 GitHub `main` 에서 개발자 설치를 합니다. 로그인은 필요 없고, `GITHUB_TOKEN` 이나 `gh auth token` 이 있으면 그 토큰만 씁니다:
 
 ```powershell
-irm https://raw.githubusercontent.com/yjacket/omo-inbox/main/install.ps1 -Headers @{ Authorization = "token $(gh auth token)" } | iex
+irm https://raw.githubusercontent.com/yjacket/omo-inbox/main/install.ps1 | iex
 ```
 
-이렇게 파이프로 실행하면 `install.ps1` 은 `main` 을 임시 폴더에 받아 아래와 같은 `inbox install` 을 실행한 뒤 폴더를 지웁니다. Node가 24보다 낮거나 GitHub 토큰이 없으면 한 줄로 알리고 멈춥니다. 아래 옵션은 checkout 에서 실행할 때만 쓸 수 있습니다.
+이렇게 파이프로 실행하면 `install.ps1` 은 `main` 을 임시 폴더에 받아 아래와 같은 `inbox install` 을 실행한 뒤 폴더를 지웁니다. Node가 24보다 낮으면 한 줄로 알리고 멈춥니다. 아래 옵션은 checkout 에서 실행할 때만 쓸 수 있습니다.
 
 checkout 에서:
 

@@ -46,13 +46,13 @@ Migration. An earlier install made by `install.ps1` or `inbox install` is taken 
 
 Developer install, for development checks only. `inbox install` from a checkout (or `install.ps1`) still works and records channel `checkout` in `source.json`. The package never overrides it. Run `inbox uninstall` to hand over to the package, and switch back to the git install when you are done.
 
-One line in Windows PowerShell installs from GitHub `main` without a checkout, as a developer install. The script reads a token from `gh auth token` or `GITHUB_TOKEN`, so `gh` must be logged in (`gh auth login`):
+One line in Windows PowerShell installs from GitHub `main` without a checkout, as a developer install. No login is needed; a token from `GITHUB_TOKEN` or `gh auth token` is used only if present:
 
 ```powershell
-irm https://raw.githubusercontent.com/yjacket/omo-inbox/main/install.ps1 -Headers @{ Authorization = "token $(gh auth token)" } | iex
+irm https://raw.githubusercontent.com/yjacket/omo-inbox/main/install.ps1 | iex
 ```
 
-Piped like this, `install.ps1` downloads `main` into a temp folder, runs the same `inbox install` as below and deletes the folder. It stops with one line when Node is older than 24 or no GitHub token is found. The options below need the checkout form.
+Piped like this, `install.ps1` downloads `main` into a temp folder, runs the same `inbox install` as below and deletes the folder. It stops with one line when Node is older than 24. The options below need the checkout form.
 
 From a checkout:
 
