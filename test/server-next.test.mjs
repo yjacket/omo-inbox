@@ -596,15 +596,14 @@ test("new-session through the real sink writes one launch line and leaves the ha
 	process.env.PATH = binDir + path.delimiter + (saved.PATH ?? "");
 	process.env.LOCALAPPDATA = localAppData;
 	process.env.INBOX_REOPEN_SINK = sink;
-	let ctx;
-	try {
-		ctx = await withServer(t, { tmp, keepHome: true, config: { summary: { enabled: false } } });
-	} finally {
+	// The server reads process.env when the action arrives, so the fake wt/omo must stay on PATH until the test ends.
+	t.after(() => {
 		for (const [key, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		}
-	}
+	});
+	const ctx = await withServer(t, { tmp, keepHome: true, config: { summary: { enabled: false } } });
 
 	const root = planRoot(ctx.home);
 	await postJson(ctx, "/api/threads/s1/meta", { cwd: root });

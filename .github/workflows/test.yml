@@ -1,0 +1,19 @@
+name: test
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # The runner's default %TEMP% is the 8.3 short path (C:\Users\RUNNER~1\...), while git and realpath
+      # return the long path, so path-equality tests would compare two spellings of one folder.
+      - run: npm test
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
