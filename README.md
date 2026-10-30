@@ -30,23 +30,23 @@ Every root interactive session (`ctx.mode === "tui"`) becomes a thread. Print, j
 - Over Tailscale the same pages are served on `https://<machine>.<tailnet>.ts.net:4388`.
 
 ## Install
-The main way is the omo package. The repository is private, so git needs access to it:
-
 ```powershell
 omo install git:github.com/yjacket/omo-inbox
 ```
 
+That is the normal install. Node 24+ is required.
+
 The first omo session sets up by itself within about a minute. The extension runs `inbox install --from-package` in the background under a lock (`<home>/setup.lock`). Setup copies the clone to `<home>/app`, writes `<home>/app/source.json` (channel `package`, source, sha, version), the launcher, the Run autostart value, the skill copies, the rule and the tailscale 4388 serve handler (behind the 443 guard), then starts the server. Only one setup runs however many sessions start. A failed setup is retried after 10 minutes; the state is in `<home>/setup-state.json` and each run leaves a line in `<home>/logs/install.log`.
 
-Update with `omo update --extensions`. Within about a minute the next session tick replaces the app and restarts the server, and idle sessions reload onto the new extension.
+Update every git-installed extension with `omo update --extensions` (only this one: `omo update --extension git:github.com/yjacket/omo-inbox`). Within about a minute the next session tick replaces the app and restarts the server, and idle sessions reload onto the new extension.
 
 Remove in two steps. First `/inbox uninstall`: it removes the server, autostart, launcher, app, skills, rule and the 4388 handler, keeps `<home>/data`, and writes `<home>/disabled` so the package stays inert: while it exists, sessions show no footer and never set up or start the server. Then `omo remove git:github.com/yjacket/omo-inbox`. `/inbox install` re-enables a disabled package. If the package is removed without `/inbox uninstall`, the server notices the missing clone and uninstalls itself after 20 minutes (`INBOX_ORPHAN_GRACE_MS`).
 
 Migration. An earlier install made by `install.ps1` or `inbox install` is taken over. While the old `<agentDir>/extensions/omo-inbox.ts` copy exists, the package extension only runs setup. Setup deletes the old copy and sessions reload.
 
-Developer install. `inbox install` from a checkout (or `install.ps1`) still works and records channel `checkout` in `source.json`. The package never overrides it. Run `inbox uninstall` to hand over to the package.
+Developer install, for development checks only. `inbox install` from a checkout (or `install.ps1`) still works and records channel `checkout` in `source.json`. The package never overrides it. Run `inbox uninstall` to hand over to the package, and switch back to the git install when you are done.
 
-One line in Windows PowerShell installs from GitHub `main` without a checkout, as a developer install. `gh` must be logged in (`gh auth login`), and Node 24+ is required:
+One line in Windows PowerShell installs from GitHub `main` without a checkout, as a developer install. The script reads a token from `gh auth token` or `GITHUB_TOKEN`, so `gh` must be logged in (`gh auth login`):
 
 ```powershell
 irm https://raw.githubusercontent.com/yjacket/omo-inbox/main/install.ps1 -Headers @{ Authorization = "token $(gh auth token)" } | iex
@@ -239,7 +239,7 @@ The Review list lives at `/boards` (title and heading `Review`, tab title `(N) R
 
 #### GitHub
 
-- Destination. `config.json` `reports.repo` (default `yjacket/omo-inbox`), label `reports.label` (default `inbox-report`, created when missing), pictures on the branch `reports.assetsBranch` (default `inbox-report-assets`) at `reports/YYYY/MM/<id>.png`. Only a private repo with Issues turned on is accepted.
+- Destination. `config.json` `reports.repo` (default `yjacket/omo-inbox`), label `reports.label` (default `inbox-report`, created when missing), pictures on the branch `reports.assetsBranch` (default `inbox-report-assets`) at `reports/YYYY/MM/<id>.png`. Only a private repo with Issues turned on is accepted. The default `yjacket/omo-inbox` is public, so reports fail with `public_repo` until `reports.repo` names a private repo.
 - Token. `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. It needs classic `repo`, or fine-grained `Issues: write`, `Contents: write` and `Metadata: read` on the destination repo.
 - Issue. The title is the description's first non-blank line (at most 80 code points, `…` when cut). The body holds the description, route and URL, element label, selector, DOM path, visible text, frame, source (`- 출처:`) and product (`- 제품:`), rect, viewport, scroll, DPR, color scheme, pointer, server build, the inline picture with a file link, a JSON block and the hidden marker `<!-- inbox-report:<id> -->`.
 - Delivery. One report at a time. Network errors, 5xx and rate limits are retried with backoff. A create whose answer got lost waits, then searches for the marker before creating again, so a report never makes two issues. Hard failures stop with a fixed reason: `GitHub 인증을 확인해야 합니다`, `GitHub 토큰이 없습니다`, `저장소에 쓸 권한이 없습니다`, `저장소를 찾을 수 없습니다`, `저장소의 Issues가 꺼져 있습니다`, `공개 저장소에는 올리지 않습니다`, `GitHub가 내용을 받지 않았습니다`, `그림 파일이 이미 다르게 올라가 있습니다`, and `GitHub에 연결하지 못했습니다` once retries run out.
@@ -560,12 +560,12 @@ Shape (v1): `{v: 1, producer, dedupeKey, title, body?, urgency, session?, cwd?, 
 - A new notice with the same producer and dedupe key closes the previous open one as `superseded`. Notices without a session go to the `알림` thread.
 - Errors are 400 with one `details` line per problem.
 
-Example, a keepwarm extension warning that the cache is cooling:
+Example, a keepalive extension warning that the cache is cooling:
 
 ```ts
 pi.events.emit("inbox:notice", {
 	v: 1,
-	producer: "keepwarm",
+	producer: "omo-keepalive",
 	dedupeKey: "cache-cooling",
 	title: "캐시가 곧 식습니다",
 	body: "5분 안에 이어 가지 않으면 다음 요청이 느려집니다",
@@ -574,7 +574,7 @@ pi.events.emit("inbox:notice", {
 ```
 
 ```powershell
-node "<home>/app/bin/inbox.mjs" notify --producer keepwarm --key cache-cooling --title "캐시가 곧 식습니다" --urgency soon
+node "<home>/app/bin/inbox.mjs" notify --producer omo-keepalive --key cache-cooling --title "캐시가 곧 식습니다" --urgency soon
 ```
 
 ## Actions for other extensions
@@ -624,6 +624,12 @@ Browser QA for next actions: `bun qa/next-qa.mjs` (port 4402), the same way. `bu
 Browser QA for reports: `bun qa/report-pick-qa.mjs` (port 4403), `bun qa/report-send-qa.mjs` (4404) and `bun qa/report-look-qa.mjs` (4405), the same way. They point `INBOX_GITHUB_API` at a fake GitHub and never call the real GitHub API.
 
 Every push in tests and QA goes to an `INBOX_PUSH_SINK` file, and every reopen to an `INBOX_REOPEN_SINK` file (except `reopen-launch-qa`). QA never uses ports 4387 or 4388.
+
+## Development
+- Work in a git worktree on a branch and open a PR against `main`. Direct pushes, force pushes and branch deletion on `main` are blocked; a PR merges only when its `test` check passes (`.github/workflows/test.yml`, windows-latest, `npm test`).
+- Run the same tests locally with `npm test` (= `node --test "test/**/*.test.mjs"`).
+- Live tests never touch the real setup: no real `~/.omo`, no server on port 4387, no HKCU Run value. Point `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `OMO_INBOX_HOME` and `INBOX_AGENT_DIR` at a temp folder, set `INBOX_NO_TAILSCALE=1` and `INBOX_RUN_VALUE` to a test name, and give the temp `config.json` another `port`.
+- Don't commit tokens, real tailnet host names or `.omo/` scratch (evidence, screenshots, boards).
 
 ## Limits
 - Windows only for install, autostart and launching.

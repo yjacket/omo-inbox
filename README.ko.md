@@ -30,23 +30,23 @@ omo 에이전트 세션이 나에게 바라는 모든 것을 휴대폰 Inbox 하
 - Tailscale에서는 같은 페이지가 `https://<machine>.<tailnet>.ts.net:4388` 로 제공됩니다.
 
 ## 설치
-주된 설치 방법은 omo 패키지입니다. 저장소가 비공개라 git이 접근할 수 있어야 합니다:
-
 ```powershell
 omo install git:github.com/yjacket/omo-inbox
 ```
 
+이것이 기본 설치입니다. Node 24 이상이 필요합니다.
+
 첫 omo 세션이 1분쯤 안에 스스로 설치합니다. 확장이 잠금(`<home>/setup.lock`) 아래 백그라운드에서 `inbox install --from-package` 를 실행합니다. 설치는 clone을 `<home>/app` 으로 복사하고, `<home>/app/source.json`(channel `package`, source, sha, version), 실행기, Run 자동 시작 값, 스킬 사본, 규칙, tailscale 4388 serve 핸들러(443 보호 장치 포함)를 쓴 뒤 서버를 시작합니다. 세션이 몇 개 시작하든 설치는 하나만 돕니다. 실패한 설치는 10분 뒤 다시 시도합니다. 상태는 `<home>/setup-state.json` 에 있고, 실행마다 `<home>/logs/install.log` 에 한 줄을 남깁니다.
 
-업데이트는 `omo update --extensions` 입니다. 1분쯤 안에 다음 세션 주기가 앱을 바꾸고 서버를 다시 시작하며, 쉬고 있는 세션은 새 확장으로 reload 합니다.
+git으로 설치한 확장은 `omo update --extensions` 로 한꺼번에 업데이트합니다(이것만: `omo update --extension git:github.com/yjacket/omo-inbox`). 1분쯤 안에 다음 세션 주기가 앱을 바꾸고 서버를 다시 시작하며, 쉬고 있는 세션은 새 확장으로 reload 합니다.
 
 제거는 두 단계입니다. 먼저 `/inbox uninstall`: 서버, 자동 시작, 실행기, 앱, 스킬, 규칙, 4388 핸들러를 지우고, `<home>/data` 는 남기며, 패키지가 움직이지 않도록 `<home>/disabled` 를 씁니다. 이 파일이 있는 동안 세션은 상태줄을 띄우지 않고, 설치나 서버 시작도 하지 않습니다. 그다음 `omo remove git:github.com/yjacket/omo-inbox`. `/inbox install` 은 꺼진 패키지를 다시 켭니다. `/inbox uninstall` 없이 패키지를 지우면 서버가 clone이 사라진 것을 알아채고 20분 뒤 스스로 제거합니다(`INBOX_ORPHAN_GRACE_MS`).
 
 이전. 예전에 `install.ps1` 이나 `inbox install` 로 한 설치는 패키지가 넘겨받습니다. 예전 `<agentDir>/extensions/omo-inbox.ts` 사본이 있는 동안 패키지 확장은 설치만 실행합니다. 설치가 예전 사본을 지우면 세션이 reload 합니다.
 
-개발자 설치. checkout 에서 `inbox install`(또는 `install.ps1`)도 그대로 되며 `source.json` 에 channel `checkout` 을 기록합니다. 패키지는 이것을 덮어쓰지 않습니다. 패키지로 넘기려면 `inbox uninstall` 을 실행합니다.
+개발자 설치는 개발 확인용입니다. checkout 에서 `inbox install`(또는 `install.ps1`)도 그대로 되며 `source.json` 에 channel `checkout` 을 기록합니다. 패키지는 이것을 덮어쓰지 않습니다. 패키지로 넘기려면 `inbox uninstall` 을 실행하고, 확인이 끝나면 git 설치로 돌아갑니다.
 
-Windows PowerShell 한 줄로 checkout 없이 GitHub `main` 에서 개발자 설치를 합니다. `gh` 로그인(`gh auth login`)이 필요하고, Node 24 이상이어야 합니다:
+Windows PowerShell 한 줄로 checkout 없이 GitHub `main` 에서 개발자 설치를 합니다. 스크립트가 `gh auth token` 이나 `GITHUB_TOKEN` 에서 토큰을 읽으므로 `gh` 로그인(`gh auth login`)이 필요합니다:
 
 ```powershell
 irm https://raw.githubusercontent.com/yjacket/omo-inbox/main/install.ps1 -Headers @{ Authorization = "token $(gh auth token)" } | iex
@@ -239,7 +239,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 
 #### GitHub
 
-- 대상. `config.json` 의 `reports.repo`(기본 `yjacket/omo-inbox`), 라벨 `reports.label`(기본 `inbox-report`, 없으면 만듦), 그림은 `reports.assetsBranch` 브랜치(기본 `inbox-report-assets`)의 `reports/YYYY/MM/<id>.png`. Issues가 켜진 비공개 저장소만 받습니다.
+- 대상. `config.json` 의 `reports.repo`(기본 `yjacket/omo-inbox`), 라벨 `reports.label`(기본 `inbox-report`, 없으면 만듦), 그림은 `reports.assetsBranch` 브랜치(기본 `inbox-report-assets`)의 `reports/YYYY/MM/<id>.png`. Issues가 켜진 비공개 저장소만 받습니다. 기본값 `yjacket/omo-inbox` 는 공개 저장소라, `reports.repo` 를 비공개 저장소로 바꾸기 전까지 제보는 `public_repo` 로 실패합니다.
 - 토큰. `GH_TOKEN`, 다음 `GITHUB_TOKEN`, 다음 `gh auth token`. 클래식 `repo` 권한, 또는 대상 저장소에 대한 세분화 권한 `Issues: write`, `Contents: write`, `Metadata: read` 가 필요합니다.
 - 이슈. 제목은 설명의 첫 번째 비어 있지 않은 줄입니다(80 코드 포인트까지, 잘리면 `…`). 본문에는 설명, 경로와 URL, 요소 라벨, 선택자, DOM 경로, 보인 글자, 프레임, 출처(`- 출처:`)와 제품(`- 제품:`), 위치와 크기, 뷰포트, 스크롤, DPR, 색 모드, 포인터, 서버 빌드, 파일 링크가 붙은 본문 속 그림, JSON 블록, 숨은 표시 `<!-- inbox-report:<id> -->` 가 들어갑니다.
 - 전달. 한 번에 제보 하나씩 보냅니다. 네트워크 오류, 5xx, 속도 제한은 간격을 늘려 다시 시도합니다. 답을 잃은 생성은 기다렸다가 표시를 찾아본 뒤에야 다시 만들므로, 제보 하나가 이슈 둘이 되지 않습니다. 되돌릴 수 없는 실패는 정해진 이유로 멈춥니다: `GitHub 인증을 확인해야 합니다`, `GitHub 토큰이 없습니다`, `저장소에 쓸 권한이 없습니다`, `저장소를 찾을 수 없습니다`, `저장소의 Issues가 꺼져 있습니다`, `공개 저장소에는 올리지 않습니다`, `GitHub가 내용을 받지 않았습니다`, `그림 파일이 이미 다르게 올라가 있습니다`, 다시 시도를 다 쓰면 `GitHub에 연결하지 못했습니다`.
@@ -560,12 +560,12 @@ Inbox 머리글에서 브라우저마다 한 번 켭니다. `알림 받기` 는 
 - producer와 dedupe 키가 같은 새 공지는 앞의 열린 공지를 `superseded` 로 닫습니다. 세션 없는 공지는 `알림` 대화로 갑니다.
 - 오류는 400이고 문제마다 `details` 한 줄입니다.
 
-예: keepwarm 확장이 캐시가 식는다고 알리기.
+예: keepalive 확장이 캐시가 식는다고 알리기.
 
 ```ts
 pi.events.emit("inbox:notice", {
 	v: 1,
-	producer: "keepwarm",
+	producer: "omo-keepalive",
 	dedupeKey: "cache-cooling",
 	title: "캐시가 곧 식습니다",
 	body: "5분 안에 이어 가지 않으면 다음 요청이 느려집니다",
@@ -574,7 +574,7 @@ pi.events.emit("inbox:notice", {
 ```
 
 ```powershell
-node "<home>/app/bin/inbox.mjs" notify --producer keepwarm --key cache-cooling --title "캐시가 곧 식습니다" --urgency soon
+node "<home>/app/bin/inbox.mjs" notify --producer omo-keepalive --key cache-cooling --title "캐시가 곧 식습니다" --urgency soon
 ```
 
 ## 다른 확장의 행동
@@ -624,6 +624,12 @@ Inbox 차례 흐름 브라우저 QA: `bun qa/turn-list-qa.mjs`(포트 4395), `bu
 제보 브라우저 QA: `bun qa/report-pick-qa.mjs`(포트 4403), `bun qa/report-send-qa.mjs`(4404), `bun qa/report-look-qa.mjs`(4405)도 같은 방식입니다. `INBOX_GITHUB_API` 를 가짜 GitHub로 돌리고, 실제 GitHub API는 부르지 않습니다.
 
 테스트와 QA의 푸시는 모두 `INBOX_PUSH_SINK` 파일로, 다시 열기는 모두 `INBOX_REOPEN_SINK` 파일로 갑니다(`reopen-launch-qa` 는 제외). QA는 포트 4387, 4388을 쓰지 않습니다.
+
+## 개발
+- git worktree의 브랜치에서 작업하고 `main` 으로 PR을 엽니다. `main` 에 직접 푸시, 강제 푸시, 브랜치 삭제는 막혀 있고, PR은 `test` 검사(`.github/workflows/test.yml`, windows-latest, `npm test`)를 통과해야 병합됩니다.
+- 같은 테스트를 로컬에서 `npm test`(= `node --test "test/**/*.test.mjs"`)로 돌립니다.
+- 실제 환경으로 시험할 때 진짜 `~/.omo`, 포트 4387 서버, HKCU Run 값을 건드리지 않습니다. `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `OMO_INBOX_HOME`, `INBOX_AGENT_DIR` 를 임시 폴더로 돌리고, `INBOX_NO_TAILSCALE=1` 과 시험용 `INBOX_RUN_VALUE` 를 주고, 임시 `config.json` 에 다른 `port` 를 씁니다.
+- 토큰, 실제 tailnet 호스트 이름, `.omo/` 작업물(증거, 스크린샷, 보드)은 커밋하지 않습니다.
 
 ## 한계
 - 설치, 자동 시작, 서버 실행은 Windows 전용입니다.

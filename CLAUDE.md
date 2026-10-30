@@ -7,6 +7,7 @@
 - Tests never wait on real time: inject clocks and timers, await events, use port 0, set `INBOX_WAIT_POLL_MS` / `INBOX_ENSURE_POLL_MS` small. Use temp homes from `test/helpers/tmp-home.mjs` and fake runners for `reg`, `tailscale`, `wscript`.
 - Never touch tailscale 443 or Funnel. Only the 4388 serve handler, always behind the 443 guard.
 - Write hostnames as `<machine>.<tailnet>.ts.net`, never a real one.
+- Changes land through a PR from a worktree branch; the `test` check must pass before merge.
 - Commit messages: `omo-inbox: <what changed>`.
 
 ## 제보 처리
