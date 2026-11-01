@@ -324,6 +324,10 @@ export function createInbox(pi, deps = {}) {
 		log: (text) => void log(text),
 		onSummaryRequest: (item, request) => runSummary(item.id, request, false),
 		bridgeState: (requestId) => bridge.bridgeState(requestId),
+		remind: (content) => pi?.sendMessage?.(
+			{ customType: "omo-inbox", content, display: true, details: { reviewReminder: true } },
+			{ deliverAs: "followUp", triggerTurn: true },
+		),
 	});
 	const actions = createActions({ post: postJson, sessionId: () => sessionId, log });
 	const bridge = createBridge({ log: (text) => void log(text), now, env });
@@ -782,6 +786,7 @@ export function createInbox(pi, deps = {}) {
 		const capturing = (name, call) => safe(name, async (event, eventCtx) => {
 			call(event, eventCtx ?? ctx);
 		});
+		pi?.on?.("tool_execution_start", capturing("capture:tool_execution_start", (event, c) => capture.onToolExecutionStart(event, c)));
 		pi?.on?.("tool_execution_end", capturing("capture:tool_execution_end", (event, c) => capture.onToolExecutionEnd(event, c)));
 		pi?.on?.("message_start", capturing("message_start", (event, c) => capture.onMessageStart(event, c)));
 		pi?.on?.("message_end", capturing("message_end", (event, c) => capture.onMessageEnd(event, c)));

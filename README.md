@@ -448,6 +448,17 @@ Session ids come from `INBOX_SESSION` or `PI_SESSION_ID`. The extension isn't ch
 
 Two paths differ. The inbox follow-up is automatic: it starts a turn in the owning session. The pending notice (`inbox pending`, `/api/here`) is passive: it only tells a session that feedback is waiting, so an ownerless board is seen but never delivered as a turn.
 
+### Report reminder
+
+When a request changed something visible but no board was submitted, the session gets one reminder before the final goes to the phone. Root interactive sessions only, under the same guard as Board wake (nothing in child or task-member sessions, a stale generation after `/reload`, or setup-only mode).
+
+- Window: every owner request (terminal input, phone delivery, board feedback) starts a new window that lasts until the next one. Inputs an extension sends (job wakes, other extensions) continue the window. Each window starts with visual, board, skip and reminded all false.
+- Visual: set when a tool execution in the window shows one of: an edit or write tool whose path ends in `.html .htm .css .scss .sass .less .vue .svelte .jsx .tsx` or contains a `templates` directory segment; a tool result with an image content block; tool arguments or result text (at most 64 KiB scanned per event) matching `/screenshot|스크린샷/i`. Edits made inside eval code count only through that last check.
+- Board: set when any tool's arguments run `inbox submit` or `inbox revise` (`/inbox(?:\.mjs)?["']?\s+(?:submit|revise)\b/`).
+- Skip: set when any input text in the window contains `Review 생략` or `보드 생략`.
+- Trigger: when a turn end would close the episode with a final, the close reason is not "you aborted" or "goal blocked", and visual is set while board, skip and reminded are not, the final is not posted. Instead the session gets one follow-up message that starts a turn, `[omo-inbox] 화면이 바뀐 작업인데 보고 Review가 없습니다. 바뀐 화면을 보고 Review로 올리세요(visual-board 스킬). 화면이 바뀌지 않았거나 사용자가 Review에서 이미 본 화면이면 그 이유를 한 줄로 적고 끝내세요.` (`details: { reviewReminder: true }`), reminded is set, and the turn end counts as waking: the episode stays open and the next agent start continues it as a system start. The next turn end closes the episode as usual, board or not.
+- Log: a reminder writes `capture: review reminder` to `extension.log`.
+
 ## Next actions
 The server computes a verdict for every needs-you final (`turn`, `done`, `blocked`, stall finals included) when it arrives, when its model summary arrives, when a provider list changes, and on a thread open when the stored one is older than 30 s. At server start it backfills finals stored before this update. Progress items get none.
 
