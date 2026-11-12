@@ -25,6 +25,7 @@ import {
 	willWake,
 } from "./episode.ts";
 import type { EpisodeState, Verdict } from "./episode.ts";
+import { createReminderWindow, REVIEW_REMINDER_TEXT } from "./reminder.ts";
 import { CHILD_ENV } from "./util.ts";
 
 const SETTLE_DELAY_MS = 2500;
@@ -58,6 +59,8 @@ export type CaptureDeps = {
 	bridgeState?: (requestId: string) => string,
 	/** Desk boards the session waits on, shown on the newest line while it waits (trial mode); default none. */
 	deskBoards?: () => any[] | Promise<any[]>,
+	/** Sends the report reminder as a follow-up that starts a turn; without it the reminder never fires. */
+	remind?: (text: string) => void,
 };
 
 type QuestionRecord = { itemId: string | null, pendingClose: { reason: string, resolvedBy: string | null } | null };
@@ -108,6 +111,7 @@ export function createCapture(deps: CaptureDeps) {
 	let pendingGoal: any = null;
 	/** The episode reducer. Its signal state (wake counts, holds, scheduled) is level state and outlives every session reset. */
 	let ep: EpisodeState = createEpisodeState("");
+	let reminder = createReminderWindow();
 	let lastLine: LineRecord | null = null;
 	let lastLineText = "";
 	let openerKey = "";
@@ -585,6 +589,16 @@ export function createCapture(deps: CaptureDeps) {
 
 	function closeNow(target: any, decision: Verdict, turnText: string, goal: any): void {
 		if (decision.closeReason === null) return;
+		if (decision.closeReason !== "aborted" && decision.closeReason !== "blocked" && deps.remind !== undefined && reminder.take()) {
+			// The reminded turn end counts as waking: the episode stays open and the next turn end closes it.
+			log("capture: review reminder");
+			if (decision.closeReason === "done" && pendingClose === null) {
+				pendingClose = "done";
+				if (goal?.status === "complete") pendingGoal = goal;
+			}
+			deps.remind(REVIEW_REMINDER_TEXT);
+			return;
+		}
 		const request = openerRequestFor(target);
 		const lastRequest = latestRequest(target);
 		const closed = closeEpisode(ep, decision.closeReason, runEndStamp > 0 ? runEndStamp : lastMessageStamp, now());
@@ -685,6 +699,7 @@ export function createCapture(deps: CaptureDeps) {
 		openerRequest = "";
 		// Wake counts and holds are the runtime's level state, published once (possibly before this ctx exists): keep them.
 		freshEpisodeState("");
+		reminder = createReminderWindow();
 		openQuestions.clear();
 		openDialogs.clear();
 		questionItems.clear();
@@ -908,8 +923,11 @@ export function createCapture(deps: CaptureDeps) {
 		onInput(event: any, nextCtx: any): void {
 			const target = nextCtx ?? ctx;
 			if (!live(target)) return;
+			const text = typeof event?.text === "string" ? event.text : "";
+			// Extension inputs (job wakes, other extensions) continue the owner's request; only terminal input starts a window.
+			if (event?.source === "interactive") reminder.reset();
+			reminder.onInput(text);
 			if (event?.source !== "interactive") return;
-			const text = typeof event.text === "string" ? event.text : "";
 			const kickoff = /^(?:\/skill:ulw-execute|\/ulw-execute|\$ulw-execute)\s+([a-z0-9][a-z0-9-]{0,79})(?![a-z0-9-])/.exec(text);
 			if (kickoff !== null && !executesSent) {
 				executesSent = true;
@@ -922,9 +940,15 @@ export function createCapture(deps: CaptureDeps) {
 			postActivity(target, { source: "terminal-input", cause: "owner" });
 		},
 
+		onToolExecutionStart(event: any, nextCtx: any): void {
+			if (!live(nextCtx ?? ctx)) return;
+			reminder.onToolStart(event);
+		},
+
 		onToolExecutionEnd(event: any, nextCtx: any): void {
 			const target = nextCtx ?? ctx;
 			if (!live(target)) return;
+			reminder.onToolEnd(event);
 			if (event?.toolName !== "update_goal") return;
 			void applyGoalToolEvent(target, event);
 		},
@@ -949,6 +973,7 @@ export function createCapture(deps: CaptureDeps) {
 
 		/** An owner message was sent (phone, board feedback): the next agent start is the owner's. */
 		markOwner(cause: string): void {
+			reminder.reset();
 			if (ctx !== null) syncEpisodeSession(ctx);
 			markEpisodeOwner(ep, cause, now());
 		},
