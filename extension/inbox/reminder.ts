@@ -9,7 +9,6 @@ export const REVIEW_REMINDER_TEXT = "[omo-inbox] 화면이 바뀐 작업인데 �
 const SCAN_LIMIT = 64 * 1024;
 const VISUAL_PATH = /\.(?:html?|css|scss|sass|less|vue|svelte|jsx|tsx)$/i;
 const TEMPLATES_SEGMENT = /(?:^|[\\/])templates[\\/]/i;
-const SCREENSHOT = /screenshot|스크린샷/i;
 const BOARD_COMMAND = /inbox(?:\.mjs)?["']?\s+(?:submit|revise)\b/;
 const SKIP = /Review 생략|보드 생략/;
 
@@ -68,12 +67,11 @@ export function createReminderWindow() {
 			if (BOARD_COMMAND.test(args)) board = true;
 			const target = editPath(toolName, event?.args);
 			if (target.length > 0 && (VISUAL_PATH.test(target) || TEMPLATES_SEGMENT.test(target))) visual = true;
-			if (SCREENSHOT.test(args)) visual = true;
 		},
 
 		onToolEnd(event: any): void {
+			// A word in a message is not a changed screen: only an image the session looked at counts.
 			if (hasImage(event?.result)) visual = true;
-			else if (SCREENSHOT.test(flatText(event?.result?.content))) visual = true;
 		},
 
 		/** True once per window when the work looked visual and no board was posted; the caller then reminds. */

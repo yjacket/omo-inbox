@@ -116,6 +116,19 @@ test("an edit of a visual file counts, a plain source edit does not", async () =
 	assert.deepEqual(plain.finals().map((item) => item.kind), ["turn"]);
 });
 
+test("a tool that only mentions screenshots in text does not remind", async () => {
+	const h = makeHarness();
+	h.input("디스크 정리안을 알려줘");
+	await h.turn({
+		tools: [
+			{ name: "eval", args: { code: "send('이전 회차는 스크린샷·영상만 지우기')" }, result: { content: [{ type: "text", text: "sent" }] } },
+			{ name: "bash", args: { command: "du -sh evidence" }, result: { content: [{ type: "text", text: "8.6G evidence/screenshots" }] } },
+		],
+	});
+	assert.deepEqual(h.reminders, []);
+	assert.deepEqual(h.finals().map((item) => item.kind), ["turn"]);
+});
+
 test("a submit command in the window means no reminder", async () => {
 	const h = makeHarness();
 	h.input("결제 화면을 고쳐줘");

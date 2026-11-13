@@ -453,7 +453,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 요청한 일이 화면을 바꿨는데 보드를 올리지 않았으면, final이 폰으로 가기 전에 세션이 알림을 한 번 받습니다. 루트 대화형 세션에서만, 보드 깨우기와 같은 조건으로 동작합니다(하위 세션, task member 세션, `/reload` 뒤 stale 세대, setup 전용 모드에서는 아무것도 하지 않음).
 
 - 구간: 사용자 요청(터미널 입력, 폰 전달, 보드 피드백)마다 새 구간이 시작되고 다음 요청까지 이어집니다. 확장이 넣은 입력(작업 깨우기, 다른 확장)은 구간을 이어 갑니다. 구간마다 visual, board, skip, reminded 가 모두 false 로 시작합니다.
-- visual: 구간 안의 도구 실행이 다음 중 하나를 보이면 켭니다. 경로가 `.html .htm .css .scss .sass .less .vue .svelte .jsx .tsx` 로 끝나거나 `templates` 디렉터리 구간을 포함하는 edit 또는 write 도구, 이미지 콘텐츠 블록이 있는 도구 결과, `/screenshot|스크린샷/i` 와 맞는 도구 인자나 결과 텍스트(이벤트마다 64 KiB까지 검사). eval 코드 안에서 한 편집은 마지막 검사로만 셉니다.
+- visual: 구간 안의 도구 실행이 다음 중 하나를 보이면 켭니다. 경로가 `.html .htm .css .scss .sass .less .vue .svelte .jsx .tsx` 로 끝나거나 `templates` 디렉터리 구간을 포함하는 edit 또는 write 도구, 이미지 콘텐츠 블록이 있는 도구 결과. 스크린샷을 말로만 언급한 도구 인자나 결과(메시지, 파일 목록, 디스크 용량 보고)는 visual 을 켜지 않습니다. eval 코드나 하위 작업이 한 편집은 세션이 그 결과의 스크린샷을 볼 때 셉니다.
 - board: 어떤 도구의 인자가 `inbox submit` 이나 `inbox revise` 를 실행하면 켭니다(`/inbox(?:\.mjs)?["']?\s+(?:submit|revise)\b/`).
 - skip: 구간 안의 어떤 입력 텍스트에든 `Review 생략` 이나 `보드 생략` 이 있으면 켭니다.
 - 발동: 턴 끝이 final로 에피소드를 닫으려 하고, 닫는 이유가 "사용자 중단"도 "goal 막힘"도 아니며, visual 은 켜져 있고 board, skip, reminded 는 꺼져 있으면 final을 올리지 않습니다. 대신 세션은 턴을 시작하는 후속 메시지 `[omo-inbox] 화면이 바뀐 작업인데 보고 Review가 없습니다. 바뀐 화면을 보고 Review로 올리세요(visual-board 스킬). 화면이 바뀌지 않았거나 사용자가 Review에서 이미 본 화면이면 그 이유를 한 줄로 적고 끝내세요.` (`details: { reviewReminder: true }`)를 한 번 받고, reminded 를 켜며, 그 턴 끝은 깨어날 턴으로 칩니다. 에피소드는 열린 채로 남고 다음 에이전트 시작이 system 시작으로 이어 갑니다. 그다음 턴 끝은 보드가 있든 없든 평소처럼 에피소드를 닫습니다.
