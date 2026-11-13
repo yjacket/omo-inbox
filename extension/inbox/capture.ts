@@ -8,6 +8,7 @@
  * fire-and-forget: a failed post stays in an in-memory queue (max 200, the
  * oldest is dropped) and is retried on the next flush().
  */
+import path from "node:path";
 import {
 	adoptReopen,
 	applyServerState,
@@ -61,6 +62,14 @@ export type CaptureDeps = {
 	deskBoards?: () => any[] | Promise<any[]>,
 	/** Sends the report reminder as a follow-up that starts a turn; without it the reminder never fires. */
 	remind?: (text: string) => void,
+	/**
+	 * Turn-end evidence for the report reminder: the last visual change (git, epoch ms or null) and the session's newest
+	 * board and reply times (server, epoch ms or null; null overall when unknown). Without it the reminder never fires.
+	 */
+	reviewChecks?: {
+		lastVisualChange: (dirs: string[], sinceMs: number) => Promise<number | null>,
+		boardActivity: (session: string, sinceMs: number) => Promise<{ board: number | null, reply: number | null } | null>,
+	},
 };
 
 type QuestionRecord = { itemId: string | null, pendingClose: { reason: string, resolvedBy: string | null } | null };
@@ -112,6 +121,8 @@ export function createCapture(deps: CaptureDeps) {
 	/** The episode reducer. Its signal state (wake counts, holds, scheduled) is level state and outlives every session reset. */
 	let ep: EpisodeState = createEpisodeState("");
 	let reminder = createReminderWindow();
+	/** The final a report reminder held back; the episode's next final starts with it. */
+	let heldFinal = "";
 	let lastLine: LineRecord | null = null;
 	let lastLineText = "";
 	let openerKey = "";
@@ -584,19 +595,53 @@ export function createCapture(deps: CaptureDeps) {
 			await reportWaiting(decision.reasons);
 			return;
 		}
-		closeNow(target, decision, turnText, goal);
+		const remind = await reviewDue(target, decision);
+		if (!current()) return;
+		closeNow(target, decision, turnText, goal, remind);
 	}
 
-	function closeNow(target: any, decision: Verdict, turnText: string, goal: any): void {
+	/**
+	 * The report reminder check at a closing turn end: a visual file changed in the window (git), and the session neither
+	 * submitted or revised a board in the window nor replied to one after the last change (server).
+	 */
+	async function reviewDue(target: any, decision: Verdict): Promise<boolean> {
+		const checks = deps.reviewChecks;
+		if (decision.closeReason === null || decision.closeReason === "aborted" || decision.closeReason === "blocked") return false;
+		if (deps.remind === undefined || checks === undefined) return false;
+		const pending = reminder.check();
+		const sid = sessionIdOrNull(target);
+		if (pending === null || sid === null) return false;
+		const cwd = typeof target?.cwd === "string" && target.cwd.length > 0 ? target.cwd : null;
+		const dirs = pending.files.map((file) => path.dirname(cwd === null ? file : path.resolve(cwd, file)));
+		if (cwd !== null) dirs.unshift(cwd);
+		try {
+			const changedAt = await checks.lastVisualChange(dirs, pending.since);
+			if (changedAt === null) {
+				log("capture: review check visual=no board=-");
+				return false;
+			}
+			const activity = await checks.boardActivity(sid, pending.since);
+			const reported = activity === null ? null : activity.board !== null || (activity.reply !== null && activity.reply >= changedAt);
+			log(`capture: review check visual=yes board=${reported === null ? "unknown" : reported ? "yes" : "no"}`);
+			return reported === false;
+		} catch (error) {
+			log(`capture: review check failed: ${text(error)}`);
+			return false;
+		}
+	}
+
+	function closeNow(target: any, decision: Verdict, turnText: string, goal: any, remind: boolean): void {
 		if (decision.closeReason === null) return;
-		if (decision.closeReason !== "aborted" && decision.closeReason !== "blocked" && deps.remind !== undefined && reminder.take()) {
+		if (remind) {
 			// The reminded turn end counts as waking: the episode stays open and the next turn end closes it.
+			reminder.markReminded();
+			heldFinal = turnText;
 			log("capture: review reminder");
 			if (decision.closeReason === "done" && pendingClose === null) {
 				pendingClose = "done";
 				if (goal?.status === "complete") pendingGoal = goal;
 			}
-			deps.remind(REVIEW_REMINDER_TEXT);
+			deps.remind?.(REVIEW_REMINDER_TEXT);
 			return;
 		}
 		const request = openerRequestFor(target);
@@ -605,7 +650,8 @@ export function createCapture(deps: CaptureDeps) {
 		if (closed === null) return;
 		closedRunId = runId;
 		cancelFlip();
-		const raw: Record<string, unknown> = { final: turnText, request, lastRequest };
+		const final = heldFinal.length > 0 && heldFinal !== turnText ? `${heldFinal}\n\n${turnText}` : turnText;
+		const raw: Record<string, unknown> = { final, request, lastRequest };
 		if (decision.kind === "blocked") {
 			const source = goal?.status === "blocked" ? goal : pendingGoal;
 			if (source !== null && source !== undefined) raw.goal = { reason: source.blockedReason ?? null, objective: source.objective ?? null };
@@ -623,7 +669,9 @@ export function createCapture(deps: CaptureDeps) {
 		openerRequest = "";
 		pendingClose = null;
 		pendingGoal = null;
+		heldFinal = "";
 		postItem(target, itemInput(decision.kind, decision.policy, closed.dedupeKey, raw, meta));
+		reminder.reset(now());
 	}
 
 	/** A signal turned waking off (or a restore's grace is running out): while idle with an open episode, close it unless something wakes first. */
@@ -700,6 +748,7 @@ export function createCapture(deps: CaptureDeps) {
 		// Wake counts and holds are the runtime's level state, published once (possibly before this ctx exists): keep them.
 		freshEpisodeState("");
 		reminder = createReminderWindow();
+		heldFinal = "";
 		openQuestions.clear();
 		openDialogs.clear();
 		questionItems.clear();
@@ -713,6 +762,7 @@ export function createCapture(deps: CaptureDeps) {
 			if (!live(nextCtx)) return;
 			ctx = nextCtx;
 			sessionStartMs = now();
+			reminder.reset(sessionStartMs);
 			syncEpisodeSession(nextCtx);
 			ensureMeta(nextCtx);
 		},
@@ -925,7 +975,7 @@ export function createCapture(deps: CaptureDeps) {
 			if (!live(target)) return;
 			const text = typeof event?.text === "string" ? event.text : "";
 			// Extension inputs (job wakes, other extensions) continue the owner's request; only terminal input starts a window.
-			if (event?.source === "interactive") reminder.reset();
+			if (event?.source === "interactive") reminder.reset(now());
 			reminder.onInput(text);
 			if (event?.source !== "interactive") return;
 			const kickoff = /^(?:\/skill:ulw-execute|\/ulw-execute|\$ulw-execute)\s+([a-z0-9][a-z0-9-]{0,79})(?![a-z0-9-])/.exec(text);
@@ -948,7 +998,6 @@ export function createCapture(deps: CaptureDeps) {
 		onToolExecutionEnd(event: any, nextCtx: any): void {
 			const target = nextCtx ?? ctx;
 			if (!live(target)) return;
-			reminder.onToolEnd(event);
 			if (event?.toolName !== "update_goal") return;
 			void applyGoalToolEvent(target, event);
 		},
@@ -973,7 +1022,7 @@ export function createCapture(deps: CaptureDeps) {
 
 		/** An owner message was sent (phone, board feedback): the next agent start is the owner's. */
 		markOwner(cause: string): void {
-			reminder.reset();
+			reminder.reset(now());
 			if (ctx !== null) syncEpisodeSession(ctx);
 			markEpisodeOwner(ep, cause, now());
 		},

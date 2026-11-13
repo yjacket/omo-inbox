@@ -1540,6 +1540,13 @@ export function createServer({
 				if (!guard(res, access, "session")) return;
 				return handleHere(res, query);
 			}
+			if (parts[2] === "reported" && parts.length === 3) {
+				if (!guard(res, access, "session")) return;
+				const session = query.get("session");
+				const since = query.get("since");
+				if (!session || !since || !Number.isFinite(Number(since))) return sendJson(res, 400, { error: "bad_input" });
+				return sendJson(res, 200, store.activitySince(session, Number(since)));
+			}
 			if (parts[2] === "p" && parts.length === 4) {
 				if (!guard(res, access, "read")) return;
 				const id = decodeOnce(parts[3]);

@@ -31,6 +31,7 @@ import { createCapture } from "./capture.ts";
 import { createDelivery } from "./delivery.ts";
 import { createSummaryQueue, createSummarizer, DEFAULT_MODELS } from "./summarize.ts";
 import { CHILD_ENV, DEFAULT_PORT, resolveAgentDir, resolveHome, resolvePort, safeSegment } from "./util.ts";
+import { lastVisualChange } from "./visual.ts";
 
 const INBOX_MS = 3000;
 const STATUS_MS = 30000;
@@ -269,6 +270,23 @@ export function createInbox(pi, deps = {}) {
 		}
 	}
 
+	/** Report reminder: the session's newest board (submit, revise) and reply times at or after `sinceMs`, as epoch ms or null; null when the server can't say. */
+	async function boardActivity(session, sinceMs) {
+		try {
+			const url = `${await baseUrl()}/api/reported?session=${encodeURIComponent(session)}&since=${Math.floor(sinceMs)}`;
+			const response = await doFetch(url, { headers: { accept: "application/json" }, signal: abortAfter(FETCH_TIMEOUT_MS) });
+			if (!response?.ok) return null;
+			const body = await response.json();
+			const time = (value) => (value === null ? null : typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : undefined);
+			const board = time(body?.board);
+			const reply = time(body?.reply);
+			return board === undefined || reply === undefined ? null : { board, reply };
+		} catch (error) {
+			await log(`review check: ${String((error && error.message) || error)}`);
+			return null;
+		}
+	}
+
 	/** "더 쉽게": rewrite the server-validated summary (already redacted); raw session text is never resent. */
 	function simplerRequest(item) {
 		const summary = item?.summary?.summary ?? item?.summary ?? null;
@@ -328,6 +346,7 @@ export function createInbox(pi, deps = {}) {
 			{ customType: "omo-inbox", content, display: true, details: { reviewReminder: true } },
 			{ deliverAs: "followUp", triggerTurn: true },
 		),
+		reviewChecks: deps.reviewChecks ?? { lastVisualChange: (dirs, sinceMs) => lastVisualChange(dirs, sinceMs), boardActivity },
 	});
 	const actions = createActions({ post: postJson, sessionId: () => sessionId, log });
 	const bridge = createBridge({ log: (text) => void log(text), now, env });
