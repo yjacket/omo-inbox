@@ -578,6 +578,26 @@ export function createStore({ dataDir, inboxDir, now = () => new Date(), rand } 
 		return items.sort((a, b) => a.since < b.since ? -1 : a.since > b.since ? 1 : 0);
 	}
 
+	/**
+	 * The newest board activity of `session` at or after `sinceMs`: `board` is a submit or revise, `reply` a reply
+	 * (ISO times, null when none). An event without a session counts for the board's owner.
+	 */
+	function activitySince(session, sinceMs) {
+		const newest = { board: null, reply: null };
+		if (typeof session !== "string" || !session || !Number.isFinite(sinceMs)) return newest;
+		for (const entry of entries.values()) {
+			const owner = ownerOf(entry);
+			for (const event of entry.events) {
+				const kind = event.type === "submitted" || event.type === "revised" ? "board" : event.type === "reply" ? "reply" : null;
+				if (kind === null || ((event.session && event.session.id) || owner) !== session) continue;
+				const at = Date.parse(event.at);
+				if (!(at >= sinceMs)) continue;
+				if (newest[kind] === null || at > Date.parse(newest[kind])) newest[kind] = event.at;
+			}
+		}
+		return newest;
+	}
+
 	return {
 		create,
 		revise,
@@ -591,5 +611,6 @@ export function createStore({ dataDir, inboxDir, now = () => new Date(), rand } 
 		facets,
 		forWorktree,
 		waitingFor,
+		activitySince,
 	};
 }

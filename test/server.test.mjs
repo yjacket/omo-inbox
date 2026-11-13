@@ -1058,3 +1058,23 @@ test("a failing pusher is logged and never changes the HTTP response", async (t)
 	const text = await waitForText(path.join(ctx.home, "logs", "server.log"), /push notify failed: Error: push exploded/);
 	assert.match(text, /push exploded/);
 });
+
+test("reported answers a session's newest board and reply times at or after since", async (t) => {
+	let clock = Date.parse("2026-01-01T00:00:00Z");
+	const ctx = await withServer(t, { now: () => new Date(clock) });
+	const { body: sub } = await submit(ctx, { srcDir: makeBoard(ctx.home, "reported"), session: "sR", title: "보고" });
+	clock += 60_000;
+	const reply = await postJson(ctx.base, `/api/p/${sub.summary.id}/reply`, { text: "확인", session: { id: "sR", file: null } });
+	assert.equal(reply.status, 200);
+	const reported = async (query) => {
+		const res = await fetch(`${ctx.base}/api/reported?${query}`);
+		return { status: res.status, body: await res.json() };
+	};
+
+	assert.deepEqual(await reported(`session=sR&since=${Date.parse("2026-01-01T00:00:00Z")}`), { status: 200, body: { board: "2026-01-01T00:00:00.000Z", reply: "2026-01-01T00:01:00.000Z" } });
+	assert.deepEqual(await reported(`session=sR&since=${Date.parse("2026-01-01T00:00:00Z") + 1}`), { status: 200, body: { board: null, reply: "2026-01-01T00:01:00.000Z" } });
+	assert.deepEqual(await reported(`session=sR&since=${Date.parse("2026-01-01T00:01:00Z") + 1}`), { status: 200, body: { board: null, reply: null } });
+	assert.deepEqual(await reported("session=other&since=0"), { status: 200, body: { board: null, reply: null } });
+	assert.equal((await reported("session=sR")).status, 400);
+	assert.equal((await reported("since=0")).status, 400);
+});

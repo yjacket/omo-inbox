@@ -334,6 +334,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 | POST | `/api/reports/<id>/retry` | feedback | failed -> queued, 200 `{ok: true, state: "pending"}`; 409 `not_failed`; 404 `not_found` |
 | POST | `/api/reports/<id>/handoff` | reopen | `{ok: true, via, session}`; 409 `not_sent` 또는 `cwd_missing`; 503 `no_launcher`; 502 `launch_failed`; 404 `not_found` |
 | GET | `/api/here?cwd=&session=[&start=1][&idle=0\|1]` | session | `{ product, feature, mine, theirs, pending, waiting, notice, noticeKeys, footer }` |
+| GET | `/api/reported?session=&since=<epoch ms>` | session | `{ board, reply }`: 그 세션이 `since` 이후에 한 가장 최근의 submit 또는 revise 시각과 reply 시각(ISO), 없으면 각각 `null`; `session` 이나 `since` 가 없으면 400 |
 | POST | `/api/bye` | session | `{session, closed?}` -> `{ ok }`; `closed: true` 면 그 대화의 열린 항목을 `session-closed` 로 닫음 |
 | POST | `/api/shutdown` | session | `{ ok }`, 이후 종료 |
 | POST | `/api/threads/<sid>/items` | session | `{kind, policy, dedupeKey, raw, meta}` -> `{item, created, summaryRequest\|null, summaryConfig}` |
@@ -452,12 +453,12 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 
 요청한 일이 화면을 바꿨는데 보드를 올리지 않았으면, final이 폰으로 가기 전에 세션이 알림을 한 번 받습니다. 루트 대화형 세션에서만, 보드 깨우기와 같은 조건으로 동작합니다(하위 세션, task member 세션, `/reload` 뒤 stale 세대, setup 전용 모드에서는 아무것도 하지 않음).
 
-- 구간: 사용자 요청(터미널 입력, 폰 전달, 보드 피드백)마다 새 구간이 시작되고 다음 요청까지 이어집니다. 확장이 넣은 입력(작업 깨우기, 다른 확장)은 구간을 이어 갑니다. 구간마다 visual, board, skip, reminded 가 모두 false 로 시작합니다.
-- visual: 구간 안의 도구 실행이 다음 중 하나를 보이면 켭니다. 경로가 `.html .htm .css .scss .sass .less .vue .svelte .jsx .tsx` 로 끝나거나 `templates` 디렉터리 구간을 포함하는 edit 또는 write 도구, 이미지 콘텐츠 블록이 있는 도구 결과, `/screenshot|스크린샷/i` 와 맞는 도구 인자나 결과 텍스트(이벤트마다 64 KiB까지 검사). eval 코드 안에서 한 편집은 마지막 검사로만 셉니다.
-- board: 어떤 도구의 인자가 `inbox submit` 이나 `inbox revise` 를 실행하면 켭니다(`/inbox(?:\.mjs)?["']?\s+(?:submit|revise)\b/`).
+- 구간: 세션 시작, 사용자 요청(터미널 입력, 폰 전달, 보드 피드백), final을 올린 직후에 새 구간이 시작되고 다음 시작까지 이어집니다. 확장이 넣은 입력(작업 깨우기, 모니터 이벤트, 다른 확장)은 구간을 이어 갑니다. 구간마다 시작 시각을 기억하고 skip, reminded 는 false 로 시작합니다.
+- visual: 턴 끝에 git으로 판정하며, 세션이 무엇을 봤는지는 보지 않습니다. 화면 파일은 경로가 `.html .htm .css .scss .sass .less .vue .svelte .jsx .tsx` 로 끝나거나 `templates`, `static`, `public`, `web` 디렉터리 아래에 있는 파일입니다. 확인하는 작업트리는 세션 cwd가 속한 저장소와, 구간 안에서 edit 또는 write 도구가 건드린 화면 파일이 속한 저장소의 모든 작업트리입니다. 그중 하나에 커밋하지 않은 화면 파일(`git status`, 추적 안 된 파일 포함)이 구간 시작 이후에 수정됐거나, 구간 시작 이후 날짜(committer date, 머지 제외)의 커밋이 화면 파일을 건드렸으면 true 입니다. 그런 수정 시각과 커밋 시각 중 가장 늦은 것이 변경 시각입니다. 도구 결과의 이미지(스크린샷, 컴퓨터 유즈, 이미지 파일 읽기)와 "스크린샷" 같은 말은 세지 않고, git 밖의 폴더도 세지 않습니다.
+- board: 턴 끝에 서버(`GET /api/reported`)로 판정합니다. 구간 시작 이후 이 세션이 보드를 submit, revise 했거나, 변경 시각 이후에 보드에 reply 했으면 true 입니다. 마지막 변경 전에 보낸 reply(피드백을 받았다는 답 등)는 보고로 치지 않습니다. 세션 없이 기록된 이벤트는 보드 소유 세션의 것으로 칩니다. 명령을 어떤 모양으로 실행했는지는 상관없습니다. 서버가 답하지 못하면 알림을 보내지 않습니다.
 - skip: 구간 안의 어떤 입력 텍스트에든 `Review 생략` 이나 `보드 생략` 이 있으면 켭니다.
-- 발동: 턴 끝이 final로 에피소드를 닫으려 하고, 닫는 이유가 "사용자 중단"도 "goal 막힘"도 아니며, visual 은 켜져 있고 board, skip, reminded 는 꺼져 있으면 final을 올리지 않습니다. 대신 세션은 턴을 시작하는 후속 메시지 `[omo-inbox] 화면이 바뀐 작업인데 보고 Review가 없습니다. 바뀐 화면을 보고 Review로 올리세요(visual-board 스킬). 화면이 바뀌지 않았거나 사용자가 Review에서 이미 본 화면이면 그 이유를 한 줄로 적고 끝내세요.` (`details: { reviewReminder: true }`)를 한 번 받고, reminded 를 켜며, 그 턴 끝은 깨어날 턴으로 칩니다. 에피소드는 열린 채로 남고 다음 에이전트 시작이 system 시작으로 이어 갑니다. 그다음 턴 끝은 보드가 있든 없든 평소처럼 에피소드를 닫습니다.
-- 로그: 알림을 보내면 `extension.log` 에 `capture: review reminder` 를 적습니다.
+- 발동: 턴 끝이 final로 에피소드를 닫으려 하고, 닫는 이유가 "사용자 중단"도 "goal 막힘"도 아니며, skip 과 reminded 가 꺼져 있고 visual 은 true, board 는 false 면 final을 올리지 않습니다. 대신 세션은 턴을 시작하는 후속 메시지 `[omo-inbox] 화면이 바뀐 작업인데 보고 Review가 없습니다. 바뀐 화면을 보고 Review로 올리세요(visual-board 스킬). 화면이 바뀌지 않았거나 사용자가 Review에서 이미 본 화면이면 그 이유를 한 줄로 적고 끝내세요.` (`details: { reviewReminder: true }`)를 한 번 받고, reminded 를 켜며, 그 턴 끝은 깨어날 턴으로 칩니다. 에피소드는 열린 채로 남고 다음 에이전트 시작이 system 시작으로 이어 갑니다. 다음 턴 끝은 보드가 있든 없든 평소처럼 에피소드를 닫습니다. 그 final은 붙잡아 둔 final, 빈 줄, 새 턴의 글 순서라서 알림에 대한 답이 보고를 덮어쓰지 않습니다.
+- 로그: 판정할 때마다 `extension.log` 에 `capture: review check visual=<yes|no> board=<yes|no|unknown|->` 를 적고(visual 이 no 라 서버에 묻지 않았으면 `-`), 알림을 보내면 `capture: review reminder` 를 적습니다.
 
 ## 다음 행동
 서버는 나를 기다리는 마지막 메시지(`turn`, `done`, `blocked`, 멈춤 마지막 메시지 포함)마다 판정을 계산합니다. 메시지가 올 때, 모델 요약이 올 때, 제공자 목록이 바뀔 때, 그리고 저장된 판정이 30초보다 오래된 대화를 열 때 다시 계산합니다. 서버 시작 때는 이 업데이트 전에 저장된 마지막 메시지도 채웁니다. 진행 항목은 판정이 없습니다.

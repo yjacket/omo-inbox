@@ -670,3 +670,25 @@ test("waitingFor returns owned decisions with pending feedback and event timesta
 		cleanup();
 	}
 });
+
+test("activitySince finds a session's newest board (submit, revise) and reply at or after since", () => {
+	const { home, cleanup, store } = setup();
+	try {
+		const id = store.create({ identity: ident(home, "s1"), title: "보고", srcDir: makeBoardDir(home, { questions: QUESTIONS }), files: filesFor() }).summary.id;
+		store.reply(id, { text: "세션 없이" });
+		store.feedback(id, { rev: 1, verdict: "change", comment: "x", answers: {}, marks: [] });
+		store.revise(id, { srcDir: makeBoardDir(home, { questions: QUESTIONS }), files: filesFor(), note: "v2", session: { id: "s2", file: null } });
+		store.close(id, { session: { id: "s1", file: null } });
+		const at = (type) => store.get(id).events.find((event) => event.type === type).at;
+
+		const none = { board: null, reply: null };
+		assert.deepEqual(store.activitySince("s1", Date.parse(at("submitted"))), { board: at("submitted"), reply: at("reply") }, "an event without a session counts for the owner");
+		assert.deepEqual(store.activitySince("s1", Date.parse(at("submitted")) + 1), { board: null, reply: at("reply") });
+		assert.deepEqual(store.activitySince("s1", Date.parse(at("reply")) + 1), none, "feedback and close are not activity");
+		assert.deepEqual(store.activitySince("s2", 0), { board: at("revised"), reply: null });
+		assert.deepEqual(store.activitySince("s3", 0), none);
+		assert.deepEqual(store.activitySince("", 0), none);
+	} finally {
+		cleanup();
+	}
+});
