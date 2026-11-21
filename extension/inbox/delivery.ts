@@ -34,7 +34,7 @@ export const SENDER = { kind: "external", platform: "omo-inbox" };
 /** Every answer that missed its live question starts with this marker. */
 export const LATE_MARKER = "[omo-inbox] 폰에서 늦게 온 답";
 /** admitExternalMessage verdicts that mean the delivery is applied or queued. */
-const ADMITTED = new Set(["started", "queued", "steered", "already_admitted"]);
+const ADMITTED = new Set(["started", "queued", "steered", "already_admitted", "held"]);
 /** Verdicts that leave nothing enqueued: the file is retried on the next tick. */
 const RETRY_KINDS = new Set(["held_draft", "turn_conflict"]);
 
@@ -457,6 +457,8 @@ export function createDelivery(deps = {}) {
 				await (deliveryId ? ledgerDrop(deliveryId) : Promise.resolve(delivered.delete(fallbackKey)));
 				return "kept";
 			}
+			// The verdict's hold kinds omit keys, so only the pause state can identify interrupted-run.
+			if (sent.kind === "held") held ??= "stop";
 		}
 		if (deliveryId) await ledgerRemember(deliveryId, verdict.ack.how);
 		try {

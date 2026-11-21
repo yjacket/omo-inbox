@@ -283,7 +283,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 - `thread.json` 키 `executes`(문자열 또는 null, 기본 null): 이 세션이 직접 실행하는 계획 slug로, 첫 입력 원문에서 읽습니다. `next` 이벤트 `{itemId, next}` 는 마지막 메시지의 판정을, `actions` 이벤트 `{producer, actions}` 는 제공자의 목록을, `handoff` 이벤트 `{itemId, to, via, status, slug}` 는 새 세션 띄우기를 저장합니다(`via` 는 `orca`, `wt`, `sink`, `status` 는 `launching`, `connected`).
 - 닫힘 이유에 `session-closed`(`세션 닫힘`) 외에 `closed-by-owner`(`닫음`)와 `handed-off`(`새 세션으로 넘어감`)가 있습니다.
 - 대화 상태. 세션이 90초 안에 `/api/here` 를 불렀거나 90초 안에 그냥 bye(`/reload`)를 보냈으면 살아 있습니다. 열린 needs-you 항목이 있고 세션이 살아 있거나, 세션이 꺼졌는데 열린 항목이 아직 묻고 있으면(하는 일 참고) `needs-you`, 아니면 살아 있을 때 `working`, 아니면 `ended`. 목록 줄과 대화 보기에는 `live`, `off`(살아 있지 않은데 needs-you, `_notices` 는 늘 false), `hidden` 이 붙습니다.
-- `delivered.how` 는 `bridge`, `message`, `late-message`, `dropped`(터미널이 먼저 답함), `refused`, `control`(세션 제어 파일 적용). `ctx.getPauseState()` 가 보류를 알리는 동안 넣은 메시지는 detail `held:stop`(Stop 또는 물려받은 보류) 또는 `held:interrupted`(`interrupted-run` 보류)로 확인합니다.
+- `delivered.how` 는 `bridge`, `message`, `late-message`, `dropped`(터미널이 먼저 답함), `refused`, `control`(세션 제어 파일 적용). 엔진이 `held` 를 반환하면 이미 접수된 메시지이므로 다시 보내지 않고 확인합니다. `ctx.getPauseState()` 가 Stop이나 물려받은 보류 없이 `interrupted-run` 보류만 알리면 detail은 `held:interrupted`, 그 외에는 `held:stop` 입니다. `ctx.getPauseState()` 로만 보류를 알리는 이전 엔진에도 같은 detail을 씁니다.
 - 우편함 파일은 `{v:1, type, ...}`: `item-answer`(itemId, kind, deliveryId, payload, text), `explain`(itemId), `board-feedback`(desk의 형식. `type` 없는 파일은 보드 의견).
 
 기획안:

@@ -88,7 +88,7 @@ function setup(options = {}) {
 				admitExternalMessage: (request) => {
 					trace.push("admit");
 					calls.push({ what: "admit", request });
-					return { kind: options.admitKind ?? "started" };
+					return options.admitResult ?? { kind: options.admitKind ?? "started" };
 				},
 			},
 		});
@@ -802,6 +802,30 @@ for (const [label, holds, detail] of [
 		// Delivery itself is unchanged: one admit, then the ack.
 		assert.equal(s.calls.filter((call) => call.what === "admit").length, 1);
 		assert.deepEqual(s.posts[0].body, { deliveryId: "d1", how: "message", detail });
+	});
+}
+
+for (const [label, holds, pauseHolds, detail] of [
+	["without pause state", ["inherited_hold"], null, "held:stop"],
+	["with an interrupted-run hold", ["session_hold"], [{ kind: "session_hold", key: "interrupted-run" }], "held:interrupted"],
+]) {
+	test(`a held admission ${label} is acked on the first drain and never retried`, async (t) => {
+		const s = setup({
+			items: { [ITEM]: { itemId: ITEM, kind: "turn", status: "open" } },
+			admitResult: { kind: "held", holds, turn_epoch: 1 },
+			ctx: pauseHolds && { getPauseState: () => ({ pauseSeq: 1, holds: pauseHolds }) },
+		});
+		t.after(s.cleanup);
+		const file = answerFile(s.home, { kind: "turn", payload: { text: "계속해" } });
+
+		assert.equal((await s.delivery.drain()).handled, 1);
+		assert.deepEqual(s.posts.map((post) => post.body), [{ deliveryId: "d1", how: "message", detail }]);
+		assert.deepEqual(s.ids(), ["d1"]);
+		assert.equal(s.exists(file), false);
+
+		await s.delivery.drain();
+		assert.equal(s.calls.filter((call) => call.what === "admit").length, 1);
+		assert.equal(s.posts.length, 1);
 	});
 }
 
