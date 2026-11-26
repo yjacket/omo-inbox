@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const PATCH_KEYS = ["asset", "issueRequest", "delivery", "github", "handoff"];
+const PATCH_KEYS = ["asset", "issueRequest", "delivery", "github", "handoff", "rewrite"];
 const DELIVERY_DEFAULT = {
 	state: "queued",
 	attempts: 0,
@@ -101,7 +101,7 @@ export function createReportsStore({ dataDir, now = () => new Date(), renameSync
 		return records.sort(byNewest);
 	}
 
-	function create({ id, fingerprint, report, png, imageMeta, legacy = null, createdAt } = {}) {
+	function create({ id, fingerprint, report, png, maskPng = null, imageMeta, legacy = null, createdAt } = {}) {
 		if (!dirOf(id)) throw fail("bad_input", "id");
 		const at = validIso(createdAt) ?? now().toISOString();
 		const finalDir = dirOf(id);
@@ -123,11 +123,13 @@ export function createReportsStore({ dataDir, now = () => new Date(), renameSync
 			github: null,
 			handoff: null,
 			legacy: legacy ?? null,
+			rewrite: null,
 		};
 		const staging = path.join(root, `.staging-${id}-${crypto.randomBytes(6).toString("hex")}`);
 		try {
 			fs.mkdirSync(staging, { recursive: true });
 			if (png != null) fs.writeFileSync(path.join(staging, "image.png"), png);
+			if (maskPng != null) fs.writeFileSync(path.join(staging, "masked.png"), maskPng);
 			writeJson(path.join(staging, "report.json"), record);
 			fs.mkdirSync(root, { recursive: true });
 			// A directory without a readable report.json is ignored on read, so it
@@ -182,15 +184,18 @@ export function createReportsStore({ dataDir, now = () => new Date(), renameSync
 		};
 	}
 
-	function image(id) {
+	function file(id, name) {
 		const dir = dirOf(id);
 		if (!dir) return null;
 		try {
-			return fs.readFileSync(path.join(dir, "image.png"));
+			return fs.readFileSync(path.join(dir, name));
 		} catch {
 			return null;
 		}
 	}
+
+	const image = (id) => file(id, "image.png");
+	const maskedImage = (id) => file(id, "masked.png");
 
 	function unfinished() {
 		return allRecords()
@@ -212,5 +217,5 @@ export function createReportsStore({ dataDir, now = () => new Date(), renameSync
 		return result;
 	}
 
-	return { create, get, list, update, image, unfinished, counts };
+	return { create, get, list, update, image, maskedImage, unfinished, counts };
 }

@@ -456,11 +456,11 @@
 				return h(
 					"a",
 					{ class: "row", href: "/p/" + encodeURIComponent(item.id), "data-id": item.id },
-					h("div", { class: "row-head" }, h("span", { class: "title" }, item.title), ...chips),
+					h("div", { class: "row-head" }, h("span", { class: "title", "data-user-content": true }, item.title), ...chips),
 					h("span", { class: "rev" }, report ? `갱신 ${item.rev}` : `${item.rev}안`),
-					h("div", { class: "meta" }, `${item.product.name || item.product.key} · ${item.feature.branch}`),
+					h("div", { class: "meta", "data-user-content": true }, `${item.product.name || item.product.key} · ${item.feature.branch}`),
 					h("div", { class: "act", "data-type": item.lastType || "", "data-updated": item.updated }, activityText(item.lastType, item.updated)),
-					item.status === "closed" && item.outcome ? h("div", { class: "outcome" }, item.outcome) : null,
+					item.status === "closed" && item.outcome ? h("div", { class: "outcome", "data-user-content": true }, item.outcome) : null,
 				);
 			}
 
@@ -492,8 +492,8 @@
 				const head = h(
 					"div",
 					{ class: "group-head" },
-					h("h2", null, facet.branch),
-					facet.worktree ? h("span", { class: "path", title: facet.worktree }, facet.worktree) : null,
+					h("h2", { "data-user-content": true }, facet.branch),
+					facet.worktree ? h("span", { class: "path", title: facet.worktree, "data-user-content": true }, facet.worktree) : null,
 					h("span", { class: "sum" }, range ? `${group.items.length}건 · ${range}` : `${group.items.length}건`),
 				);
 				return h("section", { class: "group" }, head, rowsOf(group.items));

@@ -33,6 +33,7 @@ const TEXT = Object.freeze({
 	more: "더 보기",
 	pending: "GitHub로 보내는 중",
 	failed: "보내지 못했습니다",
+	held: "보류",
 	open: "열림",
 	closed: "닫힘",
 	comments: "댓글",
@@ -122,13 +123,17 @@ function sentText(github) {
 	return text;
 }
 
-function failedText(detail) {
-	return typeof detail === "string" && detail !== "" ? `${TEXT.failed} · ${detail}` : TEXT.failed;
+// A failed report stopped on a GitHub error; a held one was not posted to a public repo (leak, no model).
+function failedText(detail, state = "failed") {
+	const head = state === "held" ? TEXT.held : TEXT.failed;
+	return typeof detail === "string" && detail !== "" ? `${head} · ${detail}` : head;
 }
+
+const stopped = (row) => row.state === "failed" || row.state === "held";
 
 function stateText(row) {
 	if (row.state === "sent") return row.github ? sentText(row.github) : "";
-	if (row.state === "failed") return failedText(row.detail);
+	if (stopped(row)) return failedText(row.detail, row.state);
 	return TEXT.pending;
 }
 
@@ -187,6 +192,7 @@ function startList() {
 
 		const main = el("div", "main");
 		const title = el("p", "title");
+		title.setAttribute("data-user-content", "");
 		if (row.state === "sent" && row.github && typeof row.github.url === "string") {
 			const link = el("a", null, row.title);
 			link.href = row.github.url;
@@ -201,7 +207,7 @@ function startList() {
 			main.append(el("p", "handed", `${TEXT.handedOff} · ${relativeTime(row.handoff.at, nowMs)}`));
 		}
 		const actions = el("div", "row-actions");
-		if (row.state === "failed") {
+		if (stopped(row)) {
 			const button = ctlButton(TEXT.retry);
 			button.dataset.action = "retry";
 			button.addEventListener("click", () => retry(row.id, button));
@@ -602,8 +608,8 @@ function startComposer() {
 			actions.append(open, hand);
 			return;
 		}
-		if (row.state === "failed") {
-			setStatus(failedText(row.detail), true);
+		if (stopped(row)) {
+			setStatus(failedText(row.detail, row.state), true);
 			const button = ctlButton(TEXT.retry);
 			button.classList.add("result");
 			button.dataset.action = "retry";

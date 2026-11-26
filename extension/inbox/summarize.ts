@@ -35,11 +35,14 @@ interface SummaryModel {
 	provider?: unknown;
 	id?: unknown;
 	modelId?: unknown;
+	input?: unknown;
 }
 
 interface SummaryPart {
 	type?: string;
 	text?: string;
+	data?: string;
+	mimeType?: string;
 }
 
 interface SummaryMessage {
@@ -68,6 +71,8 @@ interface SummaryRegistry {
 interface SummarizerDeps {
 	getRegistry?: () => unknown;
 	models?: string[];
+	/** Only models whose `input` lists "image" (report rewrites send a picture). */
+	requireImage?: boolean;
 	timeoutMs?: number;
 	hedgeMs?: number;
 	log?: (text: string) => void;
@@ -171,7 +176,7 @@ function modelRef(model: SummaryModel, fallback: string) {
 }
 
 /** Every preference whose model the registry resolves and has auth for, in preference order. */
-function pickModels(registry: SummaryRegistry, models: string[]) {
+function pickModels(registry: SummaryRegistry, models: string[], requireImage = false) {
 	const picked: { model: SummaryModel; ref: string }[] = [];
 	for (const ref of models) {
 		const text = String(ref ?? "");
@@ -180,6 +185,7 @@ function pickModels(registry: SummaryRegistry, models: string[]) {
 		const model = registry.find(text.slice(0, slash), text.slice(slash + 1));
 		if (!model) continue;
 		if (typeof registry.hasConfiguredAuth === "function" && !registry.hasConfiguredAuth(model)) continue;
+		if (requireImage && !(Array.isArray(model.input) && model.input.includes("image"))) continue;
 		picked.push({ model, ref: text });
 	}
 	return picked;
@@ -193,12 +199,27 @@ export function createSummarizer(deps: SummarizerDeps = {}) {
 	const log = typeof deps.log === "function" ? deps.log : () => {};
 	const timer = deps.timer ?? { setTimeout, clearTimeout };
 	const now = deps.now ?? (() => Date.now());
+	const requireImage = deps.requireImage === true;
 
-	async function run(request: { system?: string; user?: string; maxTokens?: number } = {}, signal?: AbortSignal) {
+	/** Whether any listed model is usable right now; false without a registry or on a lookup error. */
+	async function usable() {
+		try {
+			const registry = (await getRegistry()) as SummaryRegistry | undefined;
+			return Boolean(registry) && pickModels(registry, models, requireImage).length > 0;
+		} catch {
+			return false;
+		}
+	}
+
+	async function run(request: { system?: string; user?: string; maxTokens?: number; image?: { data?: unknown; mimeType?: unknown } | null } = {}, signal?: AbortSignal) {
 		const user = String(request.user ?? "");
+		const content: SummaryPart[] = [{ type: "text", text: user }];
+		if (request.image && typeof request.image.data === "string" && typeof request.image.mimeType === "string") {
+			content.push({ type: "image", data: request.image.data, mimeType: request.image.mimeType });
+		}
 		const context: SummaryContext = {
 			systemPrompt: String(request.system ?? ""),
-			messages: [{ role: "user", content: [{ type: "text", text: user }], timestamp: now() }],
+			messages: [{ role: "user", content, timestamp: now() }],
 		};
 		let registry: SummaryRegistry | undefined;
 		try {
@@ -213,7 +234,7 @@ export function createSummarizer(deps: SummarizerDeps = {}) {
 		}
 		let candidates: { model: SummaryModel; ref: string }[];
 		try {
-			candidates = pickModels(registry, models);
+			candidates = pickModels(registry, models, requireImage);
 		} catch (error) {
 			log(`summarize: model lookup failed: ${String(error?.message ?? error)}`);
 			return null;
@@ -310,5 +331,5 @@ export function createSummarizer(deps: SummarizerDeps = {}) {
 		});
 	}
 
-	return { run };
+	return { run, usable };
 }

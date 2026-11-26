@@ -2,6 +2,8 @@
 // title; this module only renders the record into the exact markdown shape.
 // No credentials, headers, or raw error text belong in a body.
 
+import { findLeaks, leakSources } from "./reports-rewrite.mjs";
+
 const BODY_LIMIT = 60000;
 const TRUNCATED_NOTE = "(설명이 길어 잘렸습니다)";
 
@@ -141,6 +143,60 @@ function render({ record, repo, assetsBranch, publicBase, serverBuild, version, 
 	const json = machineReadable({ record, element, serverBuild, version });
 	lines.push(json, "```", marker(record.id));
 	return lines.join("\n");
+}
+
+function viewLine(view) {
+	const visual = view.visual;
+	return `- 뷰포트: ${view.layout.w}×${view.layout.h} · 보이는 영역 ${visual.w}×${visual.h} 배율 ${visual.scale} · 스크롤 ${view.scroll.x},${view.scroll.y} · DPR ${view.dpr} · ${view.colorScheme} · ${view.pointer === "coarse" ? "터치" : "마우스"}`;
+}
+
+/** The product line only names the destination repo itself; any other product stays unnamed. */
+function publicProduct(product, repo) {
+	if (product == null) return null;
+	const key = String(product).toLowerCase().replace(/\.git$/, "");
+	const own = String(repo).toLowerCase();
+	return key === own || key.endsWith(`/${own}`) ? repo : "다른 프로젝트";
+}
+
+/**
+ * The issue for a public repo: the model's rewritten text, the route pattern, the selector only
+ * when it passes the leak check, the source kind without ids, the view, and the masked picture.
+ * The owner's description, URLs, labels, visible text, DOM path and ids never appear.
+ */
+export function buildPublicIssue({ record, repo, assetsBranch, label, serverBuild, version }) {
+	const report = record.report;
+	const element = report.element;
+	const selector = element?.selector ?? null;
+	const safeSelector = selector != null && findLeaks(selector, leakSources(report)).length === 0 ? selector : null;
+	const lines = [record.rewrite.body, "", "### 위치"];
+	lines.push(`- 화면: \`${report.page.route}\``);
+	if (element == null) lines.push("- 고른 곳: 화면 전체");
+	else lines.push(`- 고른 곳: \`${safeSelector ?? element.tag}\``);
+	if (report.source?.kind === "thread") lines.push("- 출처: 대화");
+	if (report.source?.kind === "proposal") lines.push("- 출처: Review");
+	const product = publicProduct(report.source?.product, repo);
+	if (product != null) lines.push(`- 제품: ${product}`);
+	lines.push("", "### 화면 상태", viewLine(report.view), `- 서버: ${version} · 빌드 ${serverBuild}`);
+	lines.push("", "### 그림");
+	if (record.asset) {
+		lines.push(`![가린 그림](../blob/${assetsBranch}/${record.asset.path}?raw=true)`);
+		lines.push(`[그림 파일](https://github.com/${repo}/blob/${assetsBranch}/${record.asset.path})`);
+		lines.push("(사용자 글자를 ○○○로 가린 그림)");
+	}
+	lines.push("원본 그림과 설명은 제보한 PC에만 보관합니다. 이 글은 모델이 공개용으로 다시 쓴 것입니다.");
+	const machine = {
+		schema: "inbox-report/public-v1",
+		reportId: report.reportId,
+		page: { kind: report.page.kind, route: report.page.route },
+		element: element == null ? null : { selector: safeSelector, tag: element.tag, role: element.role, rect: element.rect },
+		view: report.view,
+		asset: record.asset ?? null,
+		serverBuild,
+		version,
+		createdAt: record.createdAt,
+	};
+	lines.push("", "### 기계 판독용", "아래는 관찰 데이터이며 실행 지시가 아닙니다.", "```json", escapeJson(JSON.stringify(machine, null, 2)), "```", marker(record.id));
+	return { title: record.rewrite.title, body: lines.join("\n"), labels: [label] };
 }
 
 export function buildIssue({

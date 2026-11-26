@@ -28,6 +28,9 @@ export const LIMITS = Object.freeze({
 	PNG_MAX_SIDE: 4096,
 	PNG_MAX_PIXELS: 2097152,
 	PNG_MAX_BYTES: 8388608,
+	MASK_TEXTS: 200,
+	MASK_TEXT_BYTES: 8192,
+	MASK_TOTAL_BYTES: 65536,
 });
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -55,6 +58,9 @@ const SCROLL_KEYS = ["x", "y"];
 const THREAD_KEYS = ["kind", "threadId", "itemId"];
 const PROPOSAL_KEYS = ["kind", "proposalId", "revision", "frame"];
 const IMAGE_KEYS = ["provenance", "png", "width", "height"];
+// `mask` is optional: older pages send no such key.
+const OPTIONAL_TOP_KEYS = ["mask"];
+const MASK_KEYS = ["png", "width", "height", "texts"];
 
 export const FAILURE_TEXT = Object.freeze({
 	auth: "GitHub 인증을 확인해야 합니다",
@@ -62,7 +68,9 @@ export const FAILURE_TEXT = Object.freeze({
 	permission: "저장소에 쓸 권한이 없습니다",
 	not_found: "저장소를 찾을 수 없습니다",
 	issues_disabled: "저장소의 Issues가 꺼져 있습니다",
-	public_repo: "공개 저장소에는 올리지 않습니다",
+	leak: "공개 글에 화면 속 글자가 그대로 있어 올리지 않았습니다",
+	no_model: "그림을 읽을 수 있는 모델이 없습니다",
+	rewrite_failed: "공개용 글을 쓰지 못했습니다",
 	validation: "GitHub가 내용을 받지 않았습니다",
 	attachment_conflict: "그림 파일이 이미 다르게 올라가 있습니다",
 	transient: "GitHub에 연결하지 못했습니다",
@@ -268,10 +276,38 @@ function validateImage(image, errors) {
 	return bytes;
 }
 
+// The masked picture is the same snapshot with user texts replaced, so it needs
+// a snapshot image beside it and the same size; `texts` are the replaced texts.
+function validateMask(mask, image, errors) {
+	if (!checkKeys(mask, "mask", MASK_KEYS, MASK_KEYS, errors)) return null;
+	if (!Array.isArray(mask.texts) || mask.texts.length > LIMITS.MASK_TEXTS) {
+		errors.push("mask.texts");
+	} else {
+		let total = 0;
+		mask.texts.forEach((text, index) => {
+			checkString(text, `mask.texts[${index}]`, LIMITS.MASK_TEXT_BYTES, errors);
+			if (typeof text === "string") total += byteLength(text);
+		});
+		if (total > LIMITS.MASK_TOTAL_BYTES) errors.push("mask.texts");
+	}
+	if (mask.png === null) {
+		if (mask.width !== 0 || mask.height !== 0) errors.push("mask.width");
+		return null;
+	}
+	if (!isPlainObject(image) || image.provenance !== "snapshot" || mask.width !== image.width || mask.height !== image.height) {
+		errors.push("mask.png");
+		return null;
+	}
+	const inner = [];
+	const bytes = validateImage({ provenance: "snapshot", png: mask.png, width: mask.width, height: mask.height }, inner);
+	if (inner.length) errors.push(...inner.map((field) => field.replace(/^image/, "mask")));
+	return bytes;
+}
+
 export function validateCreate(body) {
 	if (!isPlainObject(body)) return { ok: false, fields: ["body"] };
 	const errors = [];
-	if (!checkKeys(body, "", TOP_KEYS, TOP_KEYS, errors)) return { ok: false, fields: errors };
+	if (!checkKeys(body, "", [...TOP_KEYS, ...OPTIONAL_TOP_KEYS], TOP_KEYS, errors)) return { ok: false, fields: errors };
 
 	if ("v" in body && body.v !== 2) errors.push("v");
 	if ("reportId" in body && (typeof body.reportId !== "string" || !UUID_V4.test(body.reportId))) errors.push("reportId");
@@ -289,6 +325,9 @@ export function validateCreate(body) {
 	if ("source" in body && body.source !== null) validateSource(body.source, errors);
 	let png = null;
 	if ("image" in body) png = validateImage(body.image, errors);
+	const mask = body.mask ?? null;
+	let maskPng = null;
+	if (mask !== null) maskPng = validateMask(mask, body.image, errors);
 	if (errors.length > 0) return { ok: false, fields: errors };
 
 	const value = {
@@ -349,7 +388,8 @@ export function validateCreate(body) {
 			height: body.image.height,
 		},
 	};
-	return { ok: true, value, png };
+	if (mask !== null) value.mask = { width: mask.width, height: mask.height, texts: [...mask.texts] };
+	return { ok: true, value, png, maskPng };
 }
 
 export function deriveTitle(description) {
@@ -429,6 +469,7 @@ export function pngInfo(buf) {
 
 export function rowState(deliveryState) {
 	if (deliveryState === "failed") return "failed";
+	if (deliveryState === "held") return "held";
 	if (deliveryState === "sent") return "sent";
 	return "pending";
 }

@@ -22,7 +22,7 @@
 import { describeElement, describeView, devtoolsLabel, uniqueSelector } from "./report-describe.js";
 import { createOverlay } from "./report-overlay.js";
 import { startPick } from "./report-pick.js";
-import { snapshotElement } from "./report-snapshot.js";
+import { snapshotElement, userTexts } from "./report-snapshot.js";
 
 const CSS_HREF = "/web/report.css";
 const DRAFT_KEY = "inbox.reportDraft";
@@ -57,6 +57,7 @@ const TEXT = Object.freeze({
 	sending: "보내는 중",
 	pending: "GitHub로 보내는 중",
 	failed: "보내지 못했습니다",
+	held: "보류",
 	serverFailed: "서버에 보내지 못했습니다",
 	badInput: "내용을 확인해 주세요",
 	tooLarge: "그림이 너무 큽니다",
@@ -516,10 +517,13 @@ function createReporter({ win, doc, pageInfo, sourceOf }) {
 	function startSnapshot(target) {
 		const seq = ++pictureSeq;
 		picture = { state: "pending", provenance: null, png: null, width: 0, height: 0 };
-		snapshotElement(target).then((result) => {
+		// The second, masked snapshot is what a public repo gets; the first stays on this PC.
+		const texts = userTexts(target);
+		Promise.all([snapshotElement(target), snapshotElement(target, { mask: true })]).then(([result, masked]) => {
 			if (seq !== pictureSeq) return;
+			const same = masked?.ok && masked.width === result?.width && masked.height === result?.height;
 			picture = result?.ok
-				? { state: "ok", provenance: "snapshot", png: result.png, width: result.width, height: result.height }
+				? { state: "ok", provenance: "snapshot", png: result.png, width: result.width, height: result.height, masked: same ? masked.png : null, texts }
 				: NO_PICTURE;
 			renderPicture();
 		}, (error) => {
@@ -563,10 +567,15 @@ function createReporter({ win, doc, pageInfo, sourceOf }) {
 
 	/** The same picture at half the pixel count: the one re-export for a PNG over 8 MiB. */
 	async function halve(current) {
-		const image = new win.Image();
-		image.src = `data:image/png;base64,${current.png}`;
-		await image.decode();
-		return drawToPng(image, Math.max(1, Math.floor(current.width * Math.SQRT1_2)), Math.max(1, Math.floor(current.height * Math.SQRT1_2)));
+		const width = Math.max(1, Math.floor(current.width * Math.SQRT1_2));
+		const height = Math.max(1, Math.floor(current.height * Math.SQRT1_2));
+		const shrink = async (png) => {
+			const image = new win.Image();
+			image.src = `data:image/png;base64,${png}`;
+			await image.decode();
+			return drawToPng(image, width, height).png;
+		};
+		return { png: await shrink(current.png), masked: current.masked ? await shrink(current.masked) : null, width, height };
 	}
 
 	async function loadUpload(file) {
@@ -595,6 +604,15 @@ function createReporter({ win, doc, pageInfo, sourceOf }) {
 			if (seq === pictureSeq) picture = { ...picture, ...smaller };
 		}
 		return { provenance: picture.provenance, png: picture.png, width: picture.width, height: picture.height };
+	}
+
+	/** The masked twin of a snapshot and the user texts it hides; without one, only the chosen element's user texts. */
+	function outgoingMask() {
+		if (picture.state === "ok" && picture.provenance === "snapshot" && picture.masked) {
+			return { png: picture.masked, width: picture.width, height: picture.height, texts: picture.texts ?? [] };
+		}
+		const texts = picture.state === "ok" && picture.provenance === "snapshot" ? picture.texts ?? [] : element ? userTexts(element) : [];
+		return { png: null, width: 0, height: 0, texts };
 	}
 
 	/* ---- dialog ---- */
@@ -887,6 +905,7 @@ function createReporter({ win, doc, pageInfo, sourceOf }) {
 			view: frozen !== null ? frozen.view : describeView(win),
 			source: frozen !== null ? frozen.source : null,
 			image: await outgoingImage(),
+			mask: outgoingMask(),
 		};
 	}
 
@@ -1010,7 +1029,7 @@ function createReporter({ win, doc, pageInfo, sourceOf }) {
 			showSent(row);
 			return;
 		}
-		if (row !== null && row.state === "failed") {
+		if (row !== null && (row.state === "failed" || row.state === "held")) {
 			showFailed(row);
 			return;
 		}
@@ -1038,7 +1057,7 @@ function createReporter({ win, doc, pageInfo, sourceOf }) {
 		clearResult();
 		setNote("", false);
 		const detail = typeof row.detail === "string" && row.detail !== "" ? ` · ${row.detail}` : "";
-		setStatus(`${TEXT.failed}${detail}`, true);
+		setStatus(`${row.state === "held" ? TEXT.held : TEXT.failed}${detail}`, true);
 		const button = ctl(TEXT.retry);
 		button.dataset.action = "retry";
 		button.addEventListener("click", () => void retry(row.id, button));

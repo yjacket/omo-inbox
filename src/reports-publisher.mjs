@@ -1,4 +1,5 @@
 import { deriveTitle, FAILURE_TEXT } from "./reports-contract.mjs";
+import { buildRewriteRequest, findLeaks, leakSources, parseRewrite } from "./reports-rewrite.mjs";
 
 export function createPublisher({
 	store, api, assets, issues, body, config, publicBase, serverBuild, version,
@@ -56,6 +57,24 @@ export function createPublisher({
 		}
 	}
 
+	// A held report waits for the owner's retry; it posts nothing and is never retried by a timer.
+	async function hold(record, kind) {
+		update(record, {
+			state: "held", nextAttemptAt: null,
+			lastError: { kind, detail: FAILURE_TEXT[kind] },
+		});
+		try {
+			await notify({
+				title: "제보를 공개 저장소에 올리지 않았습니다",
+				body: FAILURE_TEXT[kind],
+				url: "/issues", tag: "report:" + record.id,
+			});
+		} catch {
+			// Notification delivery must not change the persisted hold.
+		}
+		return { ok: true, state: "held" };
+	}
+
 	async function backoff(record, state) {
 		const attempts = record.delivery.attempts + 1;
 		if (attempts >= 8) {
@@ -70,7 +89,7 @@ export function createPublisher({
 
 	async function processRecord(id) {
 		let record = store.get(id);
-		if (!record || ["sent", "failed"].includes(record.delivery.state)) return;
+		if (!record || ["sent", "failed", "held"].includes(record.delivery.state)) return;
 		if (record.delivery.nextAttemptAt && Date.parse(record.delivery.nextAttemptAt) > clock()) {
 			schedule(record);
 			return;
@@ -78,8 +97,13 @@ export function createPublisher({
 		let creating = false;
 		try {
 			if (repo === null) repo = await api.repoInfo();
-			if (repo.private !== true) return await fail(record, "public_repo");
 			if (repo.hasIssues === false) return await fail(record, "issues_disabled");
+			// A public repo gets the model's rewrite and the masked picture, never the report as written.
+			const open = repo.private !== true;
+			if (open && record.rewrite == null) {
+				if (record.delivery.state !== "rewriting") update(record, { state: "rewriting", nextAttemptAt: null });
+				return;
+			}
 			if (!labelReady) {
 				await issues.ensureLabel(api, { name: config.label, color: "d93f0b", description: "Inbox 제보" });
 				labelReady = true;
@@ -105,17 +129,24 @@ export function createPublisher({
 				if (record.delivery.creates >= 3) return await fail(record, "transient");
 			}
 			if (stopped) return;
-			if (record.image && !record.asset) {
+			if ((open ? record.report?.mask?.width > 0 : record.image) && !record.asset) {
 				record = update(record, { state: "uploading", nextAttemptAt: null });
 				await assets.ensureAssetsBranch(api, { branch: config.assetsBranch });
 				if (stopped) return;
 				const asset = await assets.putAsset(api, {
 					branch: config.assetsBranch, path: assets.assetPath(record),
-					bytes: store.image(id), message: "Add inbox report " + id,
+					bytes: open ? store.maskedImage(id) : store.image(id), message: "Add inbox report " + id,
 				});
 				record = store.update(id, { asset });
 			}
 			if (stopped) return;
+			if (record.issueRequest === null && open) {
+				record = store.update(id, {
+					issueRequest: body.buildPublicIssue({
+						record, repo: config.repo, assetsBranch: config.assetsBranch, label: config.label, serverBuild, version,
+					}),
+				});
+			}
 			if (record.issueRequest === null) {
 				record = store.update(id, {
 					issueRequest: body.buildIssue({
@@ -185,9 +216,55 @@ export function createPublisher({
 		return running ?? Promise.resolve();
 	}
 
-	function retry(id) {
+	/** Ids of reports waiting for a model rewrite, oldest first. */
+	function rewriteWanted() {
+		return store.unfinished()
+			.filter((record) => record.delivery.state === "rewriting")
+			.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+			.map((record) => record.id);
+	}
+
+	/** The model request for a report waiting for its rewrite, or null. Carries the original picture. */
+	function rewriteRequest(id) {
 		const record = store.get(id);
-		if (!record || record.delivery.state !== "failed") return false;
+		if (!record || record.delivery.state !== "rewriting") return null;
+		const png = record.image ? store.image(id) : null;
+		return buildRewriteRequest(record, png ? png.toString("base64") : null);
+	}
+
+	/**
+	 * The model's answer for a waiting report. An unparsable answer or one that copies a text
+	 * of the picture, a page id, a path, an address or an email holds the report; a clean one
+	 * is stored and the report goes on to GitHub.
+	 */
+	async function rewritten(id, { text, model = null } = {}) {
+		const record = store.get(id);
+		if (!record || record.delivery.state !== "rewriting") return { ok: false, error: "not_waiting" };
+		const parsed = parseRewrite(text);
+		if (parsed === null) return hold(record, "rewrite_failed");
+		const leaks = findLeaks(`${parsed.title}\n${parsed.body}`, leakSources(record.report));
+		if (leaks.length) {
+			log(`report ${id} rewrite leak ${leaks.join(",")}`);
+			return hold(record, "leak");
+		}
+		const stored = store.update(id, { rewrite: { ...parsed, model, at: new Date(clock()).toISOString() } });
+		update(stored, { state: "queued", nextAttemptAt: null, lastError: null });
+		kick(id);
+		return { ok: true, state: "pending" };
+	}
+
+	/** The extension could not rewrite: no image-capable model (`no_model`) or the call failed. */
+	async function rewriteUnavailable(id, kind) {
+		const record = store.get(id);
+		if (!record || record.delivery.state !== "rewriting") return { ok: false, error: "not_waiting" };
+		return hold(record, kind === "no_model" ? "no_model" : "rewrite_failed");
+	}
+
+	function retry(id) {
+		let record = store.get(id);
+		if (!record || !["failed", "held"].includes(record.delivery.state)) return false;
+		// A held report asks the model again rather than reusing a refused answer.
+		if (record.delivery.state === "held") record = store.update(id, { rewrite: null });
 		update(record, {
 			state: "queued", attempts: 0, lastError: null, nextAttemptAt: null, uncertainSince: null,
 		});
@@ -203,5 +280,5 @@ export function createPublisher({
 		queue.length = 0;
 	}
 
-	return { start, kick, retry, stop };
+	return { start, kick, retry, stop, rewriteWanted, rewriteRequest, rewritten, rewriteUnavailable };
 }

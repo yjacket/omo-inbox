@@ -218,6 +218,32 @@ export function createInbox(pi, deps = {}) {
 	}
 
 	/**
+	 * Public-repo report rewrite: `/api/here` names a report waiting for one. Fetch its request
+	 * (the original picture included), run an image-capable model of the summary list and post the
+	 * text, or `unavailable` when no such model exists (`no_model`) or the call gave nothing (`failed`).
+	 */
+	const rewriting = new Set<string>();
+	function runReportRewrite(job) {
+		const id = typeof job?.id === "string" ? job.id : null;
+		if (!id || rewriting.has(id)) return;
+		rewriting.add(id);
+		const route = `/api/reports/${encodeURIComponent(id)}/rewrite`;
+		void (async () => {
+			const rewriter = createSummarizer({ models: summaryModels, requireImage: true, getRegistry: () => ctx?.modelRegistry, log: (text) => void log(text) });
+			if (!(await rewriter.usable())) {
+				await postJson(route, { unavailable: "no_model" });
+				return;
+			}
+			const response = await doFetch(`${await baseUrl()}${route}`, { headers: { accept: "application/json" }, signal: abortAfter(FETCH_TIMEOUT_MS) });
+			if (!response?.ok) return;
+			const out = await rewriter.run(await response.json());
+			await postJson(route, out ? { text: out.text, model: out.model } : { unavailable: "failed" });
+		})()
+			.catch((error) => log(`report rewrite: ${String((error && error.message) || error)}`))
+			.finally(() => rewriting.delete(id));
+	}
+
+	/**
 	 * C8 reload rule (todo 32): after a reload, an open question the builtin reattached to the
 	 * terminal has no live wait in this bridge generation, so the phone must say terminal-only.
 	 */
@@ -626,6 +652,7 @@ export function createInbox(pi, deps = {}) {
 		}
 		await setFooter(typeof body?.footer === "string" ? body.footer : "");
 		await notice(body);
+		runReportRewrite(body?.reportRewrite);
 		publishWaiting();
 	});
 

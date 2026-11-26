@@ -72,7 +72,7 @@ function fakeCtx({ sessionId = SESSION, cwd = "C:/work/proj", hasUI = true, askU
 	return { ctx, statuses };
 }
 
-function setup({ env = {}, sessionId = SESSION, hasUI = true, cwd, piCwd, here, proposal, proposalStatus = 200, fetchThrows = false, fsOverrides = {}, spawn: spawnOverride, askUser, abortAfter } = {}) {
+function setup({ env = {}, sessionId = SESSION, hasUI = true, cwd, piCwd, here, proposal, proposalStatus = 200, fetchThrows = false, fsOverrides = {}, spawn: spawnOverride, askUser, abortAfter, routes = {} } = {}) {
 	const tmp = makeTmpHome();
 	const fp = fakePi();
 	if (piCwd !== undefined) fp.pi.cwd = piCwd;
@@ -94,6 +94,7 @@ function setup({ env = {}, sessionId = SESSION, hasUI = true, cwd, piCwd, here, 
 			const body = typeof state.here === "function" ? state.here(parsed, opts) : state.here;
 			return { ok: true, status: 200, json: async () => await body };
 		}
+		if (routes[parsed.pathname]) return routes[parsed.pathname](parsed, opts);
 		if (parsed.pathname.startsWith("/api/p/")) {
 			const body = typeof state.proposal === "function" ? state.proposal(parsed) : state.proposal;
 			return { ok: proposalStatus >= 200 && proposalStatus < 300, status: proposalStatus, json: async () => body };
@@ -1743,4 +1744,59 @@ test("the status refresh carries the capture watch count after idle", async () =
 	const latest = s.fetchCalls.filter((call) => call.url.includes("/api/here")).at(-1);
 	assert.match(latest.url, /&idle=0&watch=1$/);
 	s.cleanup();
+});
+
+/** A bounded wait for the first POST to the report's rewrite route; resolves with its JSON body. */
+function rewriteRoute(id, request) {
+	let resolvePost;
+	const posted = new Promise((resolve) => { resolvePost = resolve; });
+	const route = (_parsed, opts = {}) => {
+		if (opts.method === "POST") {
+			resolvePost(JSON.parse(opts.body));
+			return { ok: true, status: 200, json: async () => ({ ok: true, state: "pending" }) };
+		}
+		return { ok: true, status: 200, json: async () => request };
+	};
+	const wait = () => {
+		let guard;
+		return Promise.race([posted, new Promise((_resolve, reject) => { guard = setTimeout(() => reject(new Error("no rewrite POST")), 5000); })]).finally(() => clearTimeout(guard));
+	};
+	return { routes: { [`/api/reports/${id}/rewrite`]: route }, wait };
+}
+
+test("a report rewrite named by /api/here runs an image-reading model on the request and posts its text", async () => {
+	const request = { system: "규칙", user: "설명", image: { data: "cGljdHVyZQ==", mimeType: "image/png" }, maxTokens: 1200 };
+	const r = rewriteRoute("r-1", request);
+	const s = setup({ here: { footer: "", waiting: [], reportRewrite: { id: "r-1" } }, routes: r.routes });
+	const contexts = [];
+	s.ctx.modelRegistry = {
+		find: (provider, id) => ({ provider, id, input: id === "claude-sonnet-5" ? ["text", "image"] : ["text"] }),
+		hasConfiguredAuth: () => true,
+		complete: async (_model, context) => {
+			contexts.push(context);
+			return { stopReason: "stop", content: [{ type: "text", text: "제목\n\n본문" }] };
+		},
+	};
+	try {
+		await s.pi.emit("session_start", s.ctx);
+		const body = await r.wait();
+		assert.deepEqual(body, { text: "제목\n\n본문", model: "anthropic-subscription/claude-sonnet-5" });
+		assert.equal(contexts.length, 1);
+		assert.deepEqual(contexts[0].messages[0].content[1], { type: "image", data: "cGljdHVyZQ==", mimeType: "image/png" });
+	} finally {
+		s.cleanup();
+	}
+});
+
+test("a report rewrite without an image-reading model posts unavailable no_model and never fetches the picture", async () => {
+	const r = rewriteRoute("r-2", { user: "설명" });
+	const s = setup({ here: { footer: "", waiting: [], reportRewrite: { id: "r-2" } }, routes: r.routes });
+	s.ctx.modelRegistry = { find: (provider, id) => ({ provider, id, input: ["text"] }), hasConfiguredAuth: () => true, complete: async () => { throw new Error("must not be called"); } };
+	try {
+		await s.pi.emit("session_start", s.ctx);
+		assert.deepEqual(await r.wait(), { unavailable: "no_model" });
+		assert.equal(s.fetchCalls.filter((call) => call.url.includes("/api/reports/r-2/rewrite") && (call.opts.method ?? "GET") === "GET").length, 0);
+	} finally {
+		s.cleanup();
+	}
 });

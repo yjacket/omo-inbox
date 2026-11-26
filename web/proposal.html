@@ -210,29 +210,29 @@
 		<a class="back" data-issue-report href="/issues/new">제보</a>
 		<div class="chips" id="chips"></div>
 	</nav>
-	<div class="titlebar"><h1 id="title"></h1><button type="button" class="listen" id="listenBtn" aria-pressed="false" hidden>듣기</button><button type="button" class="listen" id="restartBtn" hidden>처음부터</button></div>
-	<section class="card" id="causeCard" hidden>
+	<div class="titlebar"><h1 id="title" data-user-content></h1><button type="button" class="listen" id="listenBtn" aria-pressed="false" hidden>듣기</button><button type="button" class="listen" id="restartBtn" hidden>처음부터</button></div>
+	<section class="card" id="causeCard" data-user-content hidden>
 		<h3 class="only">이 안이 나온 이유</h3>
 		<ol class="thread" id="cause"></ol>
 	</section>
 	<p class="lead" id="lead"></p>
 	<div class="tabs" id="tabs" role="tablist" aria-label="안"></div>
 	<div class="banner error" id="loadError" hidden></div>
-	<div class="banner new" id="revBanner" hidden><span id="revBannerText"></span><button type="button" id="revBannerBtn">보기</button></div>
-	<div class="banner done" id="closedBanner" hidden></div>
+	<div class="banner new" id="revBanner" hidden><span id="revBannerText" data-user-content></span><button type="button" id="revBannerBtn">보기</button></div>
+	<div class="banner done" id="closedBanner" data-user-content hidden></div>
 	<div class="banner old" id="oldNote" hidden>지난 안입니다. 보기만 할 수 있습니다.</div>
 	<div class="legend">
 		<span><i class="sw-edit"></i>빨간 실선: 바뀐 곳</span>
 	</div>
-	<div id="sections"></div>
+	<div id="sections" data-user-content></div>
 	<section class="card" id="marksCard">
 		<h3 class="only">표시한 곳</h3>
-		<div class="marks" id="marks"><p class="empty">아직 표시한 곳이 없습니다.</p></div>
+		<div class="marks" id="marks" data-user-content><p class="empty">아직 표시한 곳이 없습니다.</p></div>
 	</section>
 	<section class="card" id="decideCard">
 		<h3 class="only">정할 것</h3>
 		<p class="side" id="side" hidden></p>
-		<div id="questions"></div>
+		<div id="questions" data-user-content></div>
 		<div class="q" id="commentWrap"><b>전체 의견</b><textarea id="comment" style="margin-top:8px"></textarea></div>
 		<div class="send" id="sendRow">
 			<button id="sendBtn" type="button">재요청</button>
@@ -241,7 +241,7 @@
 		</div>
 		<p id="status"></p>
 	</section>
-	<section class="card" id="threadCard">
+	<section class="card" id="threadCard" data-user-content>
 		<h3 class="only">대화</h3>
 		<ol class="thread" id="thread"></ol>
 	</section>
@@ -261,7 +261,7 @@
 		<a class="vbtn" id="vReport" data-issue-report href="/issues/new">제보</a>
 		<button type="button" id="vClose">닫기</button>
 	</div>
-	<div class="vstage" id="vStage">
+	<div class="vstage" id="vStage" data-user-content>
 		<img id="vImg" alt="">
 		<canvas id="vCanvas"></canvas>
 	</div>
