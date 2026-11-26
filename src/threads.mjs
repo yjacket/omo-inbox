@@ -127,6 +127,25 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 		return events.sort((a, b) => a.seq - b.seq);
 	}
 
+	// Per-item index of a thread's events, kept alongside entry.events: /api/here builds every item of every
+	// thread, and filtering the whole event list for each item made that items x events per thread.
+	function indexEvent(entry, event) {
+		if (typeof event.itemId !== "string") return;
+		let list = entry.byItem.get(event.itemId);
+		if (!list) {
+			list = [];
+			entry.byItem.set(event.itemId, list);
+		}
+		list.push(event);
+		if (event.type === "item" && !entry.itemIds.has(event.itemId)) entry.itemIds.add(event.itemId);
+	}
+
+	function makeEntry(sid, dir, thread, events, nextSeq) {
+		const entry = { sid, dir, thread, events, nextSeq, byItem: new Map(), itemIds: new Set() };
+		for (const event of events) indexEvent(entry, event);
+		return entry;
+	}
+
 	function rebuild() {
 		threads.clear();
 		itemIndex.clear();
@@ -147,7 +166,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 			thread.executes ??= null;
 			const events = readEvents(dir);
 			const nextSeq = events.length ? events[events.length - 1].seq + 1 : 1;
-			threads.set(thread.session, { sid: thread.session, dir, thread, events, nextSeq });
+			threads.set(thread.session, makeEntry(thread.session, dir, thread, events, nextSeq));
 			for (const event of events) {
 				if (event.type === "item" && typeof event.itemId === "string") itemIndex.set(event.itemId, thread.session);
 				if (event.type === "handoff" && typeof event.to === "string") {
@@ -162,6 +181,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 		const full = { seq, at: now().toISOString(), ...event };
 		writeJson(path.join(entry.dir, "events", `${String(seq).padStart(SEQ_WIDTH, "0")}-${event.type}.json`), full);
 		entry.events.push(full);
+		indexEvent(entry, full);
 		entry.nextSeq = seq + 1;
 		return full;
 	}
@@ -188,7 +208,7 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 			executes: null,
 		};
 		fs.mkdirSync(path.join(dir, "events"), { recursive: true });
-		const entry = { sid, dir, thread, events: [], nextSeq: 1 };
+		const entry = makeEntry(sid, dir, thread, [], 1);
 		writeJson(path.join(dir, "thread.json"), thread);
 		threads.set(sid, entry);
 		return entry;
@@ -218,18 +238,11 @@ export function createThreads({ home, now = () => new Date(), randomId = default
 	}
 
 	function itemIdsOf(entry) {
-		const seen = new Set();
-		const ids = [];
-		for (const event of entry.events) {
-			if (event.type !== "item" || typeof event.itemId !== "string" || seen.has(event.itemId)) continue;
-			seen.add(event.itemId);
-			ids.push(event.itemId);
-		}
-		return ids;
+		return [...entry.itemIds];
 	}
 
 	function itemEventsOf(entry, itemId) {
-		return entry.events.filter((event) => event.itemId === itemId);
+		return [...(entry.byItem.get(itemId) ?? [])];
 	}
 
 	function closureOf(entry, itemId) {
