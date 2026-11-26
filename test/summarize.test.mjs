@@ -548,3 +548,34 @@ test("cache tracker answers null when senpi knows no TTL", () => {
 
 	assert.equal(unknown.onAssistantStart(undefined), null);
 });
+
+test("a report rewrite uses only listed models that read images and sends the picture as an image part", async () => {
+	const { registry, calls } = fakeRegistry({
+		models: {
+			[HAIKU]: { provider: "anthropic-subscription", id: "claude-haiku-4-5", input: ["text"] },
+			[LUNA]: { provider: "chatgpt-subscription", id: "gpt-6-luna-fast", input: ["text", "image"] },
+		},
+		complete: async () => message(text("제목\n\n본문")),
+	});
+	const rewriter = createSummarizer({ getRegistry: () => registry, models: [HAIKU, LUNA], requireImage: true });
+	assert.equal(await rewriter.usable(), true);
+	const result = await rewriter.run({ ...REQUEST, image: { data: "cGljdHVyZQ==", mimeType: "image/png" } });
+	assert.deepEqual(result, { text: "제목\n\n본문", model: LUNA });
+	assert.deepEqual(calls.complete.map((call) => call.model.id), ["gpt-6-luna-fast"]);
+	assert.deepEqual(calls.complete[0].context.messages[0].content, [
+		{ type: "text", text: REQUEST.user },
+		{ type: "image", data: "cGljdHVyZQ==", mimeType: "image/png" },
+	]);
+});
+
+test("a report rewrite without any image-reading model is not usable and calls nothing", async () => {
+	const { registry, calls } = fakeRegistry({
+		models: { [HAIKU]: { provider: "anthropic-subscription", id: "claude-haiku-4-5", input: ["text"] } },
+		complete: async () => message(text("x")),
+	});
+	const rewriter = createSummarizer({ getRegistry: () => registry, models: [HAIKU], requireImage: true });
+	assert.equal(await rewriter.usable(), false);
+	assert.equal(await rewriter.run(REQUEST), null);
+	assert.equal(calls.complete.length, 0);
+	assert.equal(await createSummarizer({ getRegistry: () => undefined, requireImage: true }).usable(), false);
+});

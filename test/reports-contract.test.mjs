@@ -442,7 +442,9 @@ describe("rowState and FAILURE_TEXT", () => {
 		for (const state of ["queued", "uploading", "creating", "reconciling", "retry_wait"]) {
 			assert.equal(rowState(state), "pending");
 		}
+		assert.equal(rowState("rewriting"), "pending");
 		assert.equal(rowState("failed"), "failed");
+		assert.equal(rowState("held"), "held");
 		assert.equal(rowState("sent"), "sent");
 	});
 
@@ -453,7 +455,9 @@ describe("rowState and FAILURE_TEXT", () => {
 			permission: "저장소에 쓸 권한이 없습니다",
 			not_found: "저장소를 찾을 수 없습니다",
 			issues_disabled: "저장소의 Issues가 꺼져 있습니다",
-			public_repo: "공개 저장소에는 올리지 않습니다",
+			leak: "공개 글에 화면 속 글자가 그대로 있어 올리지 않았습니다",
+			no_model: "그림을 읽을 수 있는 모델이 없습니다",
+			rewrite_failed: "공개용 글을 쓰지 못했습니다",
 			validation: "GitHub가 내용을 받지 않았습니다",
 			attachment_conflict: "그림 파일이 이미 다르게 올라가 있습니다",
 			transient: "GitHub에 연결하지 못했습니다",

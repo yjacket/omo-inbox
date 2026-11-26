@@ -142,13 +142,15 @@ for (const reconciled of [false, true]) {
 	}
 }
 
-test("public repository fails before label or issue creation", async (t) => {
+test("public repository waits for a rewrite before label, asset or issue creation", async (t) => {
 	const h = harness(t);
-	h.add();
-	h.api.repoInfo = async () => ({ private: false });
+	h.add("one", true);
+	h.api.repoInfo = async () => ({ private: false, hasIssues: true });
 	await h.publisher.kick("one");
-	assert.equal(h.record().delivery.lastError.kind, "public_repo");
+	assert.equal(h.record().delivery.state, "rewriting");
+	assert.equal(h.record().delivery.lastError, null);
 	assert.deepEqual(h.calls, []);
+	assert.deepEqual(h.publisher.rewriteWanted(), ["one"]);
 });
 
 test("401 fails auth with fixed detail and exactly one notification", async (t) => {

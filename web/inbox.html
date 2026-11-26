@@ -509,7 +509,7 @@
 				return h(
 					"a",
 					{ class: "row", href: "/s/" + encodeURIComponent(session), "data-session": session, "data-unread": unread || null },
-					h("div", { class: "title" }, title),
+					h("div", { class: "title", "data-user-content": true }, title),
 					h(
 						"span",
 						{ class: "when" },
@@ -520,12 +520,12 @@
 						"div",
 						{ class: "meta" },
 						chipOf(row),
-						row.next?.label ? h("span", { class: "chip chip-ended next" }, row.next.label) : null,
+						row.next?.label ? h("span", { class: "chip chip-ended next", "data-user-content": true }, row.next.label) : null,
 						row.off ? h("span", { class: "chip chip-ended off" }, "세션 꺼짐") : null,
-						where ? h("span", { class: "where" }, where) : null,
+						where ? h("span", { class: "where", "data-user-content": true }, where) : null,
 					),
 					fire ? h("span", { class: "fire", "data-until": row.cacheUntil }, fire) : null,
-					line ? h("div", { class: "line" }, line) : null,
+					line ? h("div", { class: "line", "data-user-content": true }, line) : null,
 				);
 			}
 

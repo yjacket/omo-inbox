@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { validateCreate, deriveTitle, fingerprint, redactReport, rowState } from "./reports-contract.mjs";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// One extension gets a rewrite job at a time; an unanswered job is offered again after the lease.
+const REWRITE_LEASE_MS = 120000;
+const REWRITE_TEXT_BYTES = 32768;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export const REPORT_PAGE = path.join(path.resolve(HERE, ".."), "web", "reports.html");
@@ -34,6 +37,19 @@ export function createReportsHttp({
 	log = () => {},
 	now = () => new Date(),
 }) {
+	const leases = new Map();
+
+	/** The next report id an extension should rewrite, leased to the caller; null when none waits. */
+	function rewriteJob() {
+		const at = new Date(now()).getTime();
+		for (const id of publisher.rewriteWanted()) {
+			if ((leases.get(id) ?? 0) > at) continue;
+			leases.set(id, at + REWRITE_LEASE_MS);
+			return id;
+		}
+		return null;
+	}
+
 	function guard(res, access, level) {
 		if (allowAccess(access, null, level)) return true;
 		sendJson(res, 403, { error: "forbidden" });
@@ -72,7 +88,7 @@ export function createReportsHttp({
 			title: deriveTitle(record.report?.description ?? ""),
 			createdAt: record.createdAt,
 			state,
-			detail: state === "failed" ? delivery.lastError?.detail ?? null : null,
+			detail: state === "failed" || state === "held" ? delivery.lastError?.detail ?? null : null,
 			github: githubOf(record, states),
 			image: record.image != null,
 			handoff: record.handoff == null ? null : { at: record.handoff.at, via: record.handoff.via },
@@ -143,6 +159,13 @@ export function createReportsHttp({
 			if (!validId(parts)) return notFound(res);
 			return handleDetail(res, parts[3]);
 		}
+		if (parts.length === 5 && parts[4] === "rewrite") {
+			if (!validId(parts)) return notFound(res);
+			if (!allowAccess(access, null, "session")) return fail(res, 403, { error: "forbidden" });
+			const request = publisher.rewriteRequest(parts[3]);
+			if (request === null) return fail(res, 409, { error: "not_waiting" });
+			return fail(res, 200, request);
+		}
 		if (parts.length === 5 && parts[4] === "image") {
 			if (!validId(parts)) return notFound(res);
 			const bytes = store.image(parts[3]);
@@ -173,7 +196,8 @@ export function createReportsHttp({
 			report = { ...report, source: { ...report.source, product: productOf(report.source) } };
 		}
 		const png = checked.png;
-		const pngSha = png == null ? null : sha256(png);
+		const maskPng = checked.maskPng;
+		const pngSha = png == null ? null : maskPng == null ? sha256(png) : `${sha256(png)}:${sha256(maskPng)}`;
 		const imageMeta = report.image == null
 			? null
 			: { width: report.image.width, height: report.image.height, provenance: report.image.provenance };
@@ -184,6 +208,7 @@ export function createReportsHttp({
 				fingerprint: fingerprint(report, pngSha),
 				report,
 				png,
+				maskPng,
 				imageMeta,
 			});
 		} catch (error) {
@@ -220,6 +245,32 @@ export function createReportsHttp({
 		return fail(res, 200, { ok: true, state: "pending" });
 	}
 
+	// The extension's answer: `{text, model}` from the model, or `{unavailable: "no_model" | "failed"}`.
+	async function handleRewrite(res, req, id) {
+		let body;
+		try {
+			body = await readJsonBody(req, bodyLimit);
+		} catch (error) {
+			if (error && error.code === "too_long") return fail(res, 413, { error: "too_long" });
+			return fail(res, 400, { error: "bad_input" });
+		}
+		const unavailable = body?.unavailable;
+		const text = body?.text;
+		const model = body?.model ?? null;
+		const answered = typeof text === "string" && Buffer.byteLength(text, "utf8") <= REWRITE_TEXT_BYTES && (model === null || typeof model === "string");
+		if (!answered && unavailable !== "no_model" && unavailable !== "failed") return fail(res, 400, { error: "bad_input" });
+		let result;
+		try {
+			result = answered ? await publisher.rewritten(id, { text, model }) : await publisher.rewriteUnavailable(id, unavailable);
+		} catch (error) {
+			log(`report rewrite failed: ${error && error.stack ? error.stack : error}`);
+			return fail(res, 500, { error: "internal" });
+		}
+		leases.delete(id);
+		if (!result.ok) return fail(res, 409, { error: result.error });
+		return fail(res, 200, { ok: true, state: result.state });
+	}
+
 	async function handleHandoff(res, id) {
 		const record = store.get(id);
 		if (record == null) return notFound(res);
@@ -253,6 +304,10 @@ export function createReportsHttp({
 				if (!guardMutation(res, req, access, "feedback")) return true;
 				return handleRetry(res, parts[3]);
 			}
+			if (parts[4] === "rewrite") {
+				if (!guardMutation(res, req, access, "session")) return true;
+				return handleRewrite(res, req, parts[3]);
+			}
 			if (parts[4] === "handoff") {
 				if (!guardMutation(res, req, access, "reopen")) return true;
 				return handleHandoff(res, parts[3]);
@@ -261,5 +316,5 @@ export function createReportsHttp({
 		return notFound(res);
 	}
 
-	return { handleGet, handlePost };
+	return { handleGet, handlePost, rewriteJob };
 }

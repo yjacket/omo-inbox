@@ -70,6 +70,7 @@ test("create returns the documented record defaults", (t) => {
 		github: null,
 		handoff: null,
 		legacy: { issueId: "old-1", createdAt: "2025-01-01T00:00:00.000Z", target: "repo" },
+		rewrite: null,
 	});
 });
 

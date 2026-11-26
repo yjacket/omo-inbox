@@ -1,6 +1,43 @@
 const probes = new WeakMap();
 const SVG = "http://www.w3.org/2000/svg";
 const XHTML = "http://www.w3.org/1999/xhtml";
+// Pages mark what the user or a session wrote (messages, titles, paths, ids) with this attribute.
+export const USER_CONTENT = "[data-user-content]";
+export const MASK_TEXT = "\u25cb\u25cb\u25cb";
+const MASK_TEXTS_MAX = 200;
+const MASK_TEXT_BYTES = 8192;
+const MASK_TOTAL_BYTES = 65536;
+
+function clipUtf8(text, maxBytes) {
+	const encoder = new TextEncoder();
+	if (encoder.encode(text).length <= maxBytes) return text;
+	let out = "";
+	let bytes = 0;
+	for (const char of text) {
+		const size = encoder.encode(char).length;
+		if (bytes + size > maxBytes) break;
+		out += char;
+		bytes += size;
+	}
+	return out;
+}
+
+/** The user texts a snapshot of `el` shows: its marked ancestor's text, or each marked part inside it. */
+export function userTexts(el) {
+	const owner = el.closest(USER_CONTENT);
+	const nodes = owner ? [owner] : [...el.querySelectorAll(USER_CONTENT)];
+	const texts = [];
+	let total = 0;
+	for (const node of nodes) {
+		const text = clipUtf8(String(node.textContent ?? "").replace(/\s+/g, " ").trim(), MASK_TEXT_BYTES);
+		if (text === "" || texts.includes(text)) continue;
+		const size = new TextEncoder().encode(text).length;
+		if (texts.length >= MASK_TEXTS_MAX || total + size > MASK_TOTAL_BYTES) break;
+		texts.push(text);
+		total += size;
+	}
+	return texts;
+}
 
 function decode(win, source, deadlineMs) {
 	const image = new win.Image();
@@ -71,7 +108,8 @@ function backdrop(win, el) {
 	return win.matchMedia("(prefers-color-scheme: dark)").matches && /(?:^|\s)dark(?:\s|$)/.test(scheme) ? "#111214" : "#ffffff";
 }
 
-export async function snapshotElement(el, { pad = 12, maxSide = 4096, maxPixels = 2097152, scale, deadlineMs = 5000 } = {}) {
+// With `mask`, every text inside a USER_CONTENT part draws as MASK_TEXT and its pictures draw empty.
+export async function snapshotElement(el, { pad = 12, maxSide = 4096, maxPixels = 2097152, scale, deadlineMs = 5000, mask = false } = {}) {
 	const doc = el.ownerDocument;
 	const win = doc.defaultView;
 	const controller = new win.AbortController();
@@ -154,6 +192,14 @@ export async function snapshotElement(el, { pad = 12, maxSide = 4096, maxPixels 
 				if (source.matches("script,style,link,iframe,object,embed,[data-report-overlay],[data-report-selected]")) return null;
 				let target = source.cloneNode(false);
 				const tag = source.localName;
+				const hidden = mask && source.closest(USER_CONTENT) !== null;
+				if (hidden && ["img", "canvas", "svg", "video", "picture"].includes(tag)) {
+					const blank = doc.createElement("span");
+					copyStyle(source, blank);
+					blank.style.setProperty("display", "inline-block");
+					blank.style.setProperty("background-image", "none");
+					return blank;
+				}
 				if (["input", "textarea", "select"].includes(tag)) {
 					target = doc.createElement("span");
 					target.textContent = tag === "input" && source.type === "password" ? "\u2022".repeat(source.value.length) : "";
@@ -200,7 +246,8 @@ export async function snapshotElement(el, { pad = 12, maxSide = 4096, maxPixels 
 				}
 				if (!["input", "textarea", "select", "canvas"].includes(tag)) {
 					for (const child of source.childNodes) {
-						const copied = child.nodeType === 1 ? clone(child) : child.nodeType === 3 ? child.cloneNode() : null;
+						const text = child.nodeType === 3 ? (hidden && /\S/.test(child.data) ? doc.createTextNode(MASK_TEXT) : child.cloneNode()) : null;
+						const copied = child.nodeType === 1 ? clone(child) : text;
 						if (copied) target.append(copied);
 					}
 				}

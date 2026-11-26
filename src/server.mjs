@@ -1640,7 +1640,10 @@ export function createServer({
 			if (start && item.owner === session) return true;
 			return item.owner !== session && !isLive(item.owner);
 		});
+		// A public-repo report waiting for its rewrite goes to the next extension that checks in.
+		const rewrite = session ? reportsHttp.rewriteJob() : null;
 		return sendJson(res, 200, {
+			...(rewrite ? { reportRewrite: { id: rewrite } } : {}),
 			product: identity.product,
 			feature: identity.feature,
 			mine: work.mine,

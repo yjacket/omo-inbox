@@ -548,7 +548,7 @@
 		const where = [thread.product, thread.branch].filter(Boolean).join(" · ");
 		const fire = thread.cacheUntil ? fireText(thread.cacheUntil) : "";
 		const chips = [
-			where ? h("span", { class: "chip chip-ended where", title: where }, where) : null,
+			where ? h("span", { class: "chip chip-ended where", title: where, "data-user-content": true }, where) : null,
 			statusChip(),
 			thread.off ? h("span", { class: "chip chip-ended" }, "세션 꺼짐") : null,
 			fire ? h("span", { class: "fire", "data-until": thread.cacheUntil }, fire) : null,
@@ -571,8 +571,8 @@
 		const isRec = rec !== null && rec.label === label;
 		const why = isRec && rec.why ? rec.why : option.description || null;
 		const star = isRec ? h("span", { class: "star" }, "★권장") : null;
-		const text = h("span", { class: "label" }, label);
-		const whyNode = why ? h("span", { class: "why" }, why) : null;
+		const text = h("span", { class: "label", "data-user-content": true }, label);
+		const whyNode = why ? h("span", { class: "why", "data-user-content": true }, why) : null;
 		if (question.multiSelect === true) {
 			const input = h("input", { type: "checkbox", "data-qid": qid, "data-label": label, "data-key": `check:${qid}:${label}`, disabled: !live || null });
 			input.checked = chosen;
@@ -611,7 +611,7 @@
 		return h(
 			"div",
 			{ class: "question", "data-qid": qid },
-			showText ? h("p", { class: "qtext" }, header, text) : null,
+			showText ? h("p", { class: "qtext", "data-user-content": true }, header, text) : null,
 			ordered.length ? h("div", { class: "opts" }, ...ordered.map((option) => optionNode(item, question, option, rec, live, chosenSet.has(optionLabel(option))))) : null,
 			live ? h("div", { class: "write" }, write) : null,
 		);
@@ -641,7 +641,7 @@
 			h("button", { type: "button", class: `btn ${entry.style}`.trim(), "data-action": "perm", "data-choice": entry.choice, "data-key": `perm:${entry.choice}`, disabled: busy || null }, entry.label),
 		);
 		const nodes = [];
-		if (title) nodes.push(h("p", { class: "qtext" }, title));
+		if (title) nodes.push(h("p", { class: "qtext", "data-user-content": true }, title));
 		nodes.push(h("div", { class: "actions" }, ...buttons));
 		if (ui.feedbackOpen.has(itemId)) {
 			const area = h("textarea", { placeholder: "거부하는 이유", "aria-label": "거부하는 이유", rows: "1", "data-key": "feedback", "data-feedback": "", disabled: busy || null });
@@ -667,8 +667,8 @@
 						"button",
 						{ type: "button", class: `opt${option.rec ? " rec" : ""}`, "data-action": "reply", "data-label": String(option.label), disabled: busy || null },
 						option.rec ? h("span", { class: "star" }, "★권장") : null,
-						h("span", { class: "label" }, String(option.label)),
-						option.why ? h("span", { class: "why" }, String(option.why)) : null,
+						h("span", { class: "label", "data-user-content": true }, String(option.label)),
+						option.why ? h("span", { class: "why", "data-user-content": true }, String(option.why)) : null,
 					),
 				),
 			),
@@ -688,7 +688,7 @@
 				"div",
 				{ class: "ep-msg" },
 				h("time", { class: "ep-at", datetime: message.at, title: absoluteTime(message.at) }, clockTime(message.at)),
-				h("div", { class: "ep-body" }, ...markdown(String(message.text ?? ""))),
+				h("div", { class: "ep-body", "data-user-content": true }, ...markdown(String(message.text ?? ""))),
 			),
 		);
 	}
@@ -748,7 +748,7 @@
 				last = match.index + String(match.term.term).length;
 			}
 			if (last < value.length) parts.push(value.slice(last));
-			return h("p", { class: className }, ...parts);
+			return h("p", { class: className, "data-user-content": true }, ...parts);
 		};
 		const rawOpen = ui.rawOpen.has(itemId);
 		const explaining = ui.explain.has(itemId);
@@ -763,8 +763,8 @@
 			summary && summary.context ? termField(summary.context, "context", "하던 일 · ") : null,
 			showBody ? termField(body, "body") : null,
 			ask ? termField(ask, "ask") : null,
-			nextLine ? h("p", { class: "next" }, nextLine) : null,
-			popover ? h("div", { class: "term-pop", id: popId }, h("b", null, String(popover.term)), h("span", null, String(popover.meaning || ""))) : null,
+			nextLine ? h("p", { class: "next", "data-user-content": true }, nextLine) : null,
+			popover ? h("div", { class: "term-pop", id: popId, "data-user-content": true }, h("b", null, String(popover.term)), h("span", null, String(popover.meaning || ""))) : null,
 			...(item.kind === "question" ? questionBlock(item, live) : []),
 			...(item.kind === "permission" ? permissionBlock(item, live) : []),
 			...(item.kind !== "question" && item.kind !== "permission" ? replyOptions(item, live) : []),
@@ -780,7 +780,7 @@
 				h("button", { type: "button", class: "text", "data-action": "report", "data-report-item": itemId, "data-key": "report" }, "제보"),
 				h("time", { datetime: item.createdAt, "data-at": item.createdAt, title: absoluteTime(item.createdAt) }, relativeTime(item.createdAt)),
 			),
-			h("div", { class: "raw", hidden: !rawOpen || null }, episodeOf(item) ? episodeNodes(item) : markdown(rawTextOf(item))),
+			h("div", { class: "raw", hidden: !rawOpen || null, "data-user-content": true }, episodeOf(item) ? episodeNodes(item) : markdown(rawTextOf(item))),
 		);
 		return h("article", { class: `msg agent${ui.hit === itemId ? " hit" : ""}`, "data-msg": itemId }, bubble);
 	}
@@ -838,7 +838,7 @@
 		return h(
 			"article",
 			{ class: "msg user", "data-answer": answer.answerId || answer.deliveryId },
-			h("div", { class: "bubble" }, answerText(item, answer)),
+			h("div", { class: "bubble", "data-user-content": true }, answerText(item, answer)),
 			delivery
 				? h(
 					"div",
@@ -854,7 +854,7 @@
 	// owner bubble that is a button; text past 6 lines stays clipped until a tap opens it.
 	function requestBubble(item, request) {
 		const open = ui.requestOpen.has(idOf(item));
-		return h("article", { class: "msg user request" }, h("button", { type: "button", class: "bubble", "data-action": "request", "data-key": "request", "aria-expanded": open ? "true" : "false" }, h("span", { class: "text" }, request)));
+		return h("article", { class: "msg user request" }, h("button", { type: "button", class: "bubble", "data-action": "request", "data-key": "request", "aria-expanded": open ? "true" : "false" }, h("span", { class: "text", "data-user-content": true }, request)));
 	}
 
 	function toggleRequest(itemId) {
@@ -895,12 +895,12 @@
 	}
 
 	function sysLine(text, extra) {
-		return h("article", { class: `msg sys${extra ? ` ${extra}` : ""}` }, h("div", { class: "line" }, text));
+		return h("article", { class: `msg sys${extra ? ` ${extra}` : ""}` }, h("div", { class: "line", "data-user-content": true }, text));
 	}
 
 	// external: a desk board's absolute http(s) url (validated by the server), opened in a new tab.
 	function linkLine(label, href, external) {
-		return h("article", { class: "msg sys" }, h("div", { class: "line" }, `${label} · `, h("a", external ? { href, target: "_blank", rel: "noopener noreferrer" } : { href }, "열기")));
+		return h("article", { class: "msg sys" }, h("div", { class: "line" }, h("span", { "data-user-content": true }, label), " · ", h("a", external ? { href, target: "_blank", rel: "noopener noreferrer" } : { href }, "열기")));
 	}
 
 	function safeHref(url, prefix) {
@@ -1232,7 +1232,7 @@
 		const plan = next.facts && next.facts.plan && typeof next.facts.plan === "object" ? next.facts.plan : null;
 		openSheet({
 			title: "새 세션에서 실행할까요?",
-			lines: [h("div", { class: "facts" }, h("p", null, `폴더 · ${plan ? String(plan.root ?? "") : ""}`), h("p", null, `첫 메시지 · ${String(action.prompt ?? "")}`))],
+			lines: [h("div", { class: "facts", "data-user-content": true }, h("p", null, `폴더 · ${plan ? String(plan.root ?? "") : ""}`), h("p", null, `첫 메시지 · ${String(action.prompt ?? "")}`))],
 			buttons: [
 				{
 					key: "launch",
