@@ -438,7 +438,7 @@ Review 목록은 `/boards` 에 있습니다(제목과 머리말 `Review`, 탭 �
 시각 보드에 대해서는 확장이 omo-desk의 동작을 그대로 지킵니다. 하위 세션이나 task member 세션에서는 아무것도 하지 않습니다. 일반 세션에서는:
 
 - 3초마다 `<home>/mailbox/<session>/*.json` 의 보드 의견을 읽습니다. 기획안이 아직 `theirs` 이거나 서버에 닿지 않으면 문구를 턴을 시작하는 후속 메시지로 전달하고 파일을 지웁니다. 메모리의 집합이 중복 전달을 막습니다.
-- 30초마다, 세션 시작 때, 전달 직후에 `/api/here` 를 부릅니다. 하단 표시줄에 `🙋 {mine} 🤖 {theirs}` 가 나오고, 0인 쪽은 뺍니다. 서버가 꺼져 있으면 `Inbox 서버 꺼짐` 을 보이고 120초에 한 번까지 `inbox server start` 를 실행합니다.
+- 30초마다, 세션 시작 때, 전달 직후에 `/api/here` 를 부릅니다. 하단 표시줄에 `🙋 {mine} 🤖 {theirs}` 가 나오고, 0인 쪽은 뺍니다. 서버가 답하지 않으면 `Inbox 서버 꺼짐` 을 보이고 120초에 한 번까지 `inbox server start` 를 실행합니다. 다만 `server.json` 의 pid가 살아 있고 그 포트가 연결을 받으면 서버가 느릴 뿐 꺼진 것이 아니므로 띄우지 않습니다.
 - 알림: 이 워크트리에서 기다리는 의견 중 소유 세션이 살아 있지 않은 것(90초 동안 `/api/here` 호출 없음, 종료, 하위 세션, id 없음)은 세션마다 한 번 알립니다. 재개된 세션은 시작할 때 자기에게 온 답 안 한 의견을 다시 안내받습니다.
 - 종료 때 `/api/bye` 를 불러 소유자가 바로 떠난 것으로 셉니다. 종료 이유가 `reload` 가 아니면 `closed: true` 를 함께 보냅니다. 그냥 bye(`/reload`)는 세션을 90초 동안 살아 있는 것으로 둡니다. 서버는 세션마다 마지막 `/api/here` 시각을 `<home>/data/live.json` 에 두고, 시작할 때 90초가 안 된 것을 되살립니다. 확장은 30초마다 `/api/here` 를 부르니, 살아 있는 대화가 끝남이나 `세션 꺼짐` 으로 깜빡이지 않습니다.
 - 기다리는 보드: `/api/here` 갱신이 성공할 때마다 답 시간 안의 `waiting` 보드를 senpi에 깨우기 출처 `omo-inbox` 로 알리고(`wake_source_state` `{ source: "omo-inbox", activeCount }`, 보류보다 먼저 보냄) goal 이어가기를 보류합니다(`continuation_hold_state` `{ source: "omo-inbox", active }`). 이게 없으면 goal이 바로 다시 재촉하고, 에이전트는 보드를 질문 도구로 한 번 더 묻는데 보드 답으로는 그 질문이 풀리지 않습니다. senpi는 `source`/`activeCount` 와 `active` 만 읽습니다.

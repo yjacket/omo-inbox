@@ -972,3 +972,27 @@ test("every write is atomic: only parsable json files remain, with no tmp suffix
 		cleanup();
 	}
 });
+
+// #16: /api/here lists every thread; building each item must not scan the whole thread's events again.
+test("listing threads reads an event's itemId at most once per event, not once per item", () => {
+	const { cleanup, threads, restart } = setup();
+	try {
+		for (let i = 0; i < 40; i++) {
+			const { item } = threads.createItem(SID, { kind: "progress", policy: "fyi" });
+			threads.addSummary(item.itemId, { headline: `h${i}` });
+		}
+		for (const view of [threads, restart()]) {
+			const events = view.getThread(SID).events;
+			let reads = 0;
+			for (const event of events) {
+				const value = event.itemId;
+				Object.defineProperty(event, "itemId", { get: () => (reads++, value), enumerable: true, configurable: true });
+			}
+			view.list();
+			view.getThread(SID);
+			assert.ok(reads <= events.length, `${reads} itemId reads for ${events.length} events`);
+		}
+	} finally {
+		cleanup();
+	}
+});
