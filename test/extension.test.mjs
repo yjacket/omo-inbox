@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
+import net from "node:net";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInbox } from "../extension/inbox/core.ts";
@@ -519,6 +520,42 @@ test("an unreachable server shows Inbox 서버 꺼짐 and starts the CLI at most
 	await s.tick(30000);
 	assert.equal(s.spawned.length, 2);
 	s.cleanup();
+});
+
+// #16: a timed-out /api/here from a busy server is not a dead server.
+async function portServer() {
+	const listener = net.createServer((socket) => socket.on("error", () => {}));
+	await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
+	return { port: listener.address().port, close: () => new Promise((resolve) => listener.close(resolve)) };
+}
+
+test("a timed-out server whose server.json pid is alive and whose port accepts connections is not started again", async () => {
+	const listener = await portServer();
+	const s = setup({ fetchThrows: true });
+	try {
+		writeFileSync(path.join(s.home, "server.json"), JSON.stringify({ v: 1, name: "omo-inbox", port: listener.port, pid: process.pid }));
+		await s.pi.emit("session_start", s.ctx);
+		assert.equal(s.spawned.length, 0);
+		assert.deepEqual(s.statuses.at(-1), ["omo-inbox", "Inbox 서버 꺼짐"]);
+		assert.match(readFileSync(path.join(s.home, "logs", "extension.log"), "utf8"), new RegExp(`ensure: server pid ${process.pid} still holds port ${listener.port}`));
+	} finally {
+		s.cleanup();
+		await listener.close();
+	}
+});
+
+test("a server whose port no longer accepts connections is started again even when server.json names a live pid", async () => {
+	const listener = await portServer();
+	await listener.close();
+	const s = setup({ fetchThrows: true });
+	try {
+		writeFileSync(path.join(s.home, "server.json"), JSON.stringify({ v: 1, name: "omo-inbox", port: listener.port, pid: process.pid }));
+		await s.pi.emit("session_start", s.ctx);
+		assert.equal(s.spawned.length, 1);
+		assert.deepEqual(s.spawned[0].args.slice(1), ["server", "start"]);
+	} finally {
+		s.cleanup();
+	}
 });
 
 test("session_shutdown stops the timers and POSTs /api/bye with the session id", async () => {

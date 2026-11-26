@@ -20,6 +20,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import net from "node:net";
 import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +38,7 @@ const INBOX_MS = 3000;
 const STATUS_MS = 30000;
 const SPAWN_COOLDOWN_MS = 120_000;
 const FETCH_TIMEOUT_MS = 5000;
+const PORT_PROBE_TIMEOUT_MS = 1000;
 const HOOK_TIMEOUT_MS = 1500;
 const DESK_FETCH_TIMEOUT_MS = 2000;
 const DESK_DEFAULT_PORT = 4377;
@@ -520,11 +522,46 @@ export function createInbox(pi, deps = {}) {
 		return "node";
 	}
 
+	/**
+	 * The server that wrote server.json is still there when its pid is alive and its port accepts a connection.
+	 * The OS accepts the connection even while the server's event loop is busy, so a slow server counts as running.
+	 */
+	async function serverRunning() {
+		let info;
+		try {
+			info = JSON.parse(String(await fsImpl.readFile(path.join(home, "server.json"), "utf8")).replace(/^\uFEFF/, ""));
+		} catch {
+			return null;
+		}
+		if (!Number.isInteger(info?.pid) || !Number.isInteger(info?.port)) return null;
+		try {
+			process.kill(info.pid, 0);
+		} catch (error) {
+			if (error?.code !== "EPERM") return null;
+		}
+		const open = await new Promise((resolve) => {
+			const socket = net.connect({ host: "127.0.0.1", port: info.port });
+			const done = (ok) => {
+				socket.destroy();
+				resolve(ok);
+			};
+			socket.setTimeout(PORT_PROBE_TIMEOUT_MS, () => done(false));
+			socket.once("connect", () => done(true));
+			socket.once("error", () => done(false));
+		});
+		return open ? info : null;
+	}
+
 	/** The CLI launches the server outside this session's job (WMI on Windows); at most one attempt per 120 s. */
 	const ensureServer = safe("ensure", async () => {
 		// A package install that has not finished setup has no app yet; setup starts the server itself.
 		if (await exists(path.join(home, "disabled")) || (packageMode && !(await exists(path.join(home, "app", "bin", "inbox.mjs"))))) return;
 		if (now() - lastSpawnAt < SPAWN_COOLDOWN_MS) return;
+		const running = await serverRunning();
+		if (running) {
+			await log(`ensure: server pid ${running.pid} still holds port ${running.port}; not starting another`);
+			return;
+		}
 		lastSpawnAt = now();
 		const node = await resolveNode();
 		const child = spawnImpl(node, [path.join(home, "app", "bin", "inbox.mjs"), "server", "start"], { detached: true, stdio: "ignore", windowsHide: true });
