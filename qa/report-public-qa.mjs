@@ -51,11 +51,34 @@ let server = null;
 let view = null;
 let exitError = null;
 
-const ev = (expr) => view.evaluate(expr);
+// Page code is a fixed function of this file; values reach it only as CDP call arguments, never as source text.
+async function call(fn, ...args) {
+	const { result: global } = await cdp("Runtime.evaluate", { expression: "globalThis" });
+	const res = await cdp("Runtime.callFunctionOn", {
+		objectId: global.objectId,
+		functionDeclaration: fn.toString(),
+		arguments: args.map((value) => ({ value })),
+		awaitPromise: true,
+		returnByValue: true,
+	});
+	if (res.exceptionDetails) throw new Error(res.exceptionDetails.exception?.description ?? res.exceptionDetails.text);
+	return res.result.value;
+}
 const cdp = (m, p) => view.cdp(m, p || {});
-const waitFor = (cond, ms, what) =>
-	ev(`new Promise((resolve, reject) => { const t0 = performance.now(); const tick = () => { let ok = false; try { ok = Boolean(${cond}); } catch {} if (ok) resolve(true); else if (performance.now() - t0 > ${ms}) reject(new Error(${JSON.stringify(`timeout: ${what}`)})); else setTimeout(tick, 25); }; tick(); })`);
-const settle = () => ev("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 80))))");
+// A bounded poll of a page predicate (the page has no event for these states).
+async function waitFor(cond, ms, what, ...args) {
+	const t0 = Date.now();
+	while (Date.now() - t0 < ms) {
+		try {
+			if (await call(cond, ...args)) return;
+		} catch {
+			// the document is still loading
+		}
+		await sleep(25);
+	}
+	throw new Error(`timeout: ${what}`);
+}
+const settle = () => call(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 80)))));
 const tap = async (x, y) => {
 	await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 0 }] });
 	await cdp("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
@@ -73,8 +96,17 @@ const open = async (route) => {
 	await view.navigate("about:blank");
 	await view.navigate(`${server.base}${route}`);
 };
-const centerOf = (sel) => ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
-const DIALOG = `document.querySelector("dialog[data-report-composer][open]")`;
+function pageCenter(sel, text) {
+	const nodes = [...document.querySelectorAll(sel)];
+	const el = text == null ? nodes[0] : nodes.find((node) => node.textContent.trim() === text);
+	if (!el) return null;
+	el.scrollIntoView({ block: "center" });
+	const r = el.getBoundingClientRect();
+	return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+const centerOf = (sel, text = null) => call(pageCenter, sel, text);
+const COMPOSER = "dialog[data-report-composer][open]";
+const stateTexts = () => call(() => [...document.querySelectorAll(".state")].map((node) => node.textContent));
 
 async function api(method, route, body) {
 	const res = await fetch(server.base + route, { method, headers: body === undefined ? { accept: "application/json" } : POST, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -107,17 +139,17 @@ try {
 
 	// ===== the composer on the bubble, with the redrawn picture =====
 	await open(`/s/${SID}`);
-	await waitFor(`document.getElementById("chat")?.getAttribute("aria-busy") === "false" && Boolean(window.__inboxReporter) && Boolean(document.querySelector(".foot [data-action='report']"))`, 15000, "thread ready");
+	await waitFor(() => document.getElementById("chat")?.getAttribute("aria-busy") === "false" && Boolean(window.__inboxReporter) && Boolean(document.querySelector(".foot [data-action='report']")), 15000, "thread ready");
 	await settle();
 	const foot = await centerOf(".foot [data-action='report']");
 	await settle();
 	await tap(foot.x, foot.y);
-	await waitFor(`${DIALOG} !== null`, 10000, "composer open");
-	await waitFor(`(() => { const t = ${DIALOG}.querySelector(".report__thumb"); return t && !t.hidden && t.complete && t.naturalWidth > 0; })()`, 20000, "picture drawn");
-	await ev(`(() => { const ta = ${DIALOG}.querySelector("textarea"); ta.value = ${JSON.stringify(DESCRIPTION)}; ta.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+	await waitFor((sel) => document.querySelector(sel) !== null, 10000, "composer open", COMPOSER);
+	await waitFor((sel) => { const t = document.querySelector(sel).querySelector(".report__thumb"); return t && !t.hidden && t.complete && t.naturalWidth > 0; }, 20000, "picture drawn", COMPOSER);
+	await call((sel, text) => { const ta = document.querySelector(sel).querySelector("textarea"); ta.value = text; ta.dispatchEvent(new Event("input", { bubbles: true })); }, COMPOSER, DESCRIPTION);
 	await settle();
 	await shot("composer-390.png");
-	const send = await ev(`(() => { const b = [...${DIALOG}.querySelectorAll("button")].find((x) => x.textContent.trim() === "보내기"); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+	const send = await centerOf(`${COMPOSER} button`, "보내기");
 	await tap(send.x, send.y);
 	const list = await until(async () => { const r = await api("GET", "/api/reports?limit=10"); return r.json?.items?.length ? r.json : null; }, 15000, "report stored");
 	const id = list.items[0].id;
@@ -145,8 +177,8 @@ try {
 	const leaked = await api("POST", `/api/reports/${id}/rewrite`, { text: `버튼이 넘칩니다\n\n"${QUESTION}" 말풍선`, model: "qa/fake-vision" });
 	const held = await rowIs(id, (r) => r.state === "held", "held row");
 	await open("/issues");
-	await waitFor(`[...document.querySelectorAll(".state")].some((n) => n.textContent.startsWith("보류 · "))`, 10000, "held row on /issues");
-	const heldText = await ev(`[...document.querySelectorAll(".state")].map((n) => n.textContent)`);
+	await waitFor(() => [...document.querySelectorAll(".state")].some((n) => n.textContent.startsWith("보류 · ")), 10000, "held row on /issues");
+	const heldText = await stateTexts();
 	await settle();
 	await shot("held-390.png");
 	check("P3 a rewrite copying the question is held with the leak reason, no issue is created, /issues shows 보류",
@@ -154,7 +186,7 @@ try {
 		fmt({ leaked: leaked.json, detail: held.detail, issues: fake.issues.length, heldText }));
 
 	// P4: 다시 시도, then a clean rewrite goes out with the masked picture
-	const retry = await ev(`(() => { const b = [...document.querySelectorAll("button[data-action='retry']")][0]; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+	const retry = await centerOf("button[data-action='retry']");
 	await tap(retry.x, retry.y);
 	const again = await job();
 	const clean = await api("POST", `/api/reports/${again}/rewrite`, { text: CLEAN, model: "qa/fake-vision" });
@@ -181,12 +213,12 @@ try {
 	await api("POST", `/api/reports/${secondJob}/rewrite`, { unavailable: "no_model" });
 	const noModel = await rowIs(second.id, (r) => r.state === "held", "no-model row");
 	await open("/issues");
-	await waitFor(`[...document.querySelectorAll(".state")].some((n) => n.textContent === ${JSON.stringify(`보류 · ${HELD_MODEL}`)})`, 10000, "no-model row on /issues");
+	await waitFor((text) => [...document.querySelectorAll(".state")].some((n) => n.textContent === text), 10000, "no-model row on /issues", `보류 · ${HELD_MODEL}`);
 	await settle();
 	await shot("issues-390.png");
 	await metrics(1280, 800, false);
 	await open("/issues");
-	await waitFor(`document.querySelectorAll(".state").length >= 2`, 10000, "rows at 1280");
+	await waitFor(() => document.querySelectorAll(".state").length >= 2, 10000, "rows at 1280");
 	await settle();
 	await shot("issues-1280.png");
 	check("P5 no image-capable model holds the report with its reason", secondJob === second.id && noModel.detail === HELD_MODEL, fmt({ secondJob, detail: noModel.detail }));
